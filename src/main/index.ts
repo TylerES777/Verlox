@@ -1,6 +1,9 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { join } from 'node:path';
 import { IpcChannels } from '@shared/ipc-channels';
+import { getCwd, initCwd, setCwd } from './store';
+
+Menu.setApplicationMenu(null);
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -9,7 +12,7 @@ function createWindow(): void {
     center: true,
     title: 'Vorlox',
     show: false,
-    autoHideMenuBar: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -17,6 +20,8 @@ function createWindow(): void {
       sandbox: true,
     },
   });
+
+  win.setMenu(null);
 
   win.on('ready-to-show', () => {
     win.show();
@@ -45,8 +50,11 @@ function createWindow(): void {
 }
 
 ipcMain.handle(IpcChannels.Ping, (): 'pong' => 'pong');
+ipcMain.handle(IpcChannels.CwdGet, () => getCwd());
+ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
 
 app.whenReady().then(() => {
+  initCwd();
   createWindow();
 
   app.on('activate', () => {

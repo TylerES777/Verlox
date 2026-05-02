@@ -1,6 +1,13 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, type MouseEvent } from 'react';
+import { Header } from './components/Header';
+import { Conversation } from './components/Conversation';
+import { Input, type InputHandle } from './components/Input';
+import { useCwd } from './hooks/useCwd';
 
 export default function App() {
+  const { cwd } = useCwd();
+  const inputRef = useRef<InputHandle>(null);
+
   useEffect(() => {
     window.api
       .ping()
@@ -8,18 +15,18 @@ export default function App() {
       .catch((err) => console.error('IPC ping failed:', err));
   }, []);
 
+  const handleConversationClick = (event: MouseEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (selection && selection.toString().length > 0) return;
+    if (event.target instanceof HTMLAnchorElement) return;
+    inputRef.current?.focus();
+  };
+
   return (
-    <main className="flex h-full w-full items-center justify-center bg-off-white">
-      <h1
-        className="font-soft text-gray-400"
-        style={{
-          fontSize: '32px',
-          fontWeight: 200,
-          letterSpacing: '0.15em',
-        }}
-      >
-        Vorlox
-      </h1>
-    </main>
+    <div className="flex h-full w-full flex-col bg-off-white text-gray-700">
+      <Header displayPath={cwd?.display ?? ''} />
+      <Conversation onBackgroundClick={handleConversationClick} />
+      <Input ref={inputRef} />
+    </div>
   );
 }

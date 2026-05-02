@@ -4,6 +4,8 @@ import type { IpcApi } from '@shared/types';
 
 const api: IpcApi = {
   ping: () => ipcRenderer.invoke(IpcChannels.Ping),
+  getCwd: () => ipcRenderer.invoke(IpcChannels.CwdGet),
+  setCwd: (path) => ipcRenderer.invoke(IpcChannels.CwdSet, path),
 };
 
 contextBridge.exposeInMainWorld('api', api);
