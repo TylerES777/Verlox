@@ -1,83 +1,387 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type {
+  BackendErrorCode,
+  CwdInfo,
+  EnvironmentInfo,
+  TranslateResponse,
+} from '@shared/types';
 
-export type CommandStatus = 'running' | 'exited' | 'killed';
+export type CommandStatus =
+  | 'translating'
+  | 'translation-error'    // infrastructure failure (network, server, rate_limit)
+  | 'refused'              // model declined to translate (gibberish/harmful/ambiguous)
+  | 'cd-success'
+  | 'cd-error'
+  | 'awaiting-confirmation'
+  | 'cancelled'
+  | 'running'
+  | 'exited'
+  | 'killed';
+
+export type ExplanationStatus = 'idle' | 'streaming' | 'done' | 'error';
 
 export interface CommandMessage {
   id: string;
-  command: string;
+  userInput: string;
   cwd: string;
-  output: string;
+
   status: CommandStatus;
+
+  intent: string;
+  explanation: string;
+  proposedCommand: string;
+  requiresConfirmation: boolean;
+  confidence: 'high' | 'medium' | 'low';
+  isCdCommand: boolean;
+  cdTarget: string | null;
+
+  cdResolvedDisplay: string | null;
+
+  command: string;
+  output: string;
   exitCode: number | null;
   signal: string | null;
+
+  errorMessage: string | null;
+
+  finalExplanation: string;
+  explanationStatus: ExplanationStatus;
+
   startedAt: number;
   endedAt: number | null;
 }
 
-export function useCommands(currentCwdDisplay: string): {
+type Action =
+  | { type: 'INPUT_SUBMITTED'; id: string; userInput: string; cwd: string }
+  | { type: 'TRANSLATION_SUCCESS'; id: string; response: TranslateResponse }
+  | { type: 'TRANSLATION_ERROR'; id: string; message: string }
+  | { type: 'CD_SUCCESS'; id: string; displayPath: string }
+  | { type: 'CD_ERROR'; id: string; message: string }
+  | { type: 'CONFIRMATION_RUN'; id: string }
+  | { type: 'CONFIRMATION_CANCEL'; id: string }
+  | { type: 'COMMAND_OUTPUT'; id: string; data: string }
+  | { type: 'COMMAND_EXITED'; id: string; code: number | null; signal: string | null }
+  | { type: 'EXPLAIN_DELTA'; id: string; text: string }
+  | { type: 'EXPLAIN_DONE'; id: string }
+  | { type: 'EXPLAIN_ERROR'; id: string };
+
+function newMessage(id: string, userInput: string, cwd: string): CommandMessage {
+  return {
+    id,
+    userInput,
+    cwd,
+    status: 'translating',
+    intent: '',
+    explanation: '',
+    proposedCommand: '',
+    requiresConfirmation: false,
+    confidence: 'medium',
+    isCdCommand: false,
+    cdTarget: null,
+    cdResolvedDisplay: null,
+    command: '',
+    output: '',
+    exitCode: null,
+    signal: null,
+    errorMessage: null,
+    finalExplanation: '',
+    explanationStatus: 'idle',
+    startedAt: Date.now(),
+    endedAt: null,
+  };
+}
+
+function applyTranslation(m: CommandMessage, response: TranslateResponse): CommandMessage {
+  const base: CommandMessage = {
+    ...m,
+    intent: response.intent,
+    explanation: response.explanation,
+    proposedCommand: response.command,
+    requiresConfirmation: response.requiresConfirmation,
+    confidence: response.confidence,
+    isCdCommand: response.isCdCommand,
+    cdTarget: response.cdTarget,
+  };
+
+  // Refusal path — model returned an empty command and isn't asking for cd.
+  // Per the prompt's refusal section, this happens for gibberish, ambiguous,
+  // or harmful requests; the model writes calm refusal copy in `explanation`.
+  // Must come before the requiresConfirmation branch (refusals are typically
+  // low-confidence, which forces requiresConfirmation:true upstream).
+  if (response.command.trim().length === 0 && !response.isCdCommand) {
+    return { ...base, status: 'refused', endedAt: Date.now() };
+  }
+
+  if (response.isCdCommand) {
+    // Stay in 'translating' visually until the orchestrator's setCwd resolves
+    // and dispatches CD_SUCCESS or CD_ERROR.
+    return base;
+  }
+  if (response.requiresConfirmation) {
+    return { ...base, status: 'awaiting-confirmation' };
+  }
+  return { ...base, status: 'running', command: response.command };
+}
+
+function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
+  switch (action.type) {
+    case 'INPUT_SUBMITTED':
+      return [...state, newMessage(action.id, action.userInput, action.cwd)];
+
+    case 'TRANSLATION_SUCCESS':
+      return state.map((m) => (m.id === action.id ? applyTranslation(m, action.response) : m));
+
+    case 'TRANSLATION_ERROR':
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, status: 'translation-error', errorMessage: action.message, endedAt: Date.now() }
+          : m,
+      );
+
+    case 'CD_SUCCESS':
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, status: 'cd-success', cdResolvedDisplay: action.displayPath, endedAt: Date.now() }
+          : m,
+      );
+
+    case 'CD_ERROR':
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, status: 'cd-error', errorMessage: action.message, endedAt: Date.now() }
+          : m,
+      );
+
+    case 'CONFIRMATION_RUN':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, status: 'running', command: m.proposedCommand } : m,
+      );
+
+    case 'CONFIRMATION_CANCEL':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, status: 'cancelled', endedAt: Date.now() } : m,
+      );
+
+    case 'COMMAND_OUTPUT':
+      // Defensive: append regardless of current status. Main is async; if a
+      // late chunk arrives after exit, we still want to capture it.
+      return state.map((m) => (m.id === action.id ? { ...m, output: m.output + action.data } : m));
+
+    case 'COMMAND_EXITED':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: action.signal != null ? 'killed' : 'exited',
+              exitCode: action.code,
+              signal: action.signal,
+              endedAt: Date.now(),
+            }
+          : m,
+      );
+
+    case 'EXPLAIN_DELTA':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              finalExplanation: m.finalExplanation + action.text,
+              explanationStatus: 'streaming',
+            }
+          : m,
+      );
+
+    case 'EXPLAIN_DONE':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, explanationStatus: 'done' } : m,
+      );
+
+    case 'EXPLAIN_ERROR':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, explanationStatus: 'error' } : m,
+      );
+  }
+}
+
+function errorMessageForCode(code: BackendErrorCode): string {
+  switch (code) {
+    case 'unauthorized':
+      return 'Your session expired. Please sign in again.';
+    case 'rate_limit':
+      return 'Too many requests. Please wait a moment and try again.';
+    case 'network':
+      return "Couldn't reach the service. Check your connection.";
+    case 'server':
+      return 'Something went wrong. Please try again.';
+  }
+}
+
+export function useCommands(cwd: CwdInfo | null): {
   messages: CommandMessage[];
   forceScrollVersion: number;
-  runCommand: (command: string) => void;
+  submitInput: (userInput: string) => Promise<void>;
+  confirmRun: (id: string) => void;
+  cancelRun: (id: string) => void;
   stopCommand: (id: string) => void;
 } {
   const [messages, setMessages] = useState<CommandMessage[]>([]);
+  const messagesRef = useRef<CommandMessage[]>([]);
   const [forceScrollVersion, setForceScrollVersion] = useState(0);
+  const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
 
+  // Custom dispatch: applies the reducer synchronously to the ref AND schedules
+  // a React render. The ref-update timing matters: command-exit listeners read
+  // the latest output via the ref, so the explain payload includes the full
+  // accumulated stdout/stderr (not stale state from one tick ago).
+  const dispatch = useCallback((action: Action) => {
+    const next = reduce(messagesRef.current, action);
+    messagesRef.current = next;
+    setMessages(next);
+  }, []);
+
+  // Fetch environment (platform + shell) once on mount; static for app lifetime.
+  useEffect(() => {
+    let cancelled = false;
+    window.api.getEnvironment().then((env) => {
+      if (!cancelled) setEnvironment(env);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Subscribe to command output + exit events from main.
   useEffect(() => {
     const offOutput = window.api.onCommandOutput(({ id, data }) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === id ? { ...m, output: m.output + data } : m)),
-      );
+      dispatch({ type: 'COMMAND_OUTPUT', id, data });
     });
-
     const offExit = window.api.onCommandExit(({ id, code, signal }) => {
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== id) return m;
-          const status: CommandStatus = signal != null ? 'killed' : 'exited';
-          return {
-            ...m,
-            status,
-            exitCode: code,
-            signal,
-            endedAt: Date.now(),
-          };
-        }),
-      );
-    });
+      dispatch({ type: 'COMMAND_EXITED', id, code, signal });
 
+      // Explain only on natural exit, not user-initiated kill — telling the
+      // user "this was stopped" adds nothing they don't already know.
+      if (signal != null) return;
+
+      // ref is current after dispatch above (synchronous via custom dispatch)
+      const m = messagesRef.current.find((msg) => msg.id === id);
+      if (!m || m.command.length === 0) return;
+
+      // Skip explain for silent successes — exit 0 with empty output
+      // (e.g. mkdir, touch). The card already shows the command ran cleanly;
+      // a "command ran successfully" sentence would just be noise.
+      if (code === 0 && m.output.trim().length === 0) return;
+
+      window.api.explainStart({
+        messageId: id,
+        command: m.command,
+        output: m.output,
+        exitCode: code ?? 0,
+      });
+    });
     return () => {
       offOutput();
       offExit();
     };
-  }, []);
+  }, [dispatch]);
 
-  const runCommand = useCallback(
-    (command: string) => {
-      const trimmed = command.trim();
+  // Subscribe to explain SSE events from main.
+  useEffect(() => {
+    const off = window.api.onExplainEvent((event) => {
+      if (event.type === 'delta') {
+        dispatch({ type: 'EXPLAIN_DELTA', id: event.messageId, text: event.text });
+      } else if (event.type === 'done') {
+        dispatch({ type: 'EXPLAIN_DONE', id: event.messageId });
+      } else {
+        dispatch({ type: 'EXPLAIN_ERROR', id: event.messageId });
+      }
+    });
+    return () => off();
+  }, [dispatch]);
+
+  const submitInput = useCallback(
+    async (userInput: string) => {
+      const trimmed = userInput.trim();
       if (trimmed.length === 0) return;
+      if (!cwd || !environment) return;
+
       const id = crypto.randomUUID();
-      const message: CommandMessage = {
-        id,
-        command: trimmed,
-        cwd: currentCwdDisplay,
-        output: '',
-        status: 'running',
-        exitCode: null,
-        signal: null,
-        startedAt: Date.now(),
-        endedAt: null,
-      };
-      setMessages((prev) => [...prev, message]);
+      dispatch({ type: 'INPUT_SUBMITTED', id, userInput: trimmed, cwd: cwd.display });
       setForceScrollVersion((v) => v + 1);
-      window.api.startCommand({ id, command: trimmed });
+
+      const result = await window.api.translate({
+        userInput: trimmed,
+        context: {
+          cwd: cwd.absolute,
+          platform: environment.platform,
+          shell: environment.shell,
+        },
+      });
+
+      if (!result.ok) {
+        dispatch({ type: 'TRANSLATION_ERROR', id, message: errorMessageForCode(result.code) });
+        return;
+      }
+
+      const response = result.data;
+      dispatch({ type: 'TRANSLATION_SUCCESS', id, response });
+
+      // Refusal — reducer already moved status to 'refused'; nothing to do.
+      if (response.command.trim().length === 0 && !response.isCdCommand) {
+        return;
+      }
+
+      if (response.isCdCommand) {
+        if (!response.cdTarget) {
+          dispatch({
+            type: 'CD_ERROR',
+            id,
+            message: "Couldn't find that folder. Could you double-check the path?",
+          });
+          return;
+        }
+        try {
+          const newCwd = await window.api.setCwd(response.cdTarget);
+          dispatch({ type: 'CD_SUCCESS', id, displayPath: newCwd.display });
+        } catch {
+          dispatch({
+            type: 'CD_ERROR',
+            id,
+            message: "Couldn't find that folder. Could you double-check the path?",
+          });
+        }
+        return;
+      }
+
+      if (response.requiresConfirmation) {
+        return;
+      }
+
+      // Auto-run path. Reducer already moved status='running' and command set.
+      window.api.startCommand({ id, command: response.command });
     },
-    [currentCwdDisplay],
+    [cwd, environment, dispatch],
+  );
+
+  const confirmRun = useCallback(
+    (id: string) => {
+      const m = messagesRef.current.find((msg) => msg.id === id);
+      if (!m || m.status !== 'awaiting-confirmation') return;
+      dispatch({ type: 'CONFIRMATION_RUN', id });
+      window.api.startCommand({ id, command: m.proposedCommand });
+    },
+    [dispatch],
+  );
+
+  const cancelRun = useCallback(
+    (id: string) => {
+      dispatch({ type: 'CONFIRMATION_CANCEL', id });
+    },
+    [dispatch],
   );
 
   const stopCommand = useCallback((id: string) => {
     window.api.stopCommand(id);
   }, []);
 
-  return { messages, forceScrollVersion, runCommand, stopCommand };
+  return { messages, forceScrollVersion, submitInput, confirmRun, cancelRun, stopCommand };
 }

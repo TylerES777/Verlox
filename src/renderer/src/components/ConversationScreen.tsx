@@ -7,9 +7,8 @@ import { useCommands } from '../hooks/useCommands';
 
 export function ConversationScreen() {
   const { cwd } = useCwd();
-  const { messages, forceScrollVersion, runCommand, stopCommand } = useCommands(
-    cwd?.display ?? '',
-  );
+  const { messages, forceScrollVersion, submitInput, confirmRun, cancelRun, stopCommand } =
+    useCommands(cwd);
   const inputRef = useRef<InputHandle>(null);
 
   const handleConversationClick = (event: MouseEvent<HTMLDivElement>) => {
@@ -27,9 +26,11 @@ export function ConversationScreen() {
         messages={messages}
         forceScrollVersion={forceScrollVersion}
         onStop={stopCommand}
+        onConfirm={confirmRun}
+        onCancel={cancelRun}
         onBackgroundClick={handleConversationClick}
       />
-      <Input ref={inputRef} onSubmit={runCommand} />
+      <Input ref={inputRef} onSubmit={submitInput} />
     </div>
   );
 }

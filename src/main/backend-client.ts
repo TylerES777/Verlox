@@ -3,6 +3,11 @@ import type {
   AuthErrorCode,
   AuthResult,
   AuthUser,
+  BackendErrorCode,
+  ExplainRequest,
+  TranslateRequest,
+  TranslateResponse,
+  TranslateResultWire,
 } from '@shared/types';
 import { BACKEND_URL } from './config.js';
 import { clearToken, getToken, setToken } from './auth-store.js';
@@ -167,4 +172,139 @@ function extractMessage(json: unknown): string | undefined {
     if (typeof m === 'string') return m;
   }
   return undefined;
+}
+
+// --- AI: /api/translate (synchronous JSON) ---------------------------------
+
+export async function translate(request: TranslateRequest): Promise<TranslateResultWire> {
+  let result: PostResult;
+  try {
+    result = await postJson('/api/translate', request, { auth: true });
+  } catch {
+    return { ok: false, code: 'network' };
+  }
+  if (result.status === 200) {
+    const data = result.json as TranslateResponse | null;
+    if (!data || typeof data !== 'object') return { ok: false, code: 'server' };
+    return { ok: true, data };
+  }
+  if (result.status === 401) {
+    clearToken();
+    return { ok: false, code: 'unauthorized' };
+  }
+  if (result.status === 429) return { ok: false, code: 'rate_limit' };
+  return { ok: false, code: 'server' };
+}
+
+// --- AI: /api/explain (SSE stream) -----------------------------------------
+
+export type ExplainStreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'done' }
+  | { type: 'error'; code: BackendErrorCode };
+
+/**
+ * Connects to /api/explain and yields events as they arrive. The caller
+ * passes an AbortSignal to cancel mid-stream. The generator always
+ * terminates with either a 'done' or 'error' event before returning, OR
+ * returns silently on AbortSignal cancellation.
+ */
+export async function* explain(
+  request: ExplainRequest,
+  signal: AbortSignal,
+): AsyncGenerator<ExplainStreamEvent, void, void> {
+  const token = getToken();
+  if (!token) {
+    yield { type: 'error', code: 'unauthorized' };
+    return;
+  }
+
+  const body = JSON.stringify({
+    command: request.command,
+    output: request.output,
+    exitCode: request.exitCode,
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(`${BACKEND_URL}/api/explain`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${token}`,
+        Origin: DESKTOP_ORIGIN,
+      },
+      body,
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') return;
+    yield { type: 'error', code: 'network' };
+    return;
+  }
+
+  if (response.status === 401) {
+    clearToken();
+    yield { type: 'error', code: 'unauthorized' };
+    return;
+  }
+  if (response.status === 429) {
+    yield { type: 'error', code: 'rate_limit' };
+    return;
+  }
+  if (response.status !== 200 || !response.body) {
+    yield { type: 'error', code: 'server' };
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Each SSE event is separated by `\n\n`. Process complete events.
+      let frameEnd: number;
+      while ((frameEnd = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, frameEnd);
+        buffer = buffer.slice(frameEnd + 2);
+
+        // SSE spec: an event can have multiple `data:` lines that are
+        // joined with `\n`. Concatenate them.
+        const dataLines: string[] = [];
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('data: ')) dataLines.push(line.slice(6));
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5));
+        }
+        if (dataLines.length === 0) continue;
+        const data = dataLines.join('\n');
+
+        if (data === '[DONE]') {
+          yield { type: 'done' };
+          return;
+        }
+        if (data.startsWith('[ERROR]')) {
+          // Backend signaled a mid-stream error after SSE headers were
+          // already sent. Surface as a generic server error — the message
+          // text is calm by construction (we wrote it) but the renderer
+          // already has a calm error renderer for this code path.
+          yield { type: 'error', code: 'server' };
+          return;
+        }
+        yield { type: 'delta', text: data };
+      }
+    }
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') return;
+    yield { type: 'error', code: 'network' };
+    return;
+  }
+
+  // Stream ended without an explicit [DONE] — treat as done.
+  yield { type: 'done' };
 }

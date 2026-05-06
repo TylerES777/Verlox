@@ -1,10 +1,17 @@
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { join } from 'node:path';
 import { IpcChannels } from '@shared/ipc-channels';
-import type { AuthCredentials, CommandStartPayload } from '@shared/types';
+import type {
+  AuthCredentials,
+  CommandStartPayload,
+  ExplainEvent,
+  ExplainRequest,
+  TranslateRequest,
+} from '@shared/types';
 import { getCwd, initCwd, setCwd } from './store';
 import { killAllSync, startCommand, stopCommand } from './command-runner';
 import * as backend from './backend-client';
+import { getEnvironment } from './detect-environment';
 
 Menu.setApplicationMenu(null);
 
@@ -84,6 +91,49 @@ ipcMain.handle(IpcChannels.AuthSignIn, (_e, credentials: AuthCredentials) =>
 );
 ipcMain.handle(IpcChannels.AuthSignOut, () => backend.signOut());
 ipcMain.handle(IpcChannels.AuthGetCurrentUser, () => backend.getCurrentUser());
+
+ipcMain.handle(IpcChannels.EnvGet, () => getEnvironment());
+
+// --- AI handlers ----------------------------------------------------------
+
+ipcMain.handle(IpcChannels.BackendTranslate, (_e, request: TranslateRequest) =>
+  backend.translate(request),
+);
+
+// One AbortController per in-flight explain stream, keyed by message id.
+// Cleaned up when the stream completes or is cancelled.
+const explainAborts = new Map<string, AbortController>();
+
+ipcMain.on(IpcChannels.BackendExplainStart, async (event, request: ExplainRequest) => {
+  const { messageId } = request;
+
+  // If a stream for this message id is already running (rapid retry?),
+  // abort the old one before starting fresh.
+  explainAborts.get(messageId)?.abort();
+
+  const controller = new AbortController();
+  explainAborts.set(messageId, controller);
+
+  try {
+    for await (const ev of backend.explain(request, controller.signal)) {
+      if (event.sender.isDestroyed()) break;
+      const wire: ExplainEvent =
+        ev.type === 'delta'
+          ? { messageId, type: 'delta', text: ev.text }
+          : ev.type === 'done'
+            ? { messageId, type: 'done' }
+            : { messageId, type: 'error', code: ev.code };
+      event.sender.send(IpcChannels.BackendExplainEvent, wire);
+      if (ev.type === 'done' || ev.type === 'error') break;
+    }
+  } finally {
+    explainAborts.delete(messageId);
+  }
+});
+
+ipcMain.on(IpcChannels.BackendExplainCancel, (_event, messageId: string) => {
+  explainAborts.get(messageId)?.abort();
+});
 
 app.whenReady().then(() => {
   initCwd();

@@ -6,6 +6,8 @@ interface ConversationProps {
   messages: CommandMessage[];
   forceScrollVersion: number;
   onStop: (id: string) => void;
+  onConfirm: (id: string) => void;
+  onCancel: (id: string) => void;
   onBackgroundClick?: (event: MouseEvent<HTMLDivElement>) => void;
 }
 
@@ -13,6 +15,8 @@ export function Conversation({
   messages,
   forceScrollVersion,
   onStop,
+  onConfirm,
+  onCancel,
   onBackgroundClick,
 }: ConversationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -51,7 +55,13 @@ export function Conversation({
       className="flex-1 overflow-y-auto px-6 py-4"
     >
       {messages.map((m) => (
-        <Message key={m.id} message={m} onStop={onStop} />
+        <Message
+          key={m.id}
+          message={m}
+          onStop={onStop}
+          onConfirm={onConfirm}
+          onCancel={onCancel}
+        />
       ))}
     </div>
   );

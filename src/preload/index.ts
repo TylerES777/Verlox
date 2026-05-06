@@ -4,7 +4,10 @@ import type {
   CommandExitEvent,
   CommandOutputEvent,
   CommandStartPayload,
+  ExplainEvent,
+  ExplainRequest,
   IpcApi,
+  TranslateRequest,
 } from '@shared/types';
 
 const api: IpcApi = {
@@ -33,6 +36,23 @@ const api: IpcApi = {
   signIn: (credentials) => ipcRenderer.invoke(IpcChannels.AuthSignIn, credentials),
   signOut: () => ipcRenderer.invoke(IpcChannels.AuthSignOut),
   getCurrentUser: () => ipcRenderer.invoke(IpcChannels.AuthGetCurrentUser),
+
+  getEnvironment: () => ipcRenderer.invoke(IpcChannels.EnvGet),
+
+  translate: (request: TranslateRequest) =>
+    ipcRenderer.invoke(IpcChannels.BackendTranslate, request),
+
+  explainStart: (request: ExplainRequest) =>
+    ipcRenderer.send(IpcChannels.BackendExplainStart, request),
+
+  explainCancel: (messageId: string) =>
+    ipcRenderer.send(IpcChannels.BackendExplainCancel, messageId),
+
+  onExplainEvent: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: ExplainEvent) => cb(event);
+    ipcRenderer.on(IpcChannels.BackendExplainEvent, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.BackendExplainEvent, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);
