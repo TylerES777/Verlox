@@ -5,6 +5,7 @@ import type {
   EnvironmentInfo,
   TranslateResponse,
 } from '@shared/types';
+import { useAuth } from '../contexts/AuthContext';
 
 export type CommandStatus =
   | 'translating'
@@ -63,7 +64,8 @@ type Action =
   | { type: 'COMMAND_EXITED'; id: string; code: number | null; signal: string | null }
   | { type: 'EXPLAIN_DELTA'; id: string; text: string }
   | { type: 'EXPLAIN_DONE'; id: string }
-  | { type: 'EXPLAIN_ERROR'; id: string };
+  | { type: 'EXPLAIN_ERROR'; id: string }
+  | { type: 'CLEAR_ALL' };
 
 function newMessage(id: string, userInput: string, cwd: string): CommandMessage {
   return {
@@ -200,6 +202,9 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
       return state.map((m) =>
         m.id === action.id ? { ...m, explanationStatus: 'error' } : m,
       );
+
+    case 'CLEAR_ALL':
+      return [];
   }
 }
 
@@ -228,6 +233,7 @@ export function useCommands(cwd: CwdInfo | null): {
   const messagesRef = useRef<CommandMessage[]>([]);
   const [forceScrollVersion, setForceScrollVersion] = useState(0);
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
+  const { forceSignOut } = useAuth();
 
   // Custom dispatch: applies the reducer synchronously to the ref AND schedules
   // a React render. The ref-update timing matters: command-exit listeners read
@@ -238,6 +244,21 @@ export function useCommands(cwd: CwdInfo | null): {
     messagesRef.current = next;
     setMessages(next);
   }, []);
+
+  // Bounce to login. Triggered when a protected backend call returns 401,
+  // which means the session token is no longer valid. Synchronous: kills
+  // running shell processes, cancels in-flight explain streams, clears the
+  // conversation, and flips auth status. React 18 batches all setState calls
+  // so AuthGate swaps to LoginScreen in a single render — no flash of empty
+  // conversation, no leakage of the previous user's history.
+  const bounceToLogin = useCallback((): void => {
+    for (const m of messagesRef.current) {
+      if (m.status === 'running') window.api.stopCommand(m.id);
+      if (m.explanationStatus === 'streaming') window.api.explainCancel(m.id);
+    }
+    dispatch({ type: 'CLEAR_ALL' });
+    forceSignOut();
+  }, [dispatch, forceSignOut]);
 
   // Fetch environment (platform + shell) once on mount; static for app lifetime.
   useEffect(() => {
@@ -292,11 +313,16 @@ export function useCommands(cwd: CwdInfo | null): {
       } else if (event.type === 'done') {
         dispatch({ type: 'EXPLAIN_DONE', id: event.messageId });
       } else {
+        // event.type === 'error'
+        if (event.code === 'unauthorized') {
+          bounceToLogin();
+          return;
+        }
         dispatch({ type: 'EXPLAIN_ERROR', id: event.messageId });
       }
     });
     return () => off();
-  }, [dispatch]);
+  }, [dispatch, bounceToLogin]);
 
   const submitInput = useCallback(
     async (userInput: string) => {
@@ -318,6 +344,10 @@ export function useCommands(cwd: CwdInfo | null): {
       });
 
       if (!result.ok) {
+        if (result.code === 'unauthorized') {
+          bounceToLogin();
+          return;
+        }
         dispatch({ type: 'TRANSLATION_ERROR', id, message: errorMessageForCode(result.code) });
         return;
       }
@@ -359,7 +389,7 @@ export function useCommands(cwd: CwdInfo | null): {
       // Auto-run path. Reducer already moved status='running' and command set.
       window.api.startCommand({ id, command: response.command });
     },
-    [cwd, environment, dispatch],
+    [cwd, environment, dispatch, bounceToLogin],
   );
 
   const confirmRun = useCallback(

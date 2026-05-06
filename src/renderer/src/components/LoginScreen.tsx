@@ -26,7 +26,7 @@ function errorMessage(code: AuthErrorCode, mode: Mode): string {
 }
 
 export function LoginScreen() {
-  const { signIn, signUp } = useAuth();
+  const { signIn, signUp, lastSignOutReason } = useAuth();
   const [mode, setMode] = useState<Mode>('sign-in');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -34,7 +34,17 @@ export function LoginScreen() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // One-shot dismissal: flips true on first user interaction (any onChange,
+  // toggle click) and never flips back. Backspacing to empty does NOT bring
+  // the banner back. Avoids "ghost banner" behavior.
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const dismissBanner = () => {
+    if (!bannerDismissed) setBannerDismissed(true);
+  };
+
   const isSignUp = mode === 'sign-up';
+  const showSessionExpiredBanner =
+    lastSignOutReason === 'session-expired' && !bannerDismissed;
 
   function clientValidate(): string | null {
     if (!email.includes('@')) return 'Please enter a valid email address.';
@@ -67,6 +77,7 @@ export function LoginScreen() {
   }
 
   function toggleMode() {
+    dismissBanner();
     setMode(isSignUp ? 'sign-in' : 'sign-up');
     setError(null);
     setConfirmPassword('');
@@ -90,11 +101,20 @@ export function LoginScreen() {
           Vorlox
         </h1>
 
+        {showSessionExpiredBanner && (
+          <p className="mb-4 text-[13px] leading-relaxed text-gray-500">
+            Your session expired. Please sign in again.
+          </p>
+        )}
+
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <input
             type="email"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              dismissBanner();
+              setEmail(e.target.value);
+            }}
             placeholder="Email"
             disabled={pending}
             autoComplete="email"
@@ -104,7 +124,10 @@ export function LoginScreen() {
           <input
             type="password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              dismissBanner();
+              setPassword(e.target.value);
+            }}
             placeholder="Password"
             disabled={pending}
             autoComplete={isSignUp ? 'new-password' : 'current-password'}
@@ -114,7 +137,10 @@ export function LoginScreen() {
             <input
               type="password"
               value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
+              onChange={(e) => {
+              dismissBanner();
+              setConfirmPassword(e.target.value);
+            }}
               placeholder="Confirm password"
               disabled={pending}
               autoComplete="new-password"

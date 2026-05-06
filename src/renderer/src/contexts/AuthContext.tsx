@@ -11,9 +11,14 @@ import type { AuthErrorCode, AuthResult, AuthUser } from '@shared/types';
 
 export type AuthStatus = 'hydrating' | 'authenticated' | 'unauthenticated';
 
+// Why the user is on the login screen. Drives whether LoginScreen shows
+// the "Your session expired" banner. Resets to null on successful auth.
+export type SignOutReason = 'user' | 'session-expired';
+
 export interface AuthContextValue {
   status: AuthStatus;
   user: AuthUser | null;
+  lastSignOutReason: SignOutReason | null;
   signIn: (email: string, password: string) => Promise<AuthErrorCode | null>;
   signUp: (email: string, password: string) => Promise<AuthErrorCode | null>;
   signOut: () => Promise<void>;
@@ -27,6 +32,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('hydrating');
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [lastSignOutReason, setLastSignOutReason] = useState<SignOutReason | null>(null);
 
   // Hydrate on mount: if a token exists in main, validate it via /me.
   useEffect(() => {
@@ -58,6 +64,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (result.ok) {
       setUser(result.user);
       setStatus('authenticated');
+      // Clear any prior reason — successful auth means the session-expired
+      // banner shouldn't reappear if the user signs out again later.
+      setLastSignOutReason(null);
       return null;
     }
     return result.code;
@@ -81,11 +90,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async (): Promise<void> => {
     await window.api.signOut();
+    setLastSignOutReason('user');
     setUser(null);
     setStatus('unauthenticated');
   }, []);
 
   const forceSignOut = useCallback((): void => {
+    setLastSignOutReason('session-expired');
     setUser(null);
     setStatus('unauthenticated');
     // Fire-and-forget the remote sign-out; we don't await because the token
@@ -94,8 +105,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ status, user, signIn, signUp, signOut, forceSignOut }),
-    [status, user, signIn, signUp, signOut, forceSignOut],
+    () => ({ status, user, lastSignOutReason, signIn, signUp, signOut, forceSignOut }),
+    [status, user, lastSignOutReason, signIn, signUp, signOut, forceSignOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
