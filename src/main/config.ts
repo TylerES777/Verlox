@@ -7,7 +7,6 @@
 // when no MODE override happens.
 
 const isDev = import.meta.env.DEV;
-
 export const BACKEND_URL = isDev
   ? 'http://localhost:3001'
   : 'https://backend-production-08f5e.up.railway.app';

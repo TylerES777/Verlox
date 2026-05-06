@@ -28,7 +28,7 @@ export function Message({ message, onStop, onConfirm, onCancel }: MessageProps) 
     return (
       <div className="mb-6">
         <UserInputEcho text={message.userInput} />
-        <div className="font-mono text-[13px] text-gray-400">…</div>
+        <div className="text-[13px] text-gray-400">…</div>
       </div>
     );
   }

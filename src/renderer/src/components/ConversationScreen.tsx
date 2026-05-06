@@ -1,4 +1,4 @@
-import { useRef, type MouseEvent } from 'react';
+import { useEffect, useRef, type MouseEvent } from 'react';
 import { Header } from './Header';
 import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
@@ -10,6 +10,14 @@ export function ConversationScreen() {
   const { messages, forceScrollVersion, submitInput, confirmRun, cancelRun, stopCommand } =
     useCommands(cwd);
   const inputRef = useRef<InputHandle>(null);
+
+  // Belt-and-suspenders for the keyboard flow: the user clicked Sign in (or
+  // the avatar's Sign out → ... → another sign-in), focus was on a button
+  // that just unmounted. Input.tsx also auto-focuses on its own mount, but
+  // explicitly focusing here means we don't depend on that timing detail.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
   const handleConversationClick = (event: MouseEvent<HTMLDivElement>) => {
     const selection = window.getSelection();
