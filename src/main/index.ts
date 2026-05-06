@@ -1,9 +1,10 @@
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { join } from 'node:path';
 import { IpcChannels } from '@shared/ipc-channels';
-import type { CommandStartPayload } from '@shared/types';
+import type { AuthCredentials, CommandStartPayload } from '@shared/types';
 import { getCwd, initCwd, setCwd } from './store';
 import { killAllSync, startCommand, stopCommand } from './command-runner';
+import * as backend from './backend-client';
 
 Menu.setApplicationMenu(null);
 
@@ -24,6 +25,14 @@ function createWindow(): void {
   });
 
   win.setMenu(null);
+
+  // DEV-ONLY: auto-open DevTools detached. We strip our app menu (calm
+  // aesthetic), which removes the default View > Toggle DevTools entry
+  // and the implicit Ctrl+Shift+I shortcut. Conditional on import.meta.env.DEV
+  // so packaged builds never get DevTools.
+  if (import.meta.env.DEV) {
+    win.webContents.openDevTools({ mode: 'detach' });
+  }
 
   win.on('ready-to-show', () => {
     win.show();
@@ -62,6 +71,19 @@ ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
 ipcMain.on(IpcChannels.CommandStop, (_event, id: string) => {
   stopCommand(id);
 });
+
+// --- Auth handlers --------------------------------------------------------
+// All HTTP calls happen here in the main process. Token is stored in main
+// only (encrypted via safeStorage) — never crosses the IPC boundary.
+
+ipcMain.handle(IpcChannels.AuthSignUp, (_e, credentials: AuthCredentials) =>
+  backend.signUp(credentials),
+);
+ipcMain.handle(IpcChannels.AuthSignIn, (_e, credentials: AuthCredentials) =>
+  backend.signIn(credentials),
+);
+ipcMain.handle(IpcChannels.AuthSignOut, () => backend.signOut());
+ipcMain.handle(IpcChannels.AuthGetCurrentUser, () => backend.getCurrentUser());
 
 app.whenReady().then(() => {
   initCwd();

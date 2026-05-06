@@ -28,6 +28,11 @@ const api: IpcApi = {
     ipcRenderer.on(IpcChannels.CommandExit, listener);
     return () => ipcRenderer.removeListener(IpcChannels.CommandExit, listener);
   },
+
+  signUp: (credentials) => ipcRenderer.invoke(IpcChannels.AuthSignUp, credentials),
+  signIn: (credentials) => ipcRenderer.invoke(IpcChannels.AuthSignIn, credentials),
+  signOut: () => ipcRenderer.invoke(IpcChannels.AuthSignOut),
+  getCurrentUser: () => ipcRenderer.invoke(IpcChannels.AuthGetCurrentUser),
 };
 
 contextBridge.exposeInMainWorld('api', api);
