@@ -3,9 +3,13 @@ import { Header } from './components/Header';
 import { Conversation } from './components/Conversation';
 import { Input, type InputHandle } from './components/Input';
 import { useCwd } from './hooks/useCwd';
+import { useCommands } from './hooks/useCommands';
 
 export default function App() {
   const { cwd } = useCwd();
+  const { messages, forceScrollVersion, runCommand, stopCommand } = useCommands(
+    cwd?.display ?? '',
+  );
   const inputRef = useRef<InputHandle>(null);
 
   useEffect(() => {
@@ -19,14 +23,20 @@ export default function App() {
     const selection = window.getSelection();
     if (selection && selection.toString().length > 0) return;
     if (event.target instanceof HTMLAnchorElement) return;
+    if (event.target instanceof HTMLButtonElement) return;
     inputRef.current?.focus();
   };
 
   return (
     <div className="flex h-full w-full flex-col bg-off-white text-gray-700">
       <Header displayPath={cwd?.display ?? ''} />
-      <Conversation onBackgroundClick={handleConversationClick} />
-      <Input ref={inputRef} />
+      <Conversation
+        messages={messages}
+        forceScrollVersion={forceScrollVersion}
+        onStop={stopCommand}
+        onBackgroundClick={handleConversationClick}
+      />
+      <Input ref={inputRef} onSubmit={runCommand} />
     </div>
   );
 }

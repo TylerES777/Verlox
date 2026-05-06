@@ -15,7 +15,7 @@ export interface InputHandle {
 }
 
 interface InputProps {
-  onSubmit?: (value: string) => void;
+  onSubmit: (value: string) => void;
 }
 
 export const Input = forwardRef<InputHandle, InputProps>(function Input({ onSubmit }, ref) {
@@ -54,7 +54,7 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input({ onSubm
       event.preventDefault();
       const trimmed = value.trim();
       if (trimmed.length > 0) {
-        onSubmit?.(trimmed);
+        onSubmit(trimmed);
       }
       setValue('');
     }

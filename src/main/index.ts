@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { join } from 'node:path';
 import { IpcChannels } from '@shared/ipc-channels';
+import type { CommandStartPayload } from '@shared/types';
 import { getCwd, initCwd, setCwd } from './store';
+import { killAllSync, startCommand, stopCommand } from './command-runner';
 
 Menu.setApplicationMenu(null);
 
@@ -53,6 +55,14 @@ ipcMain.handle(IpcChannels.Ping, (): 'pong' => 'pong');
 ipcMain.handle(IpcChannels.CwdGet, () => getCwd());
 ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
 
+ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
+  startCommand(event.sender, payload.id, payload.command);
+});
+
+ipcMain.on(IpcChannels.CommandStop, (_event, id: string) => {
+  stopCommand(id);
+});
+
 app.whenReady().then(() => {
   initCwd();
   createWindow();
@@ -60,6 +70,10 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  killAllSync();
 });
 
 app.on('window-all-closed', () => {

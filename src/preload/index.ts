@@ -1,11 +1,33 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
-import type { IpcApi } from '@shared/types';
+import type {
+  CommandExitEvent,
+  CommandOutputEvent,
+  CommandStartPayload,
+  IpcApi,
+} from '@shared/types';
 
 const api: IpcApi = {
   ping: () => ipcRenderer.invoke(IpcChannels.Ping),
   getCwd: () => ipcRenderer.invoke(IpcChannels.CwdGet),
   setCwd: (path) => ipcRenderer.invoke(IpcChannels.CwdSet, path),
+
+  startCommand: (payload: CommandStartPayload) =>
+    ipcRenderer.send(IpcChannels.CommandStart, payload),
+
+  stopCommand: (id: string) => ipcRenderer.send(IpcChannels.CommandStop, id),
+
+  onCommandOutput: (cb) => {
+    const listener = (_e: IpcRendererEvent, payload: CommandOutputEvent) => cb(payload);
+    ipcRenderer.on(IpcChannels.CommandOutput, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.CommandOutput, listener);
+  },
+
+  onCommandExit: (cb) => {
+    const listener = (_e: IpcRendererEvent, payload: CommandExitEvent) => cb(payload);
+    ipcRenderer.on(IpcChannels.CommandExit, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.CommandExit, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);
