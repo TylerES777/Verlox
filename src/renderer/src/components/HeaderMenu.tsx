@@ -43,17 +43,20 @@ export function HeaderMenu() {
         onClick={() => setOpen((v) => !v)}
         aria-label="Account menu"
         aria-expanded={open}
-        className="flex h-[22px] w-[22px] items-center justify-center rounded-full bg-gray-200 text-[11px] font-medium text-gray-500 hover:bg-gray-300 focus:outline-none"
+        className="flex h-7 w-7 items-center justify-center rounded-full bg-[#F4F4F5] text-[12px] font-medium text-ink-label hover:bg-subtle-border focus:outline-none"
       >
         {initial}
       </button>
       {open && (
-        <div className="absolute right-0 top-[28px] z-10 w-56 rounded-lg border border-gray-200 bg-white py-2 shadow-sm">
-          <div className="px-3 pb-2 text-[12px] text-gray-500">{user.email}</div>
+        <div className="absolute right-0 top-full z-10 mt-2 w-[220px] overflow-hidden rounded-xl border-[0.5px] border-[rgba(0,0,0,0.08)] bg-card shadow-popover">
+          <div className="break-all px-3 pb-2 pt-3 text-[13px] text-ink-label">
+            {user.email}
+          </div>
+          <div className="border-t-[0.5px] border-hairline" />
           <button
             type="button"
             onClick={handleSignOut}
-            className="block w-full px-3 py-1.5 text-left text-[13px] text-gray-700 hover:bg-gray-100 focus:outline-none"
+            className="block w-full px-3 py-2 text-left text-[14px] text-ink hover:bg-surface-subtle focus:outline-none"
           >
             Sign out
           </button>

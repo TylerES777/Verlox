@@ -12,6 +12,10 @@ const MAX_LINES = 6;
 
 export interface InputHandle {
   focus: () => void;
+  // Programmatic fill, used by the empty-state example chips. Sets the
+  // textarea contents and focuses — does NOT submit. The user can edit
+  // before pressing Enter.
+  setValue: (text: string) => void;
 }
 
 interface InputProps {
@@ -25,6 +29,12 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input({ onSubm
 
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
+    setValue: (text: string) => {
+      // setValue here is the useState setter from the closure above
+      // (different identity from the property name on this returned object).
+      setValue(text);
+      textareaRef.current?.focus();
+    },
   }));
 
   const resize = useCallback(() => {

@@ -17,10 +17,10 @@ export const IpcChannels = {
   EnvGet: 'env:get',
 
   // Backend AI
-  BackendTranslate: 'backend:translate',
-  BackendExplainStart: 'backend:explain:start',
-  BackendExplainCancel: 'backend:explain:cancel',
-  BackendExplainEvent: 'backend:explain:event',
+  BackendPlanTurn: 'backend:plan-turn',
+  BackendSynthesizeStart: 'backend:synthesize:start',
+  BackendSynthesizeCancel: 'backend:synthesize:cancel',
+  BackendSynthesizeEvent: 'backend:synthesize:event',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

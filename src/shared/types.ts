@@ -67,31 +67,8 @@ export interface EnvironmentInfo {
   shell: Shell;
 }
 
-// AI / backend --------------------------------------------------------------
+// Backend error code (shared by all backend calls) --------------------------
 
-export interface TranslateContext {
-  cwd: string;
-  platform: Platform;
-  shell: Shell;
-}
-
-export interface TranslateRequest {
-  userInput: string;
-  context: TranslateContext;
-}
-
-export interface TranslateResponse {
-  intent: string;
-  command: string;
-  explanation: string;
-  requiresConfirmation: boolean;
-  confidence: 'high' | 'medium' | 'low';
-  isCdCommand: boolean;
-  cdTarget: string | null;
-}
-
-// Backend errors share the same code shape as auth errors so callers can
-// branch with consistent semantics.
 export type BackendErrorCode = 'unauthorized' | 'network' | 'rate_limit' | 'server';
 
 export interface BackendErrorWire {
@@ -99,40 +76,93 @@ export interface BackendErrorWire {
   code: BackendErrorCode;
 }
 
-export interface TranslateSuccessWire {
-  ok: true;
-  data: TranslateResponse;
+// /api/turn — plan generation -----------------------------------------------
+
+export interface TurnContext {
+  cwd: string;
+  platform: Platform;
+  shell: Shell;
 }
 
-export type TranslateResultWire = TranslateSuccessWire | BackendErrorWire;
+export interface TurnInput {
+  userInput: string;
+  context: TurnContext;
+  planMode: boolean;
+}
 
-// Explain --------------------------------------------------------------------
+export interface PlanStep {
+  title: string;
+  command: string;
+  description: string;
+}
 
-export interface ExplainRequest {
-  messageId: string;
+export interface PlanAffects {
+  files: string[];
+  network: string[];
+  permissions: string[];
+  readOnly: boolean;
+}
+
+export type PlanDisplayMode = 'summary' | 'verbatim';
+
+export interface PlanResponse {
+  planId: string;
+  intent: string;
+  plan: string;
+  steps: PlanStep[];
+  affects: PlanAffects;
+  displayMode: PlanDisplayMode;
+  isCdCommand: boolean;
+  cdTarget: string | null;
+  footgunDetected: false | { reason: string };
+}
+
+export interface TurnSuccessWire {
+  ok: true;
+  data: PlanResponse;
+}
+
+export type TurnResultWire = TurnSuccessWire | BackendErrorWire;
+
+// /api/synthesize — response prose stream ------------------------------------
+
+export interface ExecutionLogEntry {
+  stepIndex: number;
   command: string;
   output: string;
-  exitCode: number;
+  exitCode: number | null;
+  signal: string | null;
 }
 
-export interface ExplainDeltaEvent {
+export interface SynthesizeRequest {
+  messageId: string;       // used to correlate stream events back to this turn
+  planId: string;
+  intent: string;
+  plan: string;
+  executionLog: ExecutionLogEntry[];
+}
+
+export interface SynthesizeDeltaEvent {
   messageId: string;
   type: 'delta';
   text: string;
 }
 
-export interface ExplainDoneEvent {
+export interface SynthesizeDoneEvent {
   messageId: string;
   type: 'done';
 }
 
-export interface ExplainErrorEvent {
+export interface SynthesizeErrorEvent {
   messageId: string;
   type: 'error';
   code: BackendErrorCode;
 }
 
-export type ExplainEvent = ExplainDeltaEvent | ExplainDoneEvent | ExplainErrorEvent;
+export type SynthesizeEvent =
+  | SynthesizeDeltaEvent
+  | SynthesizeDoneEvent
+  | SynthesizeErrorEvent;
 
 // IPC API -------------------------------------------------------------------
 
@@ -154,11 +184,15 @@ export interface IpcApi {
   // Environment (platform + shell). Static for the app's lifetime.
   getEnvironment: () => Promise<EnvironmentInfo>;
 
-  // AI endpoints.
-  translate: (request: TranslateRequest) => Promise<TranslateResultWire>;
-  explainStart: (request: ExplainRequest) => void;
-  explainCancel: (messageId: string) => void;
-  onExplainEvent: (cb: (event: ExplainEvent) => void) => Unsubscribe;
+  // Plan turn (synchronous JSON; replaces the Phase 3 translate call).
+  planTurn: (input: TurnInput) => Promise<TurnResultWire>;
+
+  // Synthesize response prose (SSE stream from backend; replaces explain).
+  // Renderer fires synthesizeStart, listens via onSynthesizeEvent. Cancel by
+  // messageId if the user navigates away or signs out mid-stream.
+  synthesizeStart: (request: SynthesizeRequest) => void;
+  synthesizeCancel: (messageId: string) => void;
+  onSynthesizeEvent: (cb: (event: SynthesizeEvent) => void) => Unsubscribe;
 }
 
 declare global {

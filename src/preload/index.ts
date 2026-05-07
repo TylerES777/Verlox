@@ -4,10 +4,10 @@ import type {
   CommandExitEvent,
   CommandOutputEvent,
   CommandStartPayload,
-  ExplainEvent,
-  ExplainRequest,
   IpcApi,
-  TranslateRequest,
+  SynthesizeEvent,
+  SynthesizeRequest,
+  TurnInput,
 } from '@shared/types';
 
 const api: IpcApi = {
@@ -39,19 +39,20 @@ const api: IpcApi = {
 
   getEnvironment: () => ipcRenderer.invoke(IpcChannels.EnvGet),
 
-  translate: (request: TranslateRequest) =>
-    ipcRenderer.invoke(IpcChannels.BackendTranslate, request),
+  planTurn: (input: TurnInput) =>
+    ipcRenderer.invoke(IpcChannels.BackendPlanTurn, input),
 
-  explainStart: (request: ExplainRequest) =>
-    ipcRenderer.send(IpcChannels.BackendExplainStart, request),
+  synthesizeStart: (request: SynthesizeRequest) =>
+    ipcRenderer.send(IpcChannels.BackendSynthesizeStart, request),
 
-  explainCancel: (messageId: string) =>
-    ipcRenderer.send(IpcChannels.BackendExplainCancel, messageId),
+  synthesizeCancel: (messageId: string) =>
+    ipcRenderer.send(IpcChannels.BackendSynthesizeCancel, messageId),
 
-  onExplainEvent: (cb) => {
-    const listener = (_e: IpcRendererEvent, event: ExplainEvent) => cb(event);
-    ipcRenderer.on(IpcChannels.BackendExplainEvent, listener);
-    return () => ipcRenderer.removeListener(IpcChannels.BackendExplainEvent, listener);
+  onSynthesizeEvent: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: SynthesizeEvent) => cb(event);
+    ipcRenderer.on(IpcChannels.BackendSynthesizeEvent, listener);
+    return () =>
+      ipcRenderer.removeListener(IpcChannels.BackendSynthesizeEvent, listener);
   },
 };
 

@@ -3,74 +3,75 @@ import type {
   BackendErrorCode,
   CwdInfo,
   EnvironmentInfo,
-  TranslateResponse,
+  ExecutionLogEntry,
+  PlanResponse,
+  PlanStep,
 } from '@shared/types';
 import { useAuth } from '../contexts/AuthContext';
 
-export type CommandStatus =
-  | 'translating'
-  | 'translation-error'    // infrastructure failure (network, server, rate_limit)
-  | 'refused'              // model declined to translate (gibberish/harmful/ambiguous)
-  | 'cd-success'
-  | 'cd-error'
-  | 'awaiting-confirmation'
-  | 'cancelled'
-  | 'running'
-  | 'exited'
-  | 'killed';
+// ── State machine ─────────────────────────────────────────────────────────
 
-export type ExplanationStatus = 'idle' | 'streaming' | 'done' | 'error';
+export type TurnStatus =
+  | 'translating'        // /api/turn in flight
+  | 'planning-error'     // /api/turn failed (network/server/rate-limit)
+  | 'refused'            // model returned empty steps OR footgun (2a placeholder)
+  | 'cd-success'         // cd handled
+  | 'cd-error'           // cd path invalid
+  | 'executing'          // running steps locally via window.api.startCommand
+  | 'synthesizing'       // /api/synthesize connected, no deltas yet
+  | 'streaming'          // first delta arrived; response prose flowing
+  | 'done'               // synthesis complete (or refusal/cd-success terminal)
+  | 'killed'             // user pressed stop on a running step
+  | 'synthesize-error';  // /api/synthesize errored
+
+export type StatusIndicatorPhase = 'examining' | 'running' | 'reviewing' | null;
 
 export interface CommandMessage {
   id: string;
   userInput: string;
-  cwd: string;
-
-  status: CommandStatus;
-
-  intent: string;
-  explanation: string;
-  proposedCommand: string;
-  requiresConfirmation: boolean;
-  confidence: 'high' | 'medium' | 'low';
-  isCdCommand: boolean;
-  cdTarget: string | null;
-
-  cdResolvedDisplay: string | null;
-
-  command: string;
-  output: string;
-  exitCode: number | null;
-  signal: string | null;
-
-  errorMessage: string | null;
-
-  // pendingExplanation accumulates raw deltas as the SSE arrives.
-  // finalExplanation is what Message.tsx renders; the reveal timer
-  // advances it one character per 20ms tick toward pendingExplanation.
-  // Decouples the data layer (deltas land in semantic chunks of ~30
-  // chars) from the display layer (smooth character-by-character feel).
-  pendingExplanation: string;
-  finalExplanation: string;
-  explanationStatus: ExplanationStatus;
-
+  cwd: string;                              // display form at submit time
   startedAt: number;
   endedAt: number | null;
+
+  status: TurnStatus;
+  statusIndicator: StatusIndicatorPhase;
+
+  // Filled by /api/turn:
+  plan: PlanResponse | null;
+
+  // Filled during executing (one entry per completed step):
+  executionLog: ExecutionLogEntry[];
+
+  // Reveal-smoothing pair (Phase 3.4.1 pattern, preserved):
+  // pendingResponse accumulates raw text from synthesize stream OR refusal
+  // text. The reveal interval advances finalResponse one char per 20ms tick.
+  // Vorlox-generated strings (cd success/error, planning error, killed
+  // footer) bypass — they render hard.
+  pendingResponse: string;
+  finalResponse: string;
+
+  // For cd-success render:
+  cdResolvedDisplay: string | null;
+
+  // For *-error states + planning-error / synthesize-error:
+  errorMessage: string | null;
 }
+
+// ── Reducer actions ───────────────────────────────────────────────────────
 
 type Action =
   | { type: 'INPUT_SUBMITTED'; id: string; userInput: string; cwd: string }
-  | { type: 'TRANSLATION_SUCCESS'; id: string; response: TranslateResponse }
-  | { type: 'TRANSLATION_ERROR'; id: string; message: string }
+  | { type: 'PLAN_RECEIVED'; id: string; plan: PlanResponse }
+  | { type: 'PLANNING_ERROR'; id: string; message: string }
+  | { type: 'REFUSED'; id: string; text: string }
   | { type: 'CD_SUCCESS'; id: string; displayPath: string }
   | { type: 'CD_ERROR'; id: string; message: string }
-  | { type: 'CONFIRMATION_RUN'; id: string }
-  | { type: 'CONFIRMATION_CANCEL'; id: string }
-  | { type: 'COMMAND_OUTPUT'; id: string; data: string }
-  | { type: 'COMMAND_EXITED'; id: string; code: number | null; signal: string | null }
-  | { type: 'EXPLAIN_DELTA'; id: string; text: string }
-  | { type: 'EXPLAIN_DONE'; id: string }
-  | { type: 'EXPLAIN_ERROR'; id: string }
+  | { type: 'STATUS_INDICATOR'; id: string; phase: StatusIndicatorPhase }
+  | { type: 'STEP_DONE'; id: string; entry: ExecutionLogEntry }
+  | { type: 'KILLED'; id: string }
+  | { type: 'SYNTHESIZE_DELTA'; id: string; text: string }
+  | { type: 'SYNTHESIZE_DONE'; id: string }
+  | { type: 'SYNTHESIZE_ERROR'; id: string; message: string }
   | { type: 'CLEAR_ALL' };
 
 function newMessage(id: string, userInput: string, cwd: string): CommandMessage {
@@ -78,58 +79,17 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
     id,
     userInput,
     cwd,
-    status: 'translating',
-    intent: '',
-    explanation: '',
-    proposedCommand: '',
-    requiresConfirmation: false,
-    confidence: 'medium',
-    isCdCommand: false,
-    cdTarget: null,
-    cdResolvedDisplay: null,
-    command: '',
-    output: '',
-    exitCode: null,
-    signal: null,
-    errorMessage: null,
-    pendingExplanation: '',
-    finalExplanation: '',
-    explanationStatus: 'idle',
     startedAt: Date.now(),
     endedAt: null,
+    status: 'translating',
+    statusIndicator: 'examining',
+    plan: null,
+    executionLog: [],
+    pendingResponse: '',
+    finalResponse: '',
+    cdResolvedDisplay: null,
+    errorMessage: null,
   };
-}
-
-function applyTranslation(m: CommandMessage, response: TranslateResponse): CommandMessage {
-  const base: CommandMessage = {
-    ...m,
-    intent: response.intent,
-    explanation: response.explanation,
-    proposedCommand: response.command,
-    requiresConfirmation: response.requiresConfirmation,
-    confidence: response.confidence,
-    isCdCommand: response.isCdCommand,
-    cdTarget: response.cdTarget,
-  };
-
-  // Refusal path — model returned an empty command and isn't asking for cd.
-  // Per the prompt's refusal section, this happens for gibberish, ambiguous,
-  // or harmful requests; the model writes calm refusal copy in `explanation`.
-  // Must come before the requiresConfirmation branch (refusals are typically
-  // low-confidence, which forces requiresConfirmation:true upstream).
-  if (response.command.trim().length === 0 && !response.isCdCommand) {
-    return { ...base, status: 'refused', endedAt: Date.now() };
-  }
-
-  if (response.isCdCommand) {
-    // Stay in 'translating' visually until the orchestrator's setCwd resolves
-    // and dispatches CD_SUCCESS or CD_ERROR.
-    return base;
-  }
-  if (response.requiresConfirmation) {
-    return { ...base, status: 'awaiting-confirmation' };
-  }
-  return { ...base, status: 'running', command: response.command };
 }
 
 function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
@@ -137,86 +97,123 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
     case 'INPUT_SUBMITTED':
       return [...state, newMessage(action.id, action.userInput, action.cwd)];
 
-    case 'TRANSLATION_SUCCESS':
-      return state.map((m) => (m.id === action.id ? applyTranslation(m, action.response) : m));
-
-    case 'TRANSLATION_ERROR':
+    case 'PLAN_RECEIVED':
       return state.map((m) =>
         m.id === action.id
-          ? { ...m, status: 'translation-error', errorMessage: action.message, endedAt: Date.now() }
+          ? { ...m, plan: action.plan, status: 'executing', statusIndicator: 'running' }
+          : m,
+      );
+
+    case 'PLANNING_ERROR':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: 'planning-error',
+              statusIndicator: null,
+              errorMessage: action.message,
+              endedAt: Date.now(),
+            }
+          : m,
+      );
+
+    case 'REFUSED':
+      // Refusal text flows through reveal-smoothing (it's AI-generated prose).
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: 'refused',
+              statusIndicator: null,
+              pendingResponse: action.text,
+              endedAt: Date.now(),
+            }
           : m,
       );
 
     case 'CD_SUCCESS':
+      // Vorlox-generated string — bypass reveal-smoothing; render hard.
       return state.map((m) =>
         m.id === action.id
-          ? { ...m, status: 'cd-success', cdResolvedDisplay: action.displayPath, endedAt: Date.now() }
+          ? {
+              ...m,
+              status: 'cd-success',
+              statusIndicator: null,
+              cdResolvedDisplay: action.displayPath,
+              endedAt: Date.now(),
+            }
           : m,
       );
 
     case 'CD_ERROR':
       return state.map((m) =>
         m.id === action.id
-          ? { ...m, status: 'cd-error', errorMessage: action.message, endedAt: Date.now() }
-          : m,
-      );
-
-    case 'CONFIRMATION_RUN':
-      return state.map((m) =>
-        m.id === action.id ? { ...m, status: 'running', command: m.proposedCommand } : m,
-      );
-
-    case 'CONFIRMATION_CANCEL':
-      return state.map((m) =>
-        m.id === action.id ? { ...m, status: 'cancelled', endedAt: Date.now() } : m,
-      );
-
-    case 'COMMAND_OUTPUT':
-      // Defensive: append regardless of current status. Main is async; if a
-      // late chunk arrives after exit, we still want to capture it.
-      return state.map((m) => (m.id === action.id ? { ...m, output: m.output + action.data } : m));
-
-    case 'COMMAND_EXITED':
-      return state.map((m) =>
-        m.id === action.id
           ? {
               ...m,
-              status: action.signal != null ? 'killed' : 'exited',
-              exitCode: action.code,
-              signal: action.signal,
+              status: 'cd-error',
+              statusIndicator: null,
+              errorMessage: action.message,
               endedAt: Date.now(),
             }
           : m,
       );
 
-    case 'EXPLAIN_DELTA':
-      // Append to pendingExplanation only. The reveal timer advances
-      // finalExplanation toward pending one char per 20ms tick.
+    case 'STATUS_INDICATOR':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, statusIndicator: action.phase } : m,
+      );
+
+    case 'STEP_DONE':
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, executionLog: [...m.executionLog, action.entry] }
+          : m,
+      );
+
+    case 'KILLED':
       return state.map((m) =>
         m.id === action.id
           ? {
               ...m,
-              pendingExplanation: m.pendingExplanation + action.text,
-              explanationStatus: 'streaming',
+              status: 'killed',
+              statusIndicator: null,
+              endedAt: Date.now(),
             }
           : m,
       );
 
-    case 'EXPLAIN_DONE':
-      return state.map((m) =>
-        m.id === action.id ? { ...m, explanationStatus: 'done' } : m,
-      );
-
-    case 'EXPLAIN_ERROR':
-      // On error, catch finalExplanation up to whatever pending text we
-      // have. Don't make the user wait for the reveal animation while
-      // there's an error to read.
+    case 'SYNTHESIZE_DELTA':
+      // First delta hides the status indicator and flips status to streaming.
       return state.map((m) =>
         m.id === action.id
           ? {
               ...m,
-              explanationStatus: 'error',
-              finalExplanation: m.pendingExplanation,
+              status: 'streaming',
+              statusIndicator: null,
+              pendingResponse: m.pendingResponse + action.text,
+            }
+          : m,
+      );
+
+    case 'SYNTHESIZE_DONE':
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, status: 'done', statusIndicator: null, endedAt: Date.now() }
+          : m,
+      );
+
+    case 'SYNTHESIZE_ERROR':
+      // Catch finalResponse up to pendingResponse so the partial text the
+      // user has been reading is fully visible alongside the error footer.
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: 'synthesize-error',
+              statusIndicator: null,
+              errorMessage: action.message,
+              finalResponse: m.pendingResponse,
+              endedAt: Date.now(),
             }
           : m,
       );
@@ -226,7 +223,9 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
   }
 }
 
-function errorMessageForCode(code: BackendErrorCode): string {
+// ── Error message mapping (BackendErrorCode → user-facing copy) ──────────
+
+function planningErrorMessage(code: BackendErrorCode): string {
   switch (code) {
     case 'unauthorized':
       return 'Your session expired. Please sign in again.';
@@ -239,12 +238,28 @@ function errorMessageForCode(code: BackendErrorCode): string {
   }
 }
 
+function synthesizeErrorMessage(code: BackendErrorCode): string {
+  // Synthesize errors arrive AFTER the steps already ran. The execution log
+  // is intact; the user just doesn't get a calm prose summary. Phrase the
+  // copy to acknowledge that.
+  switch (code) {
+    case 'unauthorized':
+      return 'Your session expired. Please sign in again.';
+    case 'rate_limit':
+      return 'The summary is rate-limited. The commands ran; the summary will need a retry.';
+    case 'network':
+      return "Couldn't reach the service for the summary. The commands ran.";
+    case 'server':
+      return "Couldn't generate a summary. The commands ran.";
+  }
+}
+
+// ── Hook ──────────────────────────────────────────────────────────────────
+
 export function useCommands(cwd: CwdInfo | null): {
   messages: CommandMessage[];
   forceScrollVersion: number;
   submitInput: (userInput: string) => Promise<void>;
-  confirmRun: (id: string) => void;
-  cancelRun: (id: string) => void;
   stopCommand: (id: string) => void;
 } {
   const [messages, setMessages] = useState<CommandMessage[]>([]);
@@ -253,32 +268,43 @@ export function useCommands(cwd: CwdInfo | null): {
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
   const { forceSignOut } = useAuth();
 
-  // Custom dispatch: applies the reducer synchronously to the ref AND schedules
-  // a React render. The ref-update timing matters: command-exit listeners read
-  // the latest output via the ref, so the explain payload includes the full
-  // accumulated stdout/stderr (not stale state from one tick ago).
+  // Track which messages have an active step running (so we know which id
+  // to pass to window.api.stopCommand). Map from message-id → currently-
+  // running step's id (the id passed to startCommand). Cleared on step
+  // completion. Used by the public stopCommand() action.
+  const activeStepIdsRef = useRef<Map<string, string>>(new Map());
+
+  // Custom dispatch: applies the reducer synchronously to the ref AND
+  // schedules a React render. Same pattern as Phase 3.4.1 — keeps
+  // messagesRef.current authoritative immediately after dispatch so the
+  // orchestrator can read freshly-applied state without waiting for the
+  // commit/effect cycle.
   const dispatch = useCallback((action: Action) => {
     const next = reduce(messagesRef.current, action);
     messagesRef.current = next;
     setMessages(next);
   }, []);
 
-  // Bounce to login. Triggered when a protected backend call returns 401,
-  // which means the session token is no longer valid. Synchronous: kills
-  // running shell processes, cancels in-flight explain streams, clears the
-  // conversation, and flips auth status. React 18 batches all setState calls
-  // so AuthGate swaps to LoginScreen in a single render — no flash of empty
-  // conversation, no leakage of the previous user's history.
+  // Bounce-to-login helper. Identical contract to Phase 3.4.1's version:
+  // kill running shells, cancel any in-flight synthesize streams, clear
+  // messages, flip auth status. Synchronous so React 18 batches all the
+  // setState calls into a single commit (no flash of empty conversation).
   const bounceToLogin = useCallback((): void => {
     for (const m of messagesRef.current) {
-      if (m.status === 'running') window.api.stopCommand(m.id);
-      if (m.explanationStatus === 'streaming') window.api.explainCancel(m.id);
+      // Kill any running step for this message.
+      const stepId = activeStepIdsRef.current.get(m.id);
+      if (stepId) window.api.stopCommand(stepId);
+      // Cancel any in-flight synthesize stream for this message.
+      if (m.status === 'synthesizing' || m.status === 'streaming') {
+        window.api.synthesizeCancel(m.id);
+      }
     }
+    activeStepIdsRef.current.clear();
     dispatch({ type: 'CLEAR_ALL' });
     forceSignOut();
   }, [dispatch, forceSignOut]);
 
-  // Fetch environment (platform + shell) once on mount; static for app lifetime.
+  // Fetch environment (platform + shell) once on mount.
   useEffect(() => {
     let cancelled = false;
     window.api.getEnvironment().then((env) => {
@@ -289,78 +315,20 @@ export function useCommands(cwd: CwdInfo | null): {
     };
   }, []);
 
-  // Subscribe to command output + exit events from main.
-  useEffect(() => {
-    const offOutput = window.api.onCommandOutput(({ id, data }) => {
-      dispatch({ type: 'COMMAND_OUTPUT', id, data });
-    });
-    const offExit = window.api.onCommandExit(({ id, code, signal }) => {
-      dispatch({ type: 'COMMAND_EXITED', id, code, signal });
-
-      // Explain only on natural exit, not user-initiated kill — telling the
-      // user "this was stopped" adds nothing they don't already know.
-      if (signal != null) return;
-
-      // ref is current after dispatch above (synchronous via custom dispatch)
-      const m = messagesRef.current.find((msg) => msg.id === id);
-      if (!m || m.command.length === 0) return;
-
-      // Skip explain for silent successes — exit 0 with empty output
-      // (e.g. mkdir, touch). The card already shows the command ran cleanly;
-      // a "command ran successfully" sentence would just be noise.
-      if (code === 0 && m.output.trim().length === 0) return;
-
-      window.api.explainStart({
-        messageId: id,
-        command: m.command,
-        output: m.output,
-        exitCode: code ?? 0,
-      });
-    });
-    return () => {
-      offOutput();
-      offExit();
-    };
-  }, [dispatch]);
-
-  // Subscribe to explain SSE events from main.
-  useEffect(() => {
-    const off = window.api.onExplainEvent((event) => {
-      if (event.type === 'delta') {
-        dispatch({ type: 'EXPLAIN_DELTA', id: event.messageId, text: event.text });
-      } else if (event.type === 'done') {
-        dispatch({ type: 'EXPLAIN_DONE', id: event.messageId });
-      } else {
-        // event.type === 'error'
-        if (event.code === 'unauthorized') {
-          bounceToLogin();
-          return;
-        }
-        dispatch({ type: 'EXPLAIN_ERROR', id: event.messageId });
-      }
-    });
-    return () => off();
-  }, [dispatch, bounceToLogin]);
-
-  // Reveal smoothing. Anthropic delivers deltas in semantic chunks of
-  // ~30 chars, which for short explanations reads as a wall of text
-  // dropped at once. This interval reveals one character per 20ms tick
-  // from pendingExplanation into finalExplanation per message — strict
-  // cadence, no acceleration if pending grows. Lag is acceptable.
-  //
-  // The interval no-ops when no message is "behind", so it costs almost
-  // nothing while idle. Cleanup on unmount avoids leaks across the
-  // ConversationScreen unmount/remount cycle (sign-out, 401 bounce).
+  // Reveal-smoothing interval. 20ms tick, advance finalResponse by 1 char
+  // toward pendingResponse for each message that's behind. Idle ticks are
+  // a single .map with no setMessages call (no React re-render). Cleared
+  // on unmount via the return.
   useEffect(() => {
     const intervalId = setInterval(() => {
       const current = messagesRef.current;
       let changed = false;
       const next = current.map((m) => {
-        if (m.finalExplanation.length < m.pendingExplanation.length) {
+        if (m.finalResponse.length < m.pendingResponse.length) {
           changed = true;
           return {
             ...m,
-            finalExplanation: m.pendingExplanation.slice(0, m.finalExplanation.length + 1),
+            finalResponse: m.pendingResponse.slice(0, m.finalResponse.length + 1),
           };
         }
         return m;
@@ -373,6 +341,66 @@ export function useCommands(cwd: CwdInfo | null): {
     return () => clearInterval(intervalId);
   }, []);
 
+  // Synthesize stream subscription. Single listener registered once on mount.
+  useEffect(() => {
+    const off = window.api.onSynthesizeEvent((event) => {
+      if (event.type === 'delta') {
+        dispatch({ type: 'SYNTHESIZE_DELTA', id: event.messageId, text: event.text });
+      } else if (event.type === 'done') {
+        dispatch({ type: 'SYNTHESIZE_DONE', id: event.messageId });
+      } else {
+        // event.type === 'error'
+        if (event.code === 'unauthorized') {
+          bounceToLogin();
+          return;
+        }
+        dispatch({
+          type: 'SYNTHESIZE_ERROR',
+          id: event.messageId,
+          message: synthesizeErrorMessage(event.code),
+        });
+      }
+    });
+    return () => off();
+  }, [dispatch, bounceToLogin]);
+
+  // ── Step execution helper ──────────────────────────────────────────────
+  // Runs one step locally via the existing command-runner IPC. Resolves
+  // when the step exits (naturally or via signal). Returns the captured
+  // ExecutionLogEntry. Throws nothing — even kills resolve normally with
+  // signal set.
+  const runStep = useCallback(
+    (messageId: string, stepIndex: number, step: PlanStep): Promise<ExecutionLogEntry> => {
+      return new Promise<ExecutionLogEntry>((resolve) => {
+        const stepId = `${messageId}::${stepIndex}`;
+        let output = '';
+
+        // Subscribe to output and exit events for THIS step's id.
+        const offOutput = window.api.onCommandOutput(({ id, data }) => {
+          if (id === stepId) output += data;
+        });
+        const offExit = window.api.onCommandExit(({ id, code, signal }) => {
+          if (id !== stepId) return;
+          offOutput();
+          offExit();
+          activeStepIdsRef.current.delete(messageId);
+          resolve({
+            stepIndex,
+            command: step.command,
+            output,
+            exitCode: code,
+            signal,
+          });
+        });
+
+        activeStepIdsRef.current.set(messageId, stepId);
+        window.api.startCommand({ id: stepId, command: step.command });
+      });
+    },
+    [],
+  );
+
+  // ── submitInput: the orchestrator ──────────────────────────────────────
   const submitInput = useCallback(
     async (userInput: string) => {
       const trimmed = userInput.trim();
@@ -383,34 +411,37 @@ export function useCommands(cwd: CwdInfo | null): {
       dispatch({ type: 'INPUT_SUBMITTED', id, userInput: trimmed, cwd: cwd.display });
       setForceScrollVersion((v) => v + 1);
 
-      const result = await window.api.translate({
+      // 1. /api/turn — plan generation
+      const planResult = await window.api.planTurn({
         userInput: trimmed,
         context: {
           cwd: cwd.absolute,
           platform: environment.platform,
           shell: environment.shell,
         },
+        // 2a placeholder: Plan Mode UI doesn't exist yet (Chunk 4 wires it).
+        // Always plan-mode-off for now.
+        planMode: false,
       });
 
-      if (!result.ok) {
-        if (result.code === 'unauthorized') {
+      if (!planResult.ok) {
+        if (planResult.code === 'unauthorized') {
           bounceToLogin();
           return;
         }
-        dispatch({ type: 'TRANSLATION_ERROR', id, message: errorMessageForCode(result.code) });
+        dispatch({
+          type: 'PLANNING_ERROR',
+          id,
+          message: planningErrorMessage(planResult.code),
+        });
         return;
       }
 
-      const response = result.data;
-      dispatch({ type: 'TRANSLATION_SUCCESS', id, response });
+      const plan = planResult.data;
 
-      // Refusal — reducer already moved status to 'refused'; nothing to do.
-      if (response.command.trim().length === 0 && !response.isCdCommand) {
-        return;
-      }
-
-      if (response.isCdCommand) {
-        if (!response.cdTarget) {
+      // 2. cd-special-case
+      if (plan.isCdCommand) {
+        if (!plan.cdTarget) {
           dispatch({
             type: 'CD_ERROR',
             id,
@@ -419,7 +450,7 @@ export function useCommands(cwd: CwdInfo | null): {
           return;
         }
         try {
-          const newCwd = await window.api.setCwd(response.cdTarget);
+          const newCwd = await window.api.setCwd(plan.cdTarget);
           dispatch({ type: 'CD_SUCCESS', id, displayPath: newCwd.display });
         } catch {
           dispatch({
@@ -431,36 +462,66 @@ export function useCommands(cwd: CwdInfo | null): {
         return;
       }
 
-      if (response.requiresConfirmation) {
+      // 3. footgun (Chunk 2a placeholder — render as refusal-style message;
+      //    Chunk 5 replaces this branch with the stripped Plan Card).
+      if (plan.footgunDetected) {
+        dispatch({
+          type: 'REFUSED',
+          id,
+          text: `That action is risky: ${plan.footgunDetected.reason}. Vorlox isn't running it without explicit approval.`,
+        });
         return;
       }
 
-      // Auto-run path. Reducer already moved status='running' and command set.
-      window.api.startCommand({ id, command: response.command });
+      // 4. refusal — model returned empty steps and not a cd intent.
+      if (plan.steps.length === 0) {
+        dispatch({ type: 'REFUSED', id, text: plan.plan });
+        return;
+      }
+
+      // 5. Execute each step locally.
+      dispatch({ type: 'PLAN_RECEIVED', id, plan });
+      const executionLog: ExecutionLogEntry[] = [];
+      let killed = false;
+
+      for (let i = 0; i < plan.steps.length; i += 1) {
+        const entry = await runStep(id, i, plan.steps[i]);
+        dispatch({ type: 'STEP_DONE', id, entry });
+        executionLog.push(entry);
+        if (entry.signal != null) {
+          killed = true;
+          break;
+        }
+      }
+
+      if (killed) {
+        dispatch({ type: 'KILLED', id });
+        return;
+      }
+
+      // 6. Synthesize the response prose. (2a fall-through: ignore
+      //    displayMode and always synthesize. Chunk 2b adds the verbatim
+      //    branch that renders raw output instead.)
+      dispatch({ type: 'STATUS_INDICATOR', id, phase: 'reviewing' });
+      window.api.synthesizeStart({
+        messageId: id,
+        planId: plan.planId,
+        intent: plan.intent,
+        plan: plan.plan,
+        executionLog,
+      });
+      // Stream events arrive via the onSynthesizeEvent listener and drive
+      // SYNTHESIZE_DELTA / SYNTHESIZE_DONE / SYNTHESIZE_ERROR dispatches.
+      // No further action needed in this orchestrator.
     },
-    [cwd, environment, dispatch, bounceToLogin],
+    [cwd, environment, dispatch, bounceToLogin, runStep],
   );
 
-  const confirmRun = useCallback(
-    (id: string) => {
-      const m = messagesRef.current.find((msg) => msg.id === id);
-      if (!m || m.status !== 'awaiting-confirmation') return;
-      dispatch({ type: 'CONFIRMATION_RUN', id });
-      window.api.startCommand({ id, command: m.proposedCommand });
-    },
-    [dispatch],
-  );
-
-  const cancelRun = useCallback(
-    (id: string) => {
-      dispatch({ type: 'CONFIRMATION_CANCEL', id });
-    },
-    [dispatch],
-  );
-
-  const stopCommand = useCallback((id: string) => {
-    window.api.stopCommand(id);
+  // Public stop: cancels the currently-running step for the given message.
+  const stopCommand = useCallback((messageId: string) => {
+    const stepId = activeStepIdsRef.current.get(messageId);
+    if (stepId) window.api.stopCommand(stepId);
   }, []);
 
-  return { messages, forceScrollVersion, submitInput, confirmRun, cancelRun, stopCommand };
+  return { messages, forceScrollVersion, submitInput, stopCommand };
 }

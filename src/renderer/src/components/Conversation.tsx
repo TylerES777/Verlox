@@ -6,17 +6,15 @@ interface ConversationProps {
   messages: CommandMessage[];
   forceScrollVersion: number;
   onStop: (id: string) => void;
-  onConfirm: (id: string) => void;
-  onCancel: (id: string) => void;
   onBackgroundClick?: (event: MouseEvent<HTMLDivElement>) => void;
 }
 
+// Phase 4: Plan Card lands in Chunk 4; for now the conversation only needs
+// onStop. onConfirm / onCancel will return when the Plan Card is wired.
 export function Conversation({
   messages,
   forceScrollVersion,
   onStop,
-  onConfirm,
-  onCancel,
   onBackgroundClick,
 }: ConversationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -52,17 +50,17 @@ export function Conversation({
     <div
       ref={containerRef}
       onMouseUp={onBackgroundClick}
-      className="flex-1 overflow-y-auto px-6 py-4"
+      className="flex-1 overflow-y-auto"
     >
-      {messages.map((m) => (
-        <Message
-          key={m.id}
-          message={m}
-          onStop={onStop}
-          onConfirm={onConfirm}
-          onCancel={onCancel}
-        />
-      ))}
+      {/* Reading-column constraint. Document feel — content stays in a 580px
+          column centered in the card, regardless of how wide the card is on
+          large monitors. Padding gives breathing room above/below the
+          message stack inside the scroll viewport. */}
+      <div className="mx-auto max-w-reading px-6 py-4">
+        {messages.map((m) => (
+          <Message key={m.id} message={m} onStop={onStop} />
+        ))}
+      </div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import type { AuthErrorCode } from '@shared/types';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -24,6 +24,30 @@ function errorMessage(code: AuthErrorCode, mode: Mode): string {
       return 'Something went wrong. Please try again.';
   }
 }
+
+// Inline field wrapper. Label sits above the input; the input is a boxed
+// 0.5px hairline-bordered control that darkens to ink on focus (no glow,
+// no ring per the brief).
+function Field({
+  label,
+  children,
+  hint,
+}: {
+  label: string;
+  children: ReactNode;
+  hint?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[12px] text-ink-label">{label}</span>
+      {children}
+      {hint && <p className="mt-1.5 text-[11px] text-ink-micro">{hint}</p>}
+    </label>
+  );
+}
+
+const inputClass =
+  'w-full rounded-lg border-[0.5px] border-input-border px-3 py-2.5 text-[14px] text-ink focus:border-ink focus:outline-none disabled:opacity-60';
 
 export function LoginScreen() {
   const { signIn, signUp, lastSignOutReason } = useAuth();
@@ -91,84 +115,122 @@ export function LoginScreen() {
       ? 'Create account'
       : 'Sign in';
 
+  // Auth screens are full-bleed white. No card-in-window wrapper:
+  // the only content is a 360px form, and any card around it either
+  // reads as hollow (when wide) or as a mobile-strip silhouette (when
+  // narrow). Card-in-window resumes for the conversation screen.
   return (
-    <div className="flex h-full w-full items-center justify-center bg-off-white">
-      <div className="flex w-full max-w-sm flex-col items-stretch px-6">
-        <h1
-          className="mb-12 self-center font-soft text-gray-400"
-          style={{ fontSize: '32px', fontWeight: 200, letterSpacing: '0.15em' }}
-        >
-          Vorlox
-        </h1>
+    <div className="flex h-full w-full flex-col bg-card">
+      {/* Wordmark header */}
+      <div className="flex justify-center pb-2 pt-8">
+        <span className="font-serif text-[17px] font-medium text-ink">Vorlox</span>
+      </div>
 
-        {showSessionExpiredBanner && (
-          <p className="mb-4 text-[13px] leading-relaxed text-gray-500">
-            Your session expired. Please sign in again.
-          </p>
-        )}
-
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => {
-              dismissBanner();
-              setEmail(e.target.value);
-            }}
-            placeholder="Email"
-            disabled={pending}
-            autoComplete="email"
-            autoFocus
-            className="rounded-lg border border-transparent bg-[#F5F5F2] px-4 py-3 text-[14px] leading-6 text-gray-700 placeholder:text-gray-400 focus:border-gray-300 focus:outline-none disabled:opacity-60"
-          />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => {
-              dismissBanner();
-              setPassword(e.target.value);
-            }}
-            placeholder="Password"
-            disabled={pending}
-            autoComplete={isSignUp ? 'new-password' : 'current-password'}
-            className="rounded-lg border border-transparent bg-[#F5F5F2] px-4 py-3 text-[14px] leading-6 text-gray-700 placeholder:text-gray-400 focus:border-gray-300 focus:outline-none disabled:opacity-60"
-          />
-          {isSignUp && (
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => {
-              dismissBanner();
-              setConfirmPassword(e.target.value);
-            }}
-              placeholder="Confirm password"
-              disabled={pending}
-              autoComplete="new-password"
-              className="rounded-lg border border-transparent bg-[#F5F5F2] px-4 py-3 text-[14px] leading-6 text-gray-700 placeholder:text-gray-400 focus:border-gray-300 focus:outline-none disabled:opacity-60"
-            />
+      {/* Centered welcome + form */}
+      <div className="flex flex-1 flex-col items-center justify-center px-8">
+        <div className="w-full max-w-auth-form">
+          {showSessionExpiredBanner && (
+            <div className="mb-6 flex items-center gap-2.5 rounded-lg border-[0.5px] border-subtle-border bg-surface-subtle px-3.5 py-2.5">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber" />
+              <span className="text-[13px] text-ink-body">
+                Your session expired. Please sign in again.
+              </span>
+            </div>
           )}
 
-          {error && (
-            <div className="text-[13px] leading-5 text-gray-500">{error}</div>
-          )}
-
-          <button
-            type="submit"
-            disabled={pending}
-            className="mt-2 rounded-lg bg-gray-700 px-4 py-3 text-[14px] font-medium text-off-white transition-opacity hover:opacity-90 disabled:opacity-60"
+          <h1
+            className="font-serif text-[32px] font-normal text-ink"
+            style={{ letterSpacing: '-0.01em' }}
           >
-            {submitLabel}
-          </button>
-        </form>
+            {isSignUp ? 'Create your account.' : 'Welcome back.'}
+          </h1>
+          <p className="mb-8 mt-2 text-[14px] text-ink-label">
+            {isSignUp ? 'Set up your account in a moment.' : 'Sign in to continue.'}
+          </p>
 
-        <button
-          type="button"
-          onClick={toggleMode}
-          disabled={pending}
-          className="mt-6 self-center text-[13px] text-gray-400 hover:text-gray-600 focus:outline-none disabled:opacity-60"
-        >
-          {isSignUp ? 'Already have an account? Sign in' : 'New here? Create an account'}
-        </button>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <Field label="Email">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => {
+                  dismissBanner();
+                  setEmail(e.target.value);
+                }}
+                disabled={pending}
+                autoComplete="email"
+                autoFocus
+                className={inputClass}
+              />
+            </Field>
+
+            <Field
+              label="Password"
+              hint={isSignUp ? 'At least 8 characters.' : undefined}
+            >
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => {
+                  dismissBanner();
+                  setPassword(e.target.value);
+                }}
+                disabled={pending}
+                autoComplete={isSignUp ? 'new-password' : 'current-password'}
+                className={inputClass}
+              />
+            </Field>
+
+            {isSignUp && (
+              <Field label="Confirm password">
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => {
+                    dismissBanner();
+                    setConfirmPassword(e.target.value);
+                  }}
+                  disabled={pending}
+                  autoComplete="new-password"
+                  className={inputClass}
+                />
+              </Field>
+            )}
+
+            {error && (
+              <p className="text-[13px] leading-relaxed text-ink-body">{error}</p>
+            )}
+
+            <button
+              type="submit"
+              disabled={pending}
+              className="w-full rounded-lg bg-ink px-4 py-[11px] text-[14px] font-medium text-white hover:opacity-90 focus:outline-none disabled:opacity-60"
+            >
+              {submitLabel}
+            </button>
+          </form>
+
+          <div className="mt-6 flex justify-center">
+            <button
+              type="button"
+              onClick={toggleMode}
+              disabled={pending}
+              className="text-[13px] focus:outline-none disabled:opacity-60"
+            >
+              <span className="text-ink-label">
+                {isSignUp ? 'Already have an account? ' : 'New to Vorlox? '}
+              </span>
+              <span className="text-ink underline decoration-[0.5px] underline-offset-2">
+                {isSignUp ? 'Sign in' : 'Create an account'}
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer microcopy */}
+      <div className="flex justify-center pb-8">
+        <span className="text-[11px] text-ink-micro">A calm, conversational terminal.</span>
       </div>
     </div>
   );

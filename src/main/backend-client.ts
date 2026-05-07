@@ -4,10 +4,10 @@ import type {
   AuthResult,
   AuthUser,
   BackendErrorCode,
-  ExplainRequest,
-  TranslateRequest,
-  TranslateResponse,
-  TranslateResultWire,
+  ExecutionLogEntry,
+  PlanResponse,
+  TurnInput,
+  TurnResultWire,
 } from '@shared/types';
 import { BACKEND_URL } from './config.js';
 import { clearToken, getToken, setToken } from './auth-store.js';
@@ -174,17 +174,17 @@ function extractMessage(json: unknown): string | undefined {
   return undefined;
 }
 
-// --- AI: /api/translate (synchronous JSON) ---------------------------------
+// --- AI: /api/turn (synchronous JSON) --------------------------------------
 
-export async function translate(request: TranslateRequest): Promise<TranslateResultWire> {
+export async function planTurn(input: TurnInput): Promise<TurnResultWire> {
   let result: PostResult;
   try {
-    result = await postJson('/api/translate', request, { auth: true });
+    result = await postJson('/api/turn', input, { auth: true });
   } catch {
     return { ok: false, code: 'network' };
   }
   if (result.status === 200) {
-    const data = result.json as TranslateResponse | null;
+    const data = result.json as PlanResponse | null;
     if (!data || typeof data !== 'object') return { ok: false, code: 'server' };
     return { ok: true, data };
   }
@@ -196,38 +196,44 @@ export async function translate(request: TranslateRequest): Promise<TranslateRes
   return { ok: false, code: 'server' };
 }
 
-// --- AI: /api/explain (SSE stream) -----------------------------------------
+// --- AI: /api/synthesize (SSE stream) --------------------------------------
+//
+// Backend's SSE protocol changed in Phase 4 Chunk 1: each `data:` line is
+// now a JSON-encoded object with a `type` field (`delta`, `done`, `error`),
+// instead of Phase 3.3's raw-text-with-sentinel-strings approach. This
+// parser JSON.parses every data event.
 
-export type ExplainStreamEvent =
+export type SynthesizeStreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'done' }
   | { type: 'error'; code: BackendErrorCode };
 
+interface SynthesizeRequestBody {
+  planId: string;
+  intent: string;
+  plan: string;
+  executionLog: ExecutionLogEntry[];
+}
+
 /**
- * Connects to /api/explain and yields events as they arrive. The caller
- * passes an AbortSignal to cancel mid-stream. The generator always
- * terminates with either a 'done' or 'error' event before returning, OR
- * returns silently on AbortSignal cancellation.
+ * Connects to /api/synthesize and yields events as they arrive. The
+ * caller passes an AbortSignal to cancel mid-stream. The generator
+ * always terminates with either a 'done' or 'error' event before
+ * returning, OR returns silently on AbortSignal cancellation.
  */
-export async function* explain(
-  request: ExplainRequest,
+export async function* synthesize(
+  request: SynthesizeRequestBody,
   signal: AbortSignal,
-): AsyncGenerator<ExplainStreamEvent, void, void> {
+): AsyncGenerator<SynthesizeStreamEvent, void, void> {
   const token = getToken();
   if (!token) {
     yield { type: 'error', code: 'unauthorized' };
     return;
   }
 
-  const body = JSON.stringify({
-    command: request.command,
-    output: request.output,
-    exitCode: request.exitCode,
-  });
-
   let response: Response;
   try {
-    response = await fetch(`${BACKEND_URL}/api/explain`, {
+    response = await fetch(`${BACKEND_URL}/api/synthesize`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -235,7 +241,7 @@ export async function* explain(
         Authorization: `Bearer ${token}`,
         Origin: DESKTOP_ORIGIN,
       },
-      body,
+      body: JSON.stringify(request),
       signal,
     });
   } catch (err) {
@@ -282,21 +288,29 @@ export async function* explain(
           else if (line.startsWith('data:')) dataLines.push(line.slice(5));
         }
         if (dataLines.length === 0) continue;
-        const data = dataLines.join('\n');
+        const dataText = dataLines.join('\n');
 
-        if (data === '[DONE]') {
+        // Each data is a JSON-encoded event object.
+        let parsed: { type?: unknown; text?: unknown; message?: unknown };
+        try {
+          parsed = JSON.parse(dataText);
+        } catch {
+          // Malformed event — skip rather than fail the whole stream.
+          continue;
+        }
+
+        if (parsed.type === 'delta' && typeof parsed.text === 'string') {
+          yield { type: 'delta', text: parsed.text };
+        } else if (parsed.type === 'done') {
           yield { type: 'done' };
           return;
-        }
-        if (data.startsWith('[ERROR]')) {
-          // Backend signaled a mid-stream error after SSE headers were
-          // already sent. Surface as a generic server error — the message
-          // text is calm by construction (we wrote it) but the renderer
-          // already has a calm error renderer for this code path.
+        } else if (parsed.type === 'error') {
+          // Backend signaled a mid-stream error after SSE headers were sent.
+          // Body's `message` is calm by construction (mapAnthropicError);
+          // we just lift the type and surface the BackendErrorCode.
           yield { type: 'error', code: 'server' };
           return;
         }
-        yield { type: 'delta', text: data };
       }
     }
   } catch (err) {
@@ -305,6 +319,6 @@ export async function* explain(
     return;
   }
 
-  // Stream ended without an explicit [DONE] — treat as done.
+  // Stream ended without an explicit done event — treat as done.
   yield { type: 'done' };
 }

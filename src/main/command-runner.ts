@@ -6,6 +6,19 @@ import { getCwd } from './store';
 
 const running = new Map<string, ChildProcess>();
 
+// Set of command ids that have been kill-requested by the user via
+// stopCommand(). Cross-platform "killed by user" tracking — Windows's
+// TerminateProcess (via taskkill /F) doesn't translate to a Unix signal
+// name, so Node reports {code: 1, signal: null} on a successful taskkill,
+// indistinguishable from a natural exit. Tracking the request explicitly
+// in this Set lets finish() override signal to a non-null sentinel
+// (`'SIGTERM'`) when sending the CommandExit IPC, so the renderer's
+// `signal != null = killed-by-user` check works the same on every platform.
+//
+// Lifecycle: added in stopCommand(), removed in finish() (or manually if
+// the process exited naturally between request and reaping).
+const killRequested = new Set<string>();
+
 function shellFor(): string | true {
   if (process.platform === 'win32') {
     return process.env.COMSPEC || 'cmd.exe';
@@ -69,7 +82,15 @@ export function startCommand(
   const finish = (code: number | null, signal: string | null) => {
     if (!running.has(id)) return;
     running.delete(id);
-    send(IpcChannels.CommandExit, { id, code, signal });
+    const wasKilled = killRequested.has(id);
+    killRequested.delete(id);
+    // Cross-platform "killed by user" sentinel. On POSIX the actual signal
+    // (e.g. 'SIGTERM') is preserved when present. On Windows, taskkill /F
+    // produces {signal: null, code: <usually 1>} even on success — we
+    // override to 'SIGTERM' when wasKilled so the renderer's
+    // `signal != null` check identifies the kill correctly.
+    const effectiveSignal = wasKilled ? (signal ?? 'SIGTERM') : signal;
+    send(IpcChannels.CommandExit, { id, code, signal: effectiveSignal });
   };
 
   child.on('exit', (code, signal) => finish(code, signal));
@@ -86,6 +107,7 @@ export function startCommand(
 export function stopCommand(id: string): void {
   const child = running.get(id);
   if (!child) return;
+  killRequested.add(id);
   killProcess(child);
 }
 
@@ -94,6 +116,7 @@ export function killAll(): void {
     killProcess(child);
   }
   running.clear();
+  killRequested.clear();
 }
 
 // Synchronous variant for use during app shutdown. The async killProcess above
@@ -125,4 +148,5 @@ export function killAllSync(): void {
     killProcessSync(child);
   }
   running.clear();
+  killRequested.clear();
 }

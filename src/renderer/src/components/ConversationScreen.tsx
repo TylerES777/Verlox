@@ -5,16 +5,51 @@ import { Input, type InputHandle } from './Input';
 import { useCwd } from '../hooks/useCwd';
 import { useCommands } from '../hooks/useCommands';
 
+const EXAMPLES = [
+  'List the files in this folder',
+  'Go to my Documents folder',
+  'Show me what’s running on this machine',
+];
+
+interface EmptyStateProps {
+  onExampleClick: (prompt: string) => void;
+}
+
+function EmptyState({ onExampleClick }: EmptyStateProps) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center px-8">
+      <h1
+        className="text-center font-serif text-[28px] italic font-normal text-ink"
+        style={{ letterSpacing: '-0.005em' }}
+      >
+        What would you like to do?
+      </h1>
+      <p className="mt-3 max-w-[460px] text-center text-[14px] leading-relaxed text-ink-hint">
+        Type what you&rsquo;d like to do, in plain English. Vorlox will translate it to a
+        command and ask before running anything risky.
+      </p>
+      <div className="mt-8 flex w-full max-w-[380px] flex-col gap-2">
+        {EXAMPLES.map((prompt) => (
+          <button
+            key={prompt}
+            type="button"
+            onClick={() => onExampleClick(prompt)}
+            className="rounded-lg border-[0.5px] border-subtle-border bg-surface-faint px-3.5 py-2.5 text-left text-[13.5px] text-ink-body hover:bg-surface-subtle focus:outline-none"
+          >
+            {prompt}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function ConversationScreen() {
   const { cwd } = useCwd();
-  const { messages, forceScrollVersion, submitInput, confirmRun, cancelRun, stopCommand } =
-    useCommands(cwd);
+  const { messages, forceScrollVersion, submitInput, stopCommand } = useCommands(cwd);
   const inputRef = useRef<InputHandle>(null);
 
-  // Belt-and-suspenders for the keyboard flow: the user clicked Sign in (or
-  // the avatar's Sign out → ... → another sign-in), focus was on a button
-  // that just unmounted. Input.tsx also auto-focuses on its own mount, but
-  // explicitly focusing here means we don't depend on that timing detail.
+  // Focus input on mount (post-sign-in keyboard flow).
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
@@ -28,17 +63,23 @@ export function ConversationScreen() {
   };
 
   return (
-    <div className="flex h-full w-full flex-col bg-off-white text-gray-700">
-      <Header displayPath={cwd?.display ?? ''} />
-      <Conversation
-        messages={messages}
-        forceScrollVersion={forceScrollVersion}
-        onStop={stopCommand}
-        onConfirm={confirmRun}
-        onCancel={cancelRun}
-        onBackgroundClick={handleConversationClick}
-      />
-      <Input ref={inputRef} onSubmit={submitInput} />
+    <div className="h-full w-full bg-canvas p-6">
+      <div className="mx-auto flex h-full max-w-app flex-col overflow-hidden rounded-[14px] bg-card shadow-card">
+        <Header displayPath={cwd?.display ?? ''} />
+        {messages.length === 0 ? (
+          <EmptyState
+            onExampleClick={(prompt) => inputRef.current?.setValue(prompt)}
+          />
+        ) : (
+          <Conversation
+            messages={messages}
+            forceScrollVersion={forceScrollVersion}
+            onStop={stopCommand}
+            onBackgroundClick={handleConversationClick}
+          />
+        )}
+        <Input ref={inputRef} onSubmit={submitInput} />
+      </div>
     </div>
   );
 }

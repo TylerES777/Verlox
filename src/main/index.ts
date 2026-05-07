@@ -4,9 +4,9 @@ import { IpcChannels } from '@shared/ipc-channels';
 import type {
   AuthCredentials,
   CommandStartPayload,
-  ExplainEvent,
-  ExplainRequest,
-  TranslateRequest,
+  SynthesizeEvent,
+  SynthesizeRequest,
+  TurnInput,
 } from '@shared/types';
 import { getCwd, initCwd, setCwd } from './store';
 import { killAllSync, startCommand, stopCommand } from './command-runner';
@@ -17,9 +17,14 @@ Menu.setApplicationMenu(null);
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 1000,
-    height: 700,
-    center: true,
+    // Default size used if the window can't maximize (rare) and as the
+    // size the user can shrink to via "restore". Min dimensions enforce
+    // a usable layout floor — below 800×600 the card-in-window aesthetic
+    // and 580px reading column would crowd against each other.
+    width: 1200,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
     title: 'Vorlox',
     show: false,
     autoHideMenuBar: true,
@@ -32,6 +37,10 @@ function createWindow(): void {
   });
 
   win.setMenu(null);
+
+  // Open maximized to match native desktop-app behavior. Users can
+  // unmaximize / resize freely (resizable defaults to true on Electron).
+  win.maximize();
 
   // DEV-ONLY: auto-open DevTools detached. We strip our app menu (calm
   // aesthetic), which removes the default View > Toggle DevTools entry
@@ -96,43 +105,51 @@ ipcMain.handle(IpcChannels.EnvGet, () => getEnvironment());
 
 // --- AI handlers ----------------------------------------------------------
 
-ipcMain.handle(IpcChannels.BackendTranslate, (_e, request: TranslateRequest) =>
-  backend.translate(request),
+ipcMain.handle(IpcChannels.BackendPlanTurn, (_e, input: TurnInput) =>
+  backend.planTurn(input),
 );
 
-// One AbortController per in-flight explain stream, keyed by message id.
+// One AbortController per in-flight synthesize stream, keyed by message id.
 // Cleaned up when the stream completes or is cancelled.
-const explainAborts = new Map<string, AbortController>();
+const synthesizeAborts = new Map<string, AbortController>();
 
-ipcMain.on(IpcChannels.BackendExplainStart, async (event, request: ExplainRequest) => {
+ipcMain.on(IpcChannels.BackendSynthesizeStart, async (event, request: SynthesizeRequest) => {
   const { messageId } = request;
 
   // If a stream for this message id is already running (rapid retry?),
   // abort the old one before starting fresh.
-  explainAborts.get(messageId)?.abort();
+  synthesizeAborts.get(messageId)?.abort();
 
   const controller = new AbortController();
-  explainAborts.set(messageId, controller);
+  synthesizeAborts.set(messageId, controller);
 
   try {
-    for await (const ev of backend.explain(request, controller.signal)) {
+    for await (const ev of backend.synthesize(
+      {
+        planId: request.planId,
+        intent: request.intent,
+        plan: request.plan,
+        executionLog: request.executionLog,
+      },
+      controller.signal,
+    )) {
       if (event.sender.isDestroyed()) break;
-      const wire: ExplainEvent =
+      const wire: SynthesizeEvent =
         ev.type === 'delta'
           ? { messageId, type: 'delta', text: ev.text }
           : ev.type === 'done'
             ? { messageId, type: 'done' }
             : { messageId, type: 'error', code: ev.code };
-      event.sender.send(IpcChannels.BackendExplainEvent, wire);
+      event.sender.send(IpcChannels.BackendSynthesizeEvent, wire);
       if (ev.type === 'done' || ev.type === 'error') break;
     }
   } finally {
-    explainAborts.delete(messageId);
+    synthesizeAborts.delete(messageId);
   }
 });
 
-ipcMain.on(IpcChannels.BackendExplainCancel, (_event, messageId: string) => {
-  explainAborts.get(messageId)?.abort();
+ipcMain.on(IpcChannels.BackendSynthesizeCancel, (_event, messageId: string) => {
+  synthesizeAborts.get(messageId)?.abort();
 });
 
 app.whenReady().then(() => {

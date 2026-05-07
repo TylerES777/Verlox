@@ -2,6 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Locked Vorlox palette. Mirrors tailwind.config.js — keep them in sync.
+   Tailwind utilities cover most use sites; CSS variables are here for
+   the body background, components that need raw values, and any future
+   styled blocks where a Tailwind class would be unwieldy. */
+:root {
+  --color-canvas: #f2f3f5;
+  --color-card: #ffffff;
+  --color-ink: #0f0f0f;
+  --color-ink-body: #4a4a4a;
+  --color-ink-label: #6a6a6a;
+  --color-ink-hint: #8a8a8a;
+  --color-ink-micro: #a8a8a8;
+  --color-hairline: rgba(0, 0, 0, 0.06);
+  --color-input-border: #d8d8d8;
+  --color-subtle-border: #eaeaec;
+  --color-surface-subtle: #f7f7f8;
+  --color-surface-faint: #fafafb;
+  --color-amber: #c8a04a;
+}
+
 html,
 body,
 #root {
@@ -10,14 +30,20 @@ body,
 
 body {
   margin: 0;
-  background-color: #fafaf7;
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
   font-family:
+    'Inter',
     -apple-system,
     BlinkMacSystemFont,
-    'Inter',
     'Segoe UI',
     system-ui,
     sans-serif;
+  font-feature-settings:
+    'cv02',
+    'cv03',
+    'cv04',
+    'cv11';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

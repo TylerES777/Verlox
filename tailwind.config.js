@@ -4,18 +4,47 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Phase 0–3.4 legacy alias. Kept so any unconverted className still
+        // resolves; the visible site of bg-off-white shrinks to zero by
+        // the end of Chunk 5 and the alias can be removed in Phase 3.6.
         'off-white': '#FAFAF7',
+
+        // Phase 3.5 locked palette. Names mirror src/index.css CSS vars.
+        canvas: '#F2F3F5',
+        card: '#FFFFFF',
+        ink: {
+          DEFAULT: '#0F0F0F',
+          body: '#4A4A4A',
+          label: '#6A6A6A',
+          hint: '#8A8A8A',
+          micro: '#A8A8A8',
+        },
+        hairline: 'rgba(0,0,0,0.06)',
+        'input-border': '#D8D8D8',
+        'subtle-border': '#EAEAEC',
+        'surface-subtle': '#F7F7F8',
+        'surface-faint': '#FAFAFB',
+        amber: '#C8A04A',
       },
       fontFamily: {
+        // `soft` is the existing alias — kept stable so Phase 0–3.4 className
+        // usages don't break. The underlying stack is now Inter-first; the
+        // system fallbacks remain in case the Google Font load fails (offline
+        // dev, network blip, etc.) so the app stays legible.
         soft: [
+          'Inter',
           '-apple-system',
           'BlinkMacSystemFont',
-          'Inter',
           '"Segoe UI"',
           'system-ui',
           'sans-serif',
         ],
+        // Source Serif 4 — for display headings, the empty-state heading,
+        // timestamps, the wordmark, and the translating ellipsis.
+        serif: ['"Source Serif 4"', 'Georgia', 'Cambria', 'serif'],
+        // JetBrains Mono — for command, output, cwd, all monospace blocks.
         mono: [
+          '"JetBrains Mono"',
           'ui-monospace',
           '"SF Mono"',
           'Menlo',
@@ -26,6 +55,23 @@ export default {
           '"Courier New"',
           'monospace',
         ],
+      },
+      boxShadow: {
+        // Soft elevation on the main app card. Two-layer shadow: a tight
+        // 1px contact shadow plus a wider lifted shadow.
+        card: '0 1px 2px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.05)',
+        // Sign-out popover.
+        popover: '0 4px 16px rgba(0,0,0,0.08)',
+      },
+      maxWidth: {
+        reading: '580px',
+        'auth-form': '360px',
+        // Conversation screen card cap. 580px reading column lives inside,
+        // surrounded by enough white card to feel like a document.
+        // Auth screens are full-bleed white (no card) — the only content
+        // is a 360px form and any card around it reads as hollow or, when
+        // shrunk to fit, as a tall mobile strip on desktop.
+        app: '1200px',
       },
     },
   },

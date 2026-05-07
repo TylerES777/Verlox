@@ -1,14 +1,21 @@
 // Calm splash shown during initial auth hydration (token check + /me call).
-// Just the wordmark on the off-white background — no spinner, no progress bar.
+// Full-bleed white with the wordmark at top and footer microcopy at bottom,
+// matching the LoginScreen shell so the transition from hydrating →
+// unauthenticated only fills in the welcome block + form, no layout jump.
+//
+// No card-in-window wrapper here: auth screens are full-bleed because the
+// only content is small and centered. Card-in-window resumes for the
+// conversation screen where content fills the card horizontally.
 export function AuthLoading() {
   return (
-    <div className="flex h-full w-full items-center justify-center bg-off-white">
-      <h1
-        className="font-soft text-gray-400"
-        style={{ fontSize: '32px', fontWeight: 200, letterSpacing: '0.15em' }}
-      >
-        Vorlox
-      </h1>
+    <div className="flex h-full w-full flex-col bg-card">
+      <div className="flex justify-center pb-2 pt-8">
+        <span className="font-serif text-[17px] font-medium text-ink">Vorlox</span>
+      </div>
+      <div className="flex-1" />
+      <div className="flex justify-center pb-8">
+        <span className="text-[11px] text-ink-micro">A calm, conversational terminal.</span>
+      </div>
     </div>
   );
 }

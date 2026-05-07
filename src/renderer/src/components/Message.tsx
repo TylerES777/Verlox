@@ -1,128 +1,79 @@
 import type { CommandMessage } from '../hooks/useCommands';
-import { TranslationCard } from './TranslationCard';
+import { StatusIndicator } from './StatusIndicator';
 
 interface MessageProps {
   message: CommandMessage;
   onStop: (id: string) => void;
-  onConfirm: (id: string) => void;
-  onCancel: (id: string) => void;
 }
 
-function UserInputEcho({ text }: { text: string }) {
-  return <p className="mb-2 text-[13px] leading-relaxed text-gray-500">{text}</p>;
-}
-
-function OutputBlock({ output }: { output: string }) {
-  if (output.length === 0) return null;
-  return (
-    <pre className="m-0 mt-3 whitespace-pre-wrap break-words font-mono text-[13px] leading-[1.6] text-gray-600">
-      {output}
-    </pre>
-  );
-}
-
-export function Message({ message, onStop, onConfirm, onCancel }: MessageProps) {
-  // ── Pre-translation states render directly (no command, no output) ────────
-
-  if (message.status === 'translating') {
-    return (
-      <div className="mb-6">
-        <UserInputEcho text={message.userInput} />
-        <div className="text-[13px] text-gray-400">…</div>
-      </div>
-    );
-  }
-
-  if (message.status === 'translation-error') {
-    return (
-      <div className="mb-6">
-        <UserInputEcho text={message.userInput} />
-        <p className="text-[14px] leading-relaxed text-gray-500">
-          {message.errorMessage ?? 'Something went wrong. Please try again.'}
-        </p>
-      </div>
-    );
-  }
-
-  // The model declined to translate (gibberish / harmful / too ambiguous).
-  // The model's calm refusal text lives in `explanation`. No command box,
-  // no buttons — there's nothing to run.
-  if (message.status === 'refused') {
-    return (
-      <div className="mb-6">
-        <UserInputEcho text={message.userInput} />
-        <p className="text-[14px] leading-relaxed text-gray-700">
-          {message.explanation}
-        </p>
-      </div>
-    );
-  }
-
-  if (message.status === 'cd-success') {
-    return (
-      <div className="mb-6">
-        <UserInputEcho text={message.userInput} />
-        <p className="text-[14px] leading-relaxed text-gray-700">
-          Switched to {message.cdResolvedDisplay ?? message.cdTarget ?? '…'}.
-        </p>
-      </div>
-    );
-  }
-
-  if (message.status === 'cd-error') {
-    return (
-      <div className="mb-6">
-        <UserInputEcho text={message.userInput} />
-        <p className="text-[14px] leading-relaxed text-gray-500">
-          {message.errorMessage ?? "Couldn't find that folder. Could you double-check the path?"}
-        </p>
-      </div>
-    );
-  }
-
-  // ── awaiting-confirmation | cancelled | running | exited | killed ─────────
-
-  const commandText = message.command.length > 0 ? message.command : message.proposedCommand;
-  const showOutput =
-    message.status === 'running' ||
-    message.status === 'exited' ||
-    message.status === 'killed';
+// Phase 4 Chunk 2a: minimal rendering only.
+// Branches on status; no details panel, no StepRow, no peek toggle, no
+// verbatim raw-output panel, no Plan Card. Those land in 2b / 3 / 4 / 5.
+//
+// Visual hierarchy per turn:
+//   [intent in Source Serif 22px]      ← user's natural-language input
+//   [optional status indicator]         ← italic Source Serif, gray
+//   [optional response prose]           ← Inter 15px, reveal-smoothed
+//   [optional error / cd / killed line] ← context-specific footers
+export function Message({ message, onStop }: MessageProps) {
+  const { status, statusIndicator, finalResponse, errorMessage } = message;
 
   return (
-    <div className="mb-6">
-      <UserInputEcho text={message.userInput} />
+    <article className="mb-12">
+      <h2
+        className="mb-3 font-serif text-[22px] font-normal text-ink"
+        style={{ letterSpacing: '-0.005em' }}
+      >
+        {message.userInput}
+      </h2>
 
-      <TranslationCard
-        explanation={message.explanation}
-        command={commandText}
-        showStopButton={message.status === 'running'}
-        onStop={() => onStop(message.id)}
-        showButtons={message.status === 'awaiting-confirmation'}
-        onConfirm={() => onConfirm(message.id)}
-        onCancel={() => onCancel(message.id)}
-        showCancelledLabel={message.status === 'cancelled'}
-      />
+      {/* Status indicator — visible during translating / executing /
+          synthesizing phases. Hidden as soon as the response starts
+          streaming or any terminal status is reached. */}
+      {statusIndicator !== null && <StatusIndicator phase={statusIndicator} />}
 
-      {showOutput && <OutputBlock output={message.output} />}
-
-      {message.status === 'killed' && (
-        <div className="mt-3 text-[12px] text-gray-400">stopped</div>
-      )}
-
-      {message.status === 'exited' && message.finalExplanation.length > 0 && (
-        <p className="mt-3 whitespace-pre-wrap text-[14px] leading-relaxed text-gray-500">
-          {message.finalExplanation}
+      {/* AI response prose — visible in streaming, done, refused, and
+          synthesize-error states. Inter 15px, reveal-smoothed. */}
+      {finalResponse.length > 0 && (
+        <p className="whitespace-pre-wrap text-[15px] leading-[1.65] text-[#3A3A3A]">
+          {finalResponse}
         </p>
       )}
 
-      {/* Fallback signal: only shown if /api/explain itself failed.
-          Without an explanation, the user would otherwise see no signal that
-          the command finished — this is the quiet floor. */}
-      {message.status === 'exited' && message.explanationStatus === 'error' && (
-        <div className="mt-3 text-[12px] text-gray-400">
-          exited with code {message.exitCode ?? 0}
-        </div>
+      {/* cd-success: single calm line, hard-rendered. */}
+      {status === 'cd-success' && message.cdResolvedDisplay && (
+        <p className="text-[14px] text-ink-body">
+          Switched to {message.cdResolvedDisplay}.
+        </p>
       )}
-    </div>
+
+      {/* cd-error / planning-error: single calm error line. */}
+      {(status === 'cd-error' || status === 'planning-error') && errorMessage && (
+        <p className="text-[14px] leading-relaxed text-ink-label">{errorMessage}</p>
+      )}
+
+      {/* synthesize-error: response (whatever streamed in before the error)
+          stays visible above; error footer follows. */}
+      {status === 'synthesize-error' && errorMessage && (
+        <p className="mt-3 text-[12px] text-ink-micro">{errorMessage}</p>
+      )}
+
+      {/* Killed: footer line. (Stop button itself lives below — Chunk 2b
+          attaches it to the steps panel; for now a minimal placeholder.) */}
+      {status === 'killed' && (
+        <p className="mt-3 text-[12px] text-ink-micro">Stopped.</p>
+      )}
+
+      {/* Stop affordance during execution. Quiet, gray, hover ink. */}
+      {status === 'executing' && (
+        <button
+          type="button"
+          onClick={() => onStop(message.id)}
+          className="mt-2 text-[12px] text-ink-hint hover:text-ink focus:outline-none"
+        >
+          stop
+        </button>
+      )}
+    </article>
   );
 }
