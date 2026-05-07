@@ -45,6 +45,12 @@ export interface CommandMessage {
 
   errorMessage: string | null;
 
+  // pendingExplanation accumulates raw deltas as the SSE arrives.
+  // finalExplanation is what Message.tsx renders; the reveal timer
+  // advances it one character per 20ms tick toward pendingExplanation.
+  // Decouples the data layer (deltas land in semantic chunks of ~30
+  // chars) from the display layer (smooth character-by-character feel).
+  pendingExplanation: string;
   finalExplanation: string;
   explanationStatus: ExplanationStatus;
 
@@ -86,6 +92,7 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
     exitCode: null,
     signal: null,
     errorMessage: null,
+    pendingExplanation: '',
     finalExplanation: '',
     explanationStatus: 'idle',
     startedAt: Date.now(),
@@ -183,11 +190,13 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
       );
 
     case 'EXPLAIN_DELTA':
+      // Append to pendingExplanation only. The reveal timer advances
+      // finalExplanation toward pending one char per 20ms tick.
       return state.map((m) =>
         m.id === action.id
           ? {
               ...m,
-              finalExplanation: m.finalExplanation + action.text,
+              pendingExplanation: m.pendingExplanation + action.text,
               explanationStatus: 'streaming',
             }
           : m,
@@ -199,8 +208,17 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
       );
 
     case 'EXPLAIN_ERROR':
+      // On error, catch finalExplanation up to whatever pending text we
+      // have. Don't make the user wait for the reveal animation while
+      // there's an error to read.
       return state.map((m) =>
-        m.id === action.id ? { ...m, explanationStatus: 'error' } : m,
+        m.id === action.id
+          ? {
+              ...m,
+              explanationStatus: 'error',
+              finalExplanation: m.pendingExplanation,
+            }
+          : m,
       );
 
     case 'CLEAR_ALL':
@@ -323,6 +341,37 @@ export function useCommands(cwd: CwdInfo | null): {
     });
     return () => off();
   }, [dispatch, bounceToLogin]);
+
+  // Reveal smoothing. Anthropic delivers deltas in semantic chunks of
+  // ~30 chars, which for short explanations reads as a wall of text
+  // dropped at once. This interval reveals one character per 20ms tick
+  // from pendingExplanation into finalExplanation per message — strict
+  // cadence, no acceleration if pending grows. Lag is acceptable.
+  //
+  // The interval no-ops when no message is "behind", so it costs almost
+  // nothing while idle. Cleanup on unmount avoids leaks across the
+  // ConversationScreen unmount/remount cycle (sign-out, 401 bounce).
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      const current = messagesRef.current;
+      let changed = false;
+      const next = current.map((m) => {
+        if (m.finalExplanation.length < m.pendingExplanation.length) {
+          changed = true;
+          return {
+            ...m,
+            finalExplanation: m.pendingExplanation.slice(0, m.finalExplanation.length + 1),
+          };
+        }
+        return m;
+      });
+      if (changed) {
+        messagesRef.current = next;
+        setMessages(next);
+      }
+    }, 20);
+    return () => clearInterval(intervalId);
+  }, []);
 
   const submitInput = useCallback(
     async (userInput: string) => {
