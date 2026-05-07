@@ -25,6 +25,10 @@ export default {
         'surface-subtle': '#F7F7F8',
         'surface-faint': '#FAFAFB',
         amber: '#C8A04A',
+        // Step status colors (Phase 4 Chunk 2b: details panel).
+        'step-done': '#10B981',         // muted calm green
+        'step-failed': '#E94B4B',       // soft red leaning amber
+        'step-failed-tint': '#FEF2F2',  // very subtle wash on failed rows
       },
       fontFamily: {
         // `soft` is the existing alias — kept stable so Phase 0–3.4 className
@@ -72,6 +76,18 @@ export default {
         // is a 360px form and any card around it reads as hollow or, when
         // shrunk to fit, as a tall mobile strip on desktop.
         app: '1200px',
+      },
+      keyframes: {
+        // Slow opacity flicker for the running-step status indicator. Calmer
+        // than a spinner — reads as "still working" without being kinetic.
+        // Opacity-only so the dot's amber color and 14px size stay stable.
+        flicker: {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.85' },
+        },
+      },
+      animation: {
+        flicker: 'flicker 2.5s ease-in-out infinite',
       },
     },
   },

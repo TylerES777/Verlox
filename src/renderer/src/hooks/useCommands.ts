@@ -4,6 +4,7 @@ import type {
   CwdInfo,
   EnvironmentInfo,
   ExecutionLogEntry,
+  PlanDisplayMode,
   PlanResponse,
   PlanStep,
 } from '@shared/types';
@@ -26,6 +27,41 @@ export type TurnStatus =
 
 export type StatusIndicatorPhase = 'examining' | 'running' | 'reviewing' | null;
 
+// Per-step lifecycle. The 6 visual states map directly to the StepRow's
+// 14px status circle:
+//   queued    → outlined ring, no fill           (not started yet)
+//   running   → bg-amber + animate-flicker       (currently executing)
+//   done      → bg-step-done + checkmark SVG     (exit 0)
+//   failed    → bg-step-failed + "!"             (non-zero exit, command error)
+//   cancelled → outlined ring, opacity-50        (was running, user pressed stop)
+//   skipped   → outlined ring, opacity-50        (was queued, kill aborted plan)
+//
+// `failed` is reserved for command errors. User-initiated stops use
+// `cancelled` so the visual reads "we paused this," not "this broke."
+// Both `cancelled` and `skipped` share the demoted opacity-50 outline
+// since neither finished running and neither warrants the red wash.
+//
+// `output` is appended live while the step is running so the verbatim
+// panel and details panel can render real-time output during execution.
+export type StepStatus =
+  | 'queued'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped';
+
+export interface MessageStep {
+  index: number;
+  title: string;
+  command: string;
+  description: string;
+  status: StepStatus;
+  output: string;
+  exitCode: number | null;
+  signal: string | null;
+}
+
 export interface CommandMessage {
   id: string;
   userInput: string;
@@ -38,6 +74,17 @@ export interface CommandMessage {
 
   // Filled by /api/turn:
   plan: PlanResponse | null;
+
+  // Display mode for this turn — drives the post-execution branch:
+  //   summary  → call /api/synthesize, stream prose into finalResponse.
+  //   verbatim → skip synthesize, render per-step raw output blocks.
+  // null until the plan arrives.
+  displayMode: PlanDisplayMode | null;
+
+  // Per-step state, mirroring plan.steps in order. Initialized via
+  // STEPS_INITIALIZED right after PLAN_RECEIVED. Updated incrementally
+  // by STEP_START / STEP_OUTPUT / STEP_DONE.
+  steps: MessageStep[];
 
   // Filled during executing (one entry per completed step):
   executionLog: ExecutionLogEntry[];
@@ -67,10 +114,37 @@ type Action =
   | { type: 'CD_SUCCESS'; id: string; displayPath: string }
   | { type: 'CD_ERROR'; id: string; message: string }
   | { type: 'STATUS_INDICATOR'; id: string; phase: StatusIndicatorPhase }
-  | { type: 'STEP_DONE'; id: string; entry: ExecutionLogEntry }
+  // STEPS_INITIALIZED takes the plan steps and seeds steps[] all queued.
+  // Dispatched right after PLAN_RECEIVED, before any step starts.
+  | { type: 'STEPS_INITIALIZED'; id: string; steps: PlanStep[] }
+  // STEP_START flips a single step from queued → running.
+  | { type: 'STEP_START'; id: string; index: number }
+  // STEP_OUTPUT appends raw shell output to a running step. Fires on every
+  // stdout/stderr chunk so the verbatim/details panels can render live.
+  | { type: 'STEP_OUTPUT'; id: string; index: number; data: string }
+  // STEP_DONE finalizes a step. status mapping:
+  //   'done'      → exit 0
+  //   'failed'    → non-zero exit (real command error)
+  //   'cancelled' → was running when the user pressed stop
+  //   'skipped'   → was still queued when a kill aborted the plan
+  // Pushes an ExecutionLogEntry whenever the step actually ran
+  // (status !== 'skipped'). Skipped steps stay out of the log because
+  // they have no output for the synthesizer to summarize.
+  | {
+      type: 'STEP_DONE';
+      id: string;
+      index: number;
+      status: 'done' | 'failed' | 'cancelled' | 'skipped';
+      output: string;
+      exitCode: number | null;
+      signal: string | null;
+    }
   | { type: 'KILLED'; id: string }
   | { type: 'SYNTHESIZE_DELTA'; id: string; text: string }
-  | { type: 'SYNTHESIZE_DONE'; id: string }
+  // TURN_DONE marks the turn complete. Fires from the synthesize-stream
+  // 'done' event in summary mode, OR directly from the orchestrator after
+  // the last step in verbatim mode (no synthesize call).
+  | { type: 'TURN_DONE'; id: string }
   | { type: 'SYNTHESIZE_ERROR'; id: string; message: string }
   | { type: 'CLEAR_ALL' };
 
@@ -84,6 +158,8 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
     status: 'translating',
     statusIndicator: 'examining',
     plan: null,
+    displayMode: null,
+    steps: [],
     executionLog: [],
     pendingResponse: '',
     finalResponse: '',
@@ -100,7 +176,58 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
     case 'PLAN_RECEIVED':
       return state.map((m) =>
         m.id === action.id
-          ? { ...m, plan: action.plan, status: 'executing', statusIndicator: 'running' }
+          ? {
+              ...m,
+              plan: action.plan,
+              displayMode: action.plan.displayMode,
+              status: 'executing',
+              statusIndicator: 'running',
+            }
+          : m,
+      );
+
+    case 'STEPS_INITIALIZED':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              steps: action.steps.map((s, i) => ({
+                index: i,
+                title: s.title,
+                command: s.command,
+                description: s.description,
+                status: 'queued' as const,
+                output: '',
+                exitCode: null,
+                signal: null,
+              })),
+            }
+          : m,
+      );
+
+    case 'STEP_START':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              steps: m.steps.map((s) =>
+                s.index === action.index ? { ...s, status: 'running' as const } : s,
+              ),
+            }
+          : m,
+      );
+
+    case 'STEP_OUTPUT':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              steps: m.steps.map((s) =>
+                s.index === action.index
+                  ? { ...s, output: s.output + action.data }
+                  : s,
+              ),
+            }
           : m,
       );
 
@@ -164,11 +291,41 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
       );
 
     case 'STEP_DONE':
-      return state.map((m) =>
-        m.id === action.id
-          ? { ...m, executionLog: [...m.executionLog, action.entry] }
-          : m,
-      );
+      return state.map((m) => {
+        if (m.id !== action.id) return m;
+        // Update the step's terminal status + captured output/exit/signal.
+        const nextSteps = m.steps.map((s) =>
+          s.index === action.index
+            ? {
+                ...s,
+                status: action.status,
+                // For status='skipped' the step never ran, so output is ''.
+                // For done/failed we replace with the final captured output
+                // (which already matches what STEP_OUTPUT accumulated).
+                output: action.output,
+                exitCode: action.exitCode,
+                signal: action.signal,
+              }
+            : s,
+        );
+        // Skipped steps don't go in executionLog — synthesize only sees
+        // what actually ran.
+        const nextLog =
+          action.status === 'skipped'
+            ? m.executionLog
+            : [
+                ...m.executionLog,
+                {
+                  stepIndex: action.index,
+                  command:
+                    m.steps.find((s) => s.index === action.index)?.command ?? '',
+                  output: action.output,
+                  exitCode: action.exitCode,
+                  signal: action.signal,
+                },
+              ];
+        return { ...m, steps: nextSteps, executionLog: nextLog };
+      });
 
     case 'KILLED':
       return state.map((m) =>
@@ -195,7 +352,7 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
           : m,
       );
 
-    case 'SYNTHESIZE_DONE':
+    case 'TURN_DONE':
       return state.map((m) =>
         m.id === action.id
           ? { ...m, status: 'done', statusIndicator: null, endedAt: Date.now() }
@@ -347,7 +504,7 @@ export function useCommands(cwd: CwdInfo | null): {
       if (event.type === 'delta') {
         dispatch({ type: 'SYNTHESIZE_DELTA', id: event.messageId, text: event.text });
       } else if (event.type === 'done') {
-        dispatch({ type: 'SYNTHESIZE_DONE', id: event.messageId });
+        dispatch({ type: 'TURN_DONE', id: event.messageId });
       } else {
         // event.type === 'error'
         if (event.code === 'unauthorized') {
@@ -366,24 +523,59 @@ export function useCommands(cwd: CwdInfo | null): {
 
   // ── Step execution helper ──────────────────────────────────────────────
   // Runs one step locally via the existing command-runner IPC. Resolves
-  // when the step exits (naturally or via signal). Returns the captured
-  // ExecutionLogEntry. Throws nothing — even kills resolve normally with
-  // signal set.
+  // when the step exits (naturally or via signal). Throws nothing — even
+  // kills resolve normally with signal set.
+  //
+  // Dispatch sequence per step:
+  //   STEP_START                ← step flips queued → running
+  //   STEP_OUTPUT × N           ← one per stdout/stderr chunk (live)
+  //   STEP_DONE (status=...)    ← step finalizes, executionLog gets entry
+  //
+  // The orchestrator awaits this and then decides whether to continue,
+  // skip remaining steps (on kill or failure), or branch on displayMode.
   const runStep = useCallback(
-    (messageId: string, stepIndex: number, step: PlanStep): Promise<ExecutionLogEntry> => {
+    (
+      messageId: string,
+      stepIndex: number,
+      step: PlanStep,
+    ): Promise<ExecutionLogEntry> => {
       return new Promise<ExecutionLogEntry>((resolve) => {
         const stepId = `${messageId}::${stepIndex}`;
         let output = '';
 
         // Subscribe to output and exit events for THIS step's id.
         const offOutput = window.api.onCommandOutput(({ id, data }) => {
-          if (id === stepId) output += data;
+          if (id !== stepId) return;
+          output += data;
+          dispatch({ type: 'STEP_OUTPUT', id: messageId, index: stepIndex, data });
         });
         const offExit = window.api.onCommandExit(({ id, code, signal }) => {
           if (id !== stepId) return;
           offOutput();
           offExit();
           activeStepIdsRef.current.delete(messageId);
+
+          // Decide step status from exit info:
+          //   signal != null  → the runner reports signal on user-initiated
+          //                     stop (POSIX SIGTERM or the Windows taskkill
+          //                     sentinel from command-runner.ts). Treat as
+          //                     'cancelled' — the user paused the plan, not
+          //                     a command error.
+          //   exitCode === 0  → done
+          //   otherwise       → failed (real command error)
+          const stepStatus: 'done' | 'failed' | 'cancelled' =
+            signal != null ? 'cancelled' : code === 0 ? 'done' : 'failed';
+
+          dispatch({
+            type: 'STEP_DONE',
+            id: messageId,
+            index: stepIndex,
+            status: stepStatus,
+            output,
+            exitCode: code,
+            signal,
+          });
+
           resolve({
             stepIndex,
             command: step.command,
@@ -394,10 +586,11 @@ export function useCommands(cwd: CwdInfo | null): {
         });
 
         activeStepIdsRef.current.set(messageId, stepId);
+        dispatch({ type: 'STEP_START', id: messageId, index: stepIndex });
         window.api.startCommand({ id: stepId, command: step.command });
       });
     },
-    [],
+    [dispatch],
   );
 
   // ── submitInput: the orchestrator ──────────────────────────────────────
@@ -480,16 +673,34 @@ export function useCommands(cwd: CwdInfo | null): {
       }
 
       // 5. Execute each step locally.
+      //    PLAN_RECEIVED flips status → 'executing' and stores displayMode.
+      //    STEPS_INITIALIZED seeds steps[] with everything queued.
+      //    Each runStep() dispatches STEP_START / STEP_OUTPUT* / STEP_DONE
+      //    internally as the shell command progresses.
       dispatch({ type: 'PLAN_RECEIVED', id, plan });
+      dispatch({ type: 'STEPS_INITIALIZED', id, steps: plan.steps });
+
       const executionLog: ExecutionLogEntry[] = [];
       let killed = false;
 
       for (let i = 0; i < plan.steps.length; i += 1) {
         const entry = await runStep(id, i, plan.steps[i]);
-        dispatch({ type: 'STEP_DONE', id, entry });
         executionLog.push(entry);
         if (entry.signal != null) {
           killed = true;
+          // Mark every remaining queued step as 'skipped' so the StepRow
+          // visual tells the truth: those commands never ran.
+          for (let j = i + 1; j < plan.steps.length; j += 1) {
+            dispatch({
+              type: 'STEP_DONE',
+              id,
+              index: j,
+              status: 'skipped',
+              output: '',
+              exitCode: null,
+              signal: null,
+            });
+          }
           break;
         }
       }
@@ -499,9 +710,16 @@ export function useCommands(cwd: CwdInfo | null): {
         return;
       }
 
-      // 6. Synthesize the response prose. (2a fall-through: ignore
-      //    displayMode and always synthesize. Chunk 2b adds the verbatim
-      //    branch that renders raw output instead.)
+      // 6. Branch on displayMode.
+      //    verbatim → no synthesize call. The Message renders per-step
+      //               raw output blocks (header + body in JetBrains Mono).
+      //               Status flips straight to 'done'.
+      //    summary  → /api/synthesize as before; reveal-smoothed prose.
+      if (plan.displayMode === 'verbatim') {
+        dispatch({ type: 'TURN_DONE', id });
+        return;
+      }
+
       dispatch({ type: 'STATUS_INDICATOR', id, phase: 'reviewing' });
       window.api.synthesizeStart({
         messageId: id,
@@ -511,7 +729,7 @@ export function useCommands(cwd: CwdInfo | null): {
         executionLog,
       });
       // Stream events arrive via the onSynthesizeEvent listener and drive
-      // SYNTHESIZE_DELTA / SYNTHESIZE_DONE / SYNTHESIZE_ERROR dispatches.
+      // SYNTHESIZE_DELTA / TURN_DONE / SYNTHESIZE_ERROR dispatches.
       // No further action needed in this orchestrator.
     },
     [cwd, environment, dispatch, bounceToLogin, runStep],
