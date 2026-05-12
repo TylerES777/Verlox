@@ -2,6 +2,12 @@ import type { MessageStep, StepStatus } from '../hooks/useCommands';
 
 interface StepRowProps {
   step: MessageStep;
+  // Chunk 3: when true, render the raw shell command in JetBrains Mono
+  // below the description. Toggled per-turn by the peek control in the
+  // DetailsPanel header. Only meaningful for summary-mode turns —
+  // verbatim turns already show commands in their VerbatimBlock above
+  // and pass false here.
+  showCommand?: boolean;
 }
 
 // Phase 4 Chunk 2b. Single row inside the collapsible details panel.
@@ -27,7 +33,7 @@ interface StepRowProps {
 // row reads calm, not kinetic. Failed rows additionally get a very
 // subtle bg-step-failed-tint wash on the row container; cancelled/
 // skipped rows do NOT get a tint — they're calm, not concerning.
-export function StepRow({ step }: StepRowProps) {
+export function StepRow({ step, showCommand = false }: StepRowProps) {
   const rowTint = step.status === 'failed' ? 'bg-step-failed-tint' : '';
   const titleOpacity =
     step.status === 'skipped' || step.status === 'cancelled' ? 'opacity-50' : '';
@@ -42,6 +48,16 @@ export function StepRow({ step }: StepRowProps) {
         {step.description && (
           <div className="text-[13px] text-ink-label leading-snug mt-0.5">
             {step.description}
+          </div>
+        )}
+        {/* Raw command line — only when the per-turn peek is on. JetBrains
+            Mono 13px ink-body to match the verbatim block's body styling
+            and read as "this is the actual shell input" without competing
+            with the title hierarchy. break-all so long commands wrap
+            cleanly inside the StepRow's flex column. */}
+        {showCommand && (
+          <div className="mt-1.5 font-mono text-[13px] text-ink-body leading-relaxed break-all">
+            {step.command}
           </div>
         )}
       </div>

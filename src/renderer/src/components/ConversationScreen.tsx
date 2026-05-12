@@ -4,6 +4,7 @@ import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
 import { useCwd } from '../hooks/useCwd';
 import { useCommands } from '../hooks/useCommands';
+import { usePeekDefault } from '../hooks/usePeekDefault';
 
 const EXAMPLES = [
   'List the files in this folder',
@@ -46,7 +47,14 @@ function EmptyState({ onExampleClick }: EmptyStateProps) {
 
 export function ConversationScreen() {
   const { cwd } = useCwd();
-  const { messages, forceScrollVersion, submitInput, stopCommand } = useCommands(cwd);
+  // Single owner of the session-wide peek preference. Passed into
+  // useCommands as the seed for new turns, and threaded through Header
+  // to the HeaderMenu's preference toggle. Keeping one hook instance
+  // means ConversationScreen always sees the latest value the moment
+  // the user flips it in the popover.
+  const { peekDefault, setPeekDefault } = usePeekDefault();
+  const { messages, forceScrollVersion, submitInput, stopCommand, togglePeek } =
+    useCommands(cwd, peekDefault);
   const inputRef = useRef<InputHandle>(null);
 
   // Focus input on mount (post-sign-in keyboard flow).
@@ -65,7 +73,11 @@ export function ConversationScreen() {
   return (
     <div className="h-full w-full bg-canvas p-6">
       <div className="mx-auto flex h-full max-w-app flex-col overflow-hidden rounded-[14px] bg-card shadow-card">
-        <Header displayPath={cwd?.display ?? ''} />
+        <Header
+          displayPath={cwd?.display ?? ''}
+          peekDefault={peekDefault}
+          onPeekDefaultChange={setPeekDefault}
+        />
         {messages.length === 0 ? (
           <EmptyState
             onExampleClick={(prompt) => inputRef.current?.setValue(prompt)}
@@ -75,6 +87,7 @@ export function ConversationScreen() {
             messages={messages}
             forceScrollVersion={forceScrollVersion}
             onStop={stopCommand}
+            onTogglePeek={togglePeek}
             onBackgroundClick={handleConversationClick}
           />
         )}

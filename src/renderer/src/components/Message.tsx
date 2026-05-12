@@ -6,6 +6,10 @@ import { DetailsPanel } from './DetailsPanel';
 interface MessageProps {
   message: CommandMessage;
   onStop: (id: string) => void;
+  // Per-turn peek toggle (Chunk 3). Flips the message's peekEnabled
+  // flag. Only invoked for summary-mode turns where the toggle UI is
+  // visible — verbatim and step-less turns don't render the affordance.
+  onTogglePeek: (id: string) => void;
 }
 
 // Phase 4 Chunk 2b: adds StepRow list (in a collapsible DetailsPanel) and
@@ -20,7 +24,7 @@ interface MessageProps {
 //   [optional error / cd / killed line] ← context-specific footers
 //   [Stop button]                       ← only while executing
 //   [details panel: steps]              ← collapsible, default open
-export function Message({ message, onStop }: MessageProps) {
+export function Message({ message, onStop, onTogglePeek }: MessageProps) {
   const {
     status,
     statusIndicator,
@@ -28,6 +32,7 @@ export function Message({ message, onStop }: MessageProps) {
     errorMessage,
     steps,
     displayMode,
+    peekEnabled,
   } = message;
 
   // The details panel becomes visible the moment we have any steps to
@@ -50,6 +55,16 @@ export function Message({ message, onStop }: MessageProps) {
   const showVerbatim =
     displayMode === 'verbatim' &&
     (status === 'executing' || status === 'done' || status === 'killed');
+
+  // Peek toggle visibility (Chunk 3). Only summary-mode turns get the
+  // affordance — verbatim turns already show every command in their
+  // VerbatimBlock, and refusal/cd/planning-error turns have no steps.
+  const showPeekToggle = showDetails && displayMode === 'summary';
+
+  // showCommand on each StepRow follows the same gate. Verbatim mode
+  // never shows commands inside StepRows (the verbatim block above is
+  // the canonical surface for those).
+  const stepShowCommand = peekEnabled && displayMode === 'summary';
 
   return (
     <article className="mb-12">
@@ -135,10 +150,21 @@ export function Message({ message, onStop }: MessageProps) {
         <DetailsPanel
           label={`Steps (${steps.length})`}
           desiredOpen={detailsDesiredOpen}
+          headerRight={
+            showPeekToggle ? (
+              <button
+                type="button"
+                onClick={() => onTogglePeek(message.id)}
+                className="text-[12px] text-ink-label hover:text-ink focus:outline-none transition-colors"
+              >
+                {peekEnabled ? 'hide command' : 'show command'}
+              </button>
+            ) : undefined
+          }
         >
           <div className="space-y-1">
             {steps.map((s) => (
-              <StepRow key={s.index} step={s} />
+              <StepRow key={s.index} step={s} showCommand={stepShowCommand} />
             ))}
           </div>
         </DetailsPanel>

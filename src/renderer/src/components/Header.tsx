@@ -2,9 +2,17 @@ import { HeaderMenu } from './HeaderMenu';
 
 interface HeaderProps {
   displayPath: string;
+  // Session-wide peek default (Chunk 3). Threaded through to the
+  // sign-out popover, which surfaces an "Always show commands" toggle.
+  peekDefault: boolean;
+  onPeekDefaultChange: (value: boolean) => void;
 }
 
-export function Header({ displayPath }: HeaderProps) {
+export function Header({
+  displayPath,
+  peekDefault,
+  onPeekDefaultChange,
+}: HeaderProps) {
   return (
     <header className="grid h-12 shrink-0 grid-cols-3 items-center border-b-[0.5px] border-hairline px-6">
       {/* Wordmark left */}
@@ -17,7 +25,10 @@ export function Header({ displayPath }: HeaderProps) {
       </div>
       {/* Avatar right */}
       <div className="justify-self-end">
-        <HeaderMenu />
+        <HeaderMenu
+          peekDefault={peekDefault}
+          onPeekDefaultChange={onPeekDefaultChange}
+        />
       </div>
     </header>
   );

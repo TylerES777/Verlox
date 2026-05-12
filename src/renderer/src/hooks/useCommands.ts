@@ -102,12 +102,27 @@ export interface CommandMessage {
 
   // For *-error states + planning-error / synthesize-error:
   errorMessage: string | null;
+
+  // Peek state (Chunk 3). When true, StepRow renders the raw shell
+  // command in JetBrains Mono below the title/description. Seeded from
+  // the session-wide default at INPUT_SUBMITTED time and toggled per
+  // turn via PEEK_TOGGLE — per-turn changes don't update the session
+  // default. Only meaningful for displayMode === 'summary' turns;
+  // verbatim turns ignore this since the verbatim block already shows
+  // the command.
+  peekEnabled: boolean;
 }
 
 // ── Reducer actions ───────────────────────────────────────────────────────
 
 type Action =
-  | { type: 'INPUT_SUBMITTED'; id: string; userInput: string; cwd: string }
+  | {
+      type: 'INPUT_SUBMITTED';
+      id: string;
+      userInput: string;
+      cwd: string;
+      peekEnabled: boolean;
+    }
   | { type: 'PLAN_RECEIVED'; id: string; plan: PlanResponse }
   | { type: 'PLANNING_ERROR'; id: string; message: string }
   | { type: 'REFUSED'; id: string; text: string }
@@ -146,9 +161,18 @@ type Action =
   // the last step in verbatim mode (no synthesize call).
   | { type: 'TURN_DONE'; id: string }
   | { type: 'SYNTHESIZE_ERROR'; id: string; message: string }
+  // PEEK_TOGGLE flips the per-turn peekEnabled flag. Per-turn only —
+  // the session-wide default lives in usePeekDefault and is only read
+  // at INPUT_SUBMITTED time.
+  | { type: 'PEEK_TOGGLE'; id: string }
   | { type: 'CLEAR_ALL' };
 
-function newMessage(id: string, userInput: string, cwd: string): CommandMessage {
+function newMessage(
+  id: string,
+  userInput: string,
+  cwd: string,
+  peekEnabled: boolean,
+): CommandMessage {
   return {
     id,
     userInput,
@@ -165,13 +189,17 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
     finalResponse: '',
     cdResolvedDisplay: null,
     errorMessage: null,
+    peekEnabled,
   };
 }
 
 function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
   switch (action.type) {
     case 'INPUT_SUBMITTED':
-      return [...state, newMessage(action.id, action.userInput, action.cwd)];
+      return [
+        ...state,
+        newMessage(action.id, action.userInput, action.cwd, action.peekEnabled),
+      ];
 
     case 'PLAN_RECEIVED':
       return state.map((m) =>
@@ -375,6 +403,11 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
           : m,
       );
 
+    case 'PEEK_TOGGLE':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, peekEnabled: !m.peekEnabled } : m,
+      );
+
     case 'CLEAR_ALL':
       return [];
   }
@@ -413,17 +446,34 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
 
 // ── Hook ──────────────────────────────────────────────────────────────────
 
-export function useCommands(cwd: CwdInfo | null): {
+export function useCommands(
+  cwd: CwdInfo | null,
+  // Session-wide peek default. Each new turn copies this value into its
+  // CommandMessage at INPUT_SUBMITTED time. Read via a ref so submitInput
+  // always sees the latest value without listing it as a dependency
+  // (changing the default mid-session shouldn't tear down the orchestrator
+  // closures or invalidate any in-flight turn).
+  peekDefault: boolean,
+): {
   messages: CommandMessage[];
   forceScrollVersion: number;
   submitInput: (userInput: string) => Promise<void>;
   stopCommand: (id: string) => void;
+  togglePeek: (messageId: string) => void;
 } {
   const [messages, setMessages] = useState<CommandMessage[]>([]);
   const messagesRef = useRef<CommandMessage[]>([]);
   const [forceScrollVersion, setForceScrollVersion] = useState(0);
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
   const { forceSignOut } = useAuth();
+
+  // Mirror peekDefault into a ref so submitInput reads the latest value
+  // without re-creating its useCallback closure when the user toggles
+  // the session preference.
+  const peekDefaultRef = useRef(peekDefault);
+  useEffect(() => {
+    peekDefaultRef.current = peekDefault;
+  }, [peekDefault]);
 
   // Track which messages have an active step running (so we know which id
   // to pass to window.api.stopCommand). Map from message-id → currently-
@@ -601,7 +651,13 @@ export function useCommands(cwd: CwdInfo | null): {
       if (!cwd || !environment) return;
 
       const id = crypto.randomUUID();
-      dispatch({ type: 'INPUT_SUBMITTED', id, userInput: trimmed, cwd: cwd.display });
+      dispatch({
+        type: 'INPUT_SUBMITTED',
+        id,
+        userInput: trimmed,
+        cwd: cwd.display,
+        peekEnabled: peekDefaultRef.current,
+      });
       setForceScrollVersion((v) => v + 1);
 
       // 1. /api/turn — plan generation
@@ -741,5 +797,15 @@ export function useCommands(cwd: CwdInfo | null): {
     if (stepId) window.api.stopCommand(stepId);
   }, []);
 
-  return { messages, forceScrollVersion, submitInput, stopCommand };
+  // Public per-turn peek toggle. Flips peekEnabled on the given message.
+  // Independent of the session-wide default — toggling here does not
+  // call setPeekDefault.
+  const togglePeek = useCallback(
+    (messageId: string) => {
+      dispatch({ type: 'PEEK_TOGGLE', id: messageId });
+    },
+    [dispatch],
+  );
+
+  return { messages, forceScrollVersion, submitInput, stopCommand, togglePeek };
 }

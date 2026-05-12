@@ -9,6 +9,12 @@ interface DetailsPanelProps {
   desiredOpen: boolean;
   // Small label shown next to the chevron, e.g. "Steps" or "Details".
   label: string;
+  // Optional slot rendered to the right of the label, on the same line as
+  // the chevron — used for per-turn affordances like the Chunk 3 peek
+  // toggle. The slot stays in the document flow regardless of open state
+  // (it's part of the header, not the collapsible body) so users can flip
+  // peek without expanding the panel first.
+  headerRight?: ReactNode;
   children: ReactNode;
 }
 
@@ -33,7 +39,12 @@ interface DetailsPanelProps {
 // Why grid + 1fr/0fr instead of max-height: max-height needs a magic
 // number that breaks when content grows past it; 1fr correctly tracks
 // the natural height of the content with a real CSS transition.
-export function DetailsPanel({ desiredOpen, label, children }: DetailsPanelProps) {
+export function DetailsPanel({
+  desiredOpen,
+  label,
+  headerRight,
+  children,
+}: DetailsPanelProps) {
   const [open, setOpen] = useState(desiredOpen);
   const manuallyToggledRef = useRef(false);
 
@@ -50,14 +61,20 @@ export function DetailsPanel({ desiredOpen, label, children }: DetailsPanelProps
 
   return (
     <div className="mt-4">
-      <button
-        type="button"
-        onClick={handleToggle}
-        className="flex items-center gap-1.5 text-[12px] text-ink-label hover:text-ink focus:outline-none transition-colors"
-      >
-        <Chevron open={open} />
-        <span>{label}</span>
-      </button>
+      {/* Header row: chevron+label on the left (toggles the panel), the
+          optional headerRight slot on the right. The slot lives in its
+          own sibling so clicks inside it don't bubble into the toggle. */}
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={handleToggle}
+          className="flex items-center gap-1.5 text-[12px] text-ink-label hover:text-ink focus:outline-none transition-colors"
+        >
+          <Chevron open={open} />
+          <span>{label}</span>
+        </button>
+        {headerRight !== undefined && <div>{headerRight}</div>}
+      </div>
 
       <div
         className={`grid transition-[grid-template-rows] duration-200 ease-out ${

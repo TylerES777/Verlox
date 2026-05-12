@@ -6,15 +6,20 @@ interface ConversationProps {
   messages: CommandMessage[];
   forceScrollVersion: number;
   onStop: (id: string) => void;
+  // Per-turn peek toggle (Chunk 3). Threaded down to each Message so
+  // its DetailsPanel header can flip the message's peekEnabled flag.
+  onTogglePeek: (id: string) => void;
   onBackgroundClick?: (event: MouseEvent<HTMLDivElement>) => void;
 }
 
 // Phase 4: Plan Card lands in Chunk 4; for now the conversation only needs
-// onStop. onConfirm / onCancel will return when the Plan Card is wired.
+// onStop + onTogglePeek. onConfirm / onCancel will return when the Plan
+// Card is wired.
 export function Conversation({
   messages,
   forceScrollVersion,
   onStop,
+  onTogglePeek,
   onBackgroundClick,
 }: ConversationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -58,7 +63,12 @@ export function Conversation({
           message stack inside the scroll viewport. */}
       <div className="mx-auto max-w-reading px-6 py-4">
         {messages.map((m) => (
-          <Message key={m.id} message={m} onStop={onStop} />
+          <Message
+            key={m.id}
+            message={m}
+            onStop={onStop}
+            onTogglePeek={onTogglePeek}
+          />
         ))}
       </div>
     </div>
