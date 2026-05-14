@@ -1,10 +1,11 @@
-import { useEffect, useRef, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, type MouseEvent } from 'react';
 import { Header } from './Header';
 import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
 import { useCwd } from '../hooks/useCwd';
 import { useCommands } from '../hooks/useCommands';
 import { usePeekDefault } from '../hooks/usePeekDefault';
+import { usePlanMode } from '../hooks/usePlanMode';
 
 const EXAMPLES = [
   'List the files in this folder',
@@ -47,15 +48,44 @@ function EmptyState({ onExampleClick }: EmptyStateProps) {
 
 export function ConversationScreen() {
   const { cwd } = useCwd();
-  // Single owner of the session-wide peek preference. Passed into
-  // useCommands as the seed for new turns, and threaded through Header
-  // to the HeaderMenu's preference toggle. Keeping one hook instance
-  // means ConversationScreen always sees the latest value the moment
-  // the user flips it in the popover.
+  // Single owner of the session-wide peek + plan-mode preferences.
+  // Passed into useCommands as seeds for new turns, and threaded
+  // through Header to the toggle UIs. Keeping one hook instance per
+  // preference means ConversationScreen always sees the latest value
+  // the moment the user flips it.
   const { peekDefault, setPeekDefault } = usePeekDefault();
-  const { messages, forceScrollVersion, submitInput, stopCommand, togglePeek } =
-    useCommands(cwd, peekDefault);
+  const { planMode, setPlanMode } = usePlanMode();
+  const {
+    messages,
+    forceScrollVersion,
+    submitInput,
+    stopCommand,
+    togglePeek,
+    confirmPlan,
+    cancelPlan,
+  } = useCommands(cwd, peekDefault, planMode);
   const inputRef = useRef<InputHandle>(null);
+
+  // After the user resolves a Plan Card (either button), the Cancel/Run
+  // button unmounts and focus would fall back to document.body. Pull
+  // focus back to the input so the user can keep typing without first
+  // clicking into the conversation. The same wrapper is fine for both
+  // buttons — the underlying action differs (confirm vs cancel) but the
+  // focus refocus is identical.
+  const handleConfirmPlan = useCallback(
+    (id: string) => {
+      confirmPlan(id);
+      inputRef.current?.focus();
+    },
+    [confirmPlan],
+  );
+  const handleCancelPlan = useCallback(
+    (id: string) => {
+      cancelPlan(id);
+      inputRef.current?.focus();
+    },
+    [cancelPlan],
+  );
 
   // Focus input on mount (post-sign-in keyboard flow).
   useEffect(() => {
@@ -77,6 +107,8 @@ export function ConversationScreen() {
           displayPath={cwd?.display ?? ''}
           peekDefault={peekDefault}
           onPeekDefaultChange={setPeekDefault}
+          planMode={planMode}
+          onPlanModeChange={setPlanMode}
         />
         {messages.length === 0 ? (
           <EmptyState
@@ -88,6 +120,8 @@ export function ConversationScreen() {
             forceScrollVersion={forceScrollVersion}
             onStop={stopCommand}
             onTogglePeek={togglePeek}
+            onConfirmPlan={handleConfirmPlan}
+            onCancelPlan={handleCancelPlan}
             onBackgroundClick={handleConversationClick}
           />
         )}

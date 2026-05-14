@@ -9,17 +9,20 @@ interface ConversationProps {
   // Per-turn peek toggle (Chunk 3). Threaded down to each Message so
   // its DetailsPanel header can flip the message's peekEnabled flag.
   onTogglePeek: (id: string) => void;
+  // Plan Card buttons (Chunk 4). Threaded to each Message so a paused
+  // turn can resolve via Run or Cancel.
+  onConfirmPlan: (id: string) => void;
+  onCancelPlan: (id: string) => void;
   onBackgroundClick?: (event: MouseEvent<HTMLDivElement>) => void;
 }
 
-// Phase 4: Plan Card lands in Chunk 4; for now the conversation only needs
-// onStop + onTogglePeek. onConfirm / onCancel will return when the Plan
-// Card is wired.
 export function Conversation({
   messages,
   forceScrollVersion,
   onStop,
   onTogglePeek,
+  onConfirmPlan,
+  onCancelPlan,
   onBackgroundClick,
 }: ConversationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -68,6 +71,8 @@ export function Conversation({
             message={m}
             onStop={onStop}
             onTogglePeek={onTogglePeek}
+            onConfirmPlan={onConfirmPlan}
+            onCancelPlan={onCancelPlan}
           />
         ))}
       </div>

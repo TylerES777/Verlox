@@ -13,17 +13,19 @@ import { useAuth } from '../contexts/AuthContext';
 // ── State machine ─────────────────────────────────────────────────────────
 
 export type TurnStatus =
-  | 'translating'        // /api/turn in flight
-  | 'planning-error'     // /api/turn failed (network/server/rate-limit)
-  | 'refused'            // model returned empty steps OR footgun (2a placeholder)
-  | 'cd-success'         // cd handled
-  | 'cd-error'           // cd path invalid
-  | 'executing'          // running steps locally via window.api.startCommand
-  | 'synthesizing'       // /api/synthesize connected, no deltas yet
-  | 'streaming'          // first delta arrived; response prose flowing
-  | 'done'               // synthesis complete (or refusal/cd-success terminal)
-  | 'killed'             // user pressed stop on a running step
-  | 'synthesize-error';  // /api/synthesize errored
+  | 'translating'             // /api/turn in flight
+  | 'planning-error'          // /api/turn failed (network/server/rate-limit)
+  | 'refused'                 // model returned empty steps OR footgun (2a placeholder)
+  | 'cd-success'              // cd handled
+  | 'cd-error'                // cd path invalid
+  | 'awaiting-confirmation'   // Plan Mode: Plan Card visible, awaiting Run/Cancel
+  | 'cancelled-before-run'    // user clicked Cancel on the Plan Card
+  | 'executing'               // running steps locally via window.api.startCommand
+  | 'synthesizing'            // /api/synthesize connected, no deltas yet
+  | 'streaming'               // first delta arrived; response prose flowing
+  | 'done'                    // synthesis complete (or refusal/cd-success terminal)
+  | 'killed'                  // user pressed stop on a running step
+  | 'synthesize-error';       // /api/synthesize errored
 
 export type StatusIndicatorPhase = 'examining' | 'running' | 'reviewing' | null;
 
@@ -123,7 +125,22 @@ type Action =
       cwd: string;
       peekEnabled: boolean;
     }
-  | { type: 'PLAN_RECEIVED'; id: string; plan: PlanResponse }
+  // PLAN_RECEIVED's planMode flag decides the initial status:
+  //   planMode=false → 'executing' (orchestrator runs steps immediately)
+  //   planMode=true  → 'awaiting-confirmation' (Plan Card renders, orchestrator
+  //                    parks on a promise until confirmPlan/cancelPlan fires)
+  | {
+      type: 'PLAN_RECEIVED';
+      id: string;
+      plan: PlanResponse;
+      planMode: boolean;
+    }
+  // PLAN_CONFIRMED flips a paused turn from 'awaiting-confirmation' →
+  // 'executing'. The orchestrator resumes step execution after this.
+  | { type: 'PLAN_CONFIRMED'; id: string }
+  // PLAN_CANCELLED terminates a paused turn. No steps ever run.
+  // The turn stays in conversation history with the "Plan discarded." footer.
+  | { type: 'PLAN_CANCELLED'; id: string }
   | { type: 'PLANNING_ERROR'; id: string; message: string }
   | { type: 'REFUSED'; id: string; text: string }
   | { type: 'CD_SUCCESS'; id: string; displayPath: string }
@@ -208,8 +225,30 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
               ...m,
               plan: action.plan,
               displayMode: action.plan.displayMode,
-              status: 'executing',
-              statusIndicator: 'running',
+              // Plan Mode parks the turn on the Plan Card with no status
+              // indicator (the card itself is the UI). Non-plan-mode
+              // proceeds straight to execution with "Running…" indicator.
+              status: action.planMode ? 'awaiting-confirmation' : 'executing',
+              statusIndicator: action.planMode ? null : 'running',
+            }
+          : m,
+      );
+
+    case 'PLAN_CONFIRMED':
+      return state.map((m) =>
+        m.id === action.id
+          ? { ...m, status: 'executing', statusIndicator: 'running' }
+          : m,
+      );
+
+    case 'PLAN_CANCELLED':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: 'cancelled-before-run',
+              statusIndicator: null,
+              endedAt: Date.now(),
             }
           : m,
       );
@@ -454,12 +493,20 @@ export function useCommands(
   // (changing the default mid-session shouldn't tear down the orchestrator
   // closures or invalidate any in-flight turn).
   peekDefault: boolean,
+  // Session-wide Plan Mode flag (Chunk 4). When true, every new turn
+  // pauses after /api/turn and renders the Plan Card instead of running
+  // immediately. Read via a ref so submitInput sees the latest value.
+  // Cd-only and footgun-only turns bypass Plan Mode (cd is auto-handled;
+  // footguns get their own stripped Plan Card in Chunk 5).
+  planMode: boolean,
 ): {
   messages: CommandMessage[];
   forceScrollVersion: number;
   submitInput: (userInput: string) => Promise<void>;
   stopCommand: (id: string) => void;
   togglePeek: (messageId: string) => void;
+  confirmPlan: (messageId: string) => void;
+  cancelPlan: (messageId: string) => void;
 } {
   const [messages, setMessages] = useState<CommandMessage[]>([]);
   const messagesRef = useRef<CommandMessage[]>([]);
@@ -474,6 +521,27 @@ export function useCommands(
   useEffect(() => {
     peekDefaultRef.current = peekDefault;
   }, [peekDefault]);
+
+  // Same pattern for planMode. The orchestrator captures the value at
+  // submit time (not at confirm time) — flipping Plan Mode off mid-turn
+  // does NOT release a paused turn; it has to be confirmed or cancelled.
+  const planModeRef = useRef(planMode);
+  useEffect(() => {
+    planModeRef.current = planMode;
+  }, [planMode]);
+
+  // Resolver-map for the Plan Mode pause. When the orchestrator enters
+  // 'awaiting-confirmation' it stashes a resolver here keyed by message
+  // id, then awaits a Promise that resolves true (Run) or false (Cancel).
+  // confirmPlan / cancelPlan look up the resolver and call it.
+  //
+  // Lifecycle: added in submitInput, removed in confirmPlan/cancelPlan
+  // (or in bounceToLogin which resolves all pending as cancelled). A
+  // missing resolver means the promise was already settled — the public
+  // confirm/cancel actions are no-ops in that case.
+  const pendingConfirmationsRef = useRef<Map<string, (confirmed: boolean) => void>>(
+    new Map(),
+  );
 
   // Track which messages have an active step running (so we know which id
   // to pass to window.api.stopCommand). Map from message-id → currently-
@@ -507,6 +575,16 @@ export function useCommands(
       }
     }
     activeStepIdsRef.current.clear();
+    // Release every paused Plan Card promise as cancelled so the
+    // orchestrator can unwind cleanly. Without this, the awaited Promise
+    // in submitInput would never settle and the closure would leak
+    // until GC. CLEAR_ALL below drops the messages either way, so the
+    // orchestrator's terminal dispatch is a no-op — but unblocking it
+    // matters so the async function returns and its scope is freed.
+    for (const resolve of pendingConfirmationsRef.current.values()) {
+      resolve(false);
+    }
+    pendingConfirmationsRef.current.clear();
     dispatch({ type: 'CLEAR_ALL' });
     forceSignOut();
   }, [dispatch, forceSignOut]);
@@ -661,6 +739,7 @@ export function useCommands(
       setForceScrollVersion((v) => v + 1);
 
       // 1. /api/turn — plan generation
+      const planMode = planModeRef.current;
       const planResult = await window.api.planTurn({
         userInput: trimmed,
         context: {
@@ -668,9 +747,7 @@ export function useCommands(
           platform: environment.platform,
           shell: environment.shell,
         },
-        // 2a placeholder: Plan Mode UI doesn't exist yet (Chunk 4 wires it).
-        // Always plan-mode-off for now.
-        planMode: false,
+        planMode,
       });
 
       if (!planResult.ok) {
@@ -729,12 +806,29 @@ export function useCommands(
       }
 
       // 5. Execute each step locally.
-      //    PLAN_RECEIVED flips status → 'executing' and stores displayMode.
-      //    STEPS_INITIALIZED seeds steps[] with everything queued.
-      //    Each runStep() dispatches STEP_START / STEP_OUTPUT* / STEP_DONE
-      //    internally as the shell command progresses.
-      dispatch({ type: 'PLAN_RECEIVED', id, plan });
+      //    PLAN_RECEIVED flips status → 'executing' OR 'awaiting-confirmation'
+      //    depending on the planMode flag. STEPS_INITIALIZED seeds steps[]
+      //    with everything queued (the Plan Card uses the same steps[] so
+      //    the StepRows it renders are identical visual entities to the
+      //    ones that animate during execution).
+      dispatch({ type: 'PLAN_RECEIVED', id, plan, planMode });
       dispatch({ type: 'STEPS_INITIALIZED', id, steps: plan.steps });
+
+      // 5b. Plan Mode pause. Stash a resolver, await user decision.
+      //     confirmPlan / cancelPlan dispatch the status transition AND
+      //     resolve the promise. bounceToLogin resolves all pending as
+      //     cancelled to unblock the orchestrator.
+      if (planMode) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          pendingConfirmationsRef.current.set(id, resolve);
+        });
+        if (!confirmed) {
+          // PLAN_CANCELLED already dispatched by cancelPlan — terminal state.
+          return;
+        }
+        // PLAN_CONFIRMED already dispatched by confirmPlan — falls through
+        // to the execution loop below with status='executing'.
+      }
 
       const executionLog: ExecutionLogEntry[] = [];
       let killed = false;
@@ -807,5 +901,45 @@ export function useCommands(
     [dispatch],
   );
 
-  return { messages, forceScrollVersion, submitInput, stopCommand, togglePeek };
+  // Plan Card "Run" handler. Pulls the resolver from the pending map,
+  // dispatches PLAN_CONFIRMED (which flips status to 'executing'), then
+  // resolves the orchestrator's awaited promise with true. Order matters:
+  // dispatch first so the React render with new status happens BEFORE the
+  // orchestrator picks back up — the next synchronous tick of submitInput
+  // sees status='executing' rather than 'awaiting-confirmation' if it
+  // were ever to inspect state directly.
+  const confirmPlan = useCallback(
+    (messageId: string) => {
+      const resolve = pendingConfirmationsRef.current.get(messageId);
+      if (!resolve) return; // already settled (defensive — UI shouldn't fire twice)
+      pendingConfirmationsRef.current.delete(messageId);
+      dispatch({ type: 'PLAN_CONFIRMED', id: messageId });
+      resolve(true);
+    },
+    [dispatch],
+  );
+
+  // Plan Card "Cancel" handler. Same shape as confirmPlan but resolves
+  // false, leaving the turn in 'cancelled-before-run' as its terminal
+  // state.
+  const cancelPlan = useCallback(
+    (messageId: string) => {
+      const resolve = pendingConfirmationsRef.current.get(messageId);
+      if (!resolve) return;
+      pendingConfirmationsRef.current.delete(messageId);
+      dispatch({ type: 'PLAN_CANCELLED', id: messageId });
+      resolve(false);
+    },
+    [dispatch],
+  );
+
+  return {
+    messages,
+    forceScrollVersion,
+    submitInput,
+    stopCommand,
+    togglePeek,
+    confirmPlan,
+    cancelPlan,
+  };
 }

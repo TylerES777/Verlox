@@ -2,6 +2,7 @@ import type { CommandMessage, MessageStep } from '../hooks/useCommands';
 import { StatusIndicator } from './StatusIndicator';
 import { StepRow } from './StepRow';
 import { DetailsPanel } from './DetailsPanel';
+import { PlanCard } from './PlanCard';
 
 interface MessageProps {
   message: CommandMessage;
@@ -10,6 +11,11 @@ interface MessageProps {
   // flag. Only invoked for summary-mode turns where the toggle UI is
   // visible — verbatim and step-less turns don't render the affordance.
   onTogglePeek: (id: string) => void;
+  // Plan Card actions (Chunk 4). Called when the user clicks Run or
+  // Cancel on a paused turn. Resolve the orchestrator's awaited promise
+  // inside useCommands.
+  onConfirmPlan: (id: string) => void;
+  onCancelPlan: (id: string) => void;
 }
 
 // Phase 4 Chunk 2b: adds StepRow list (in a collapsible DetailsPanel) and
@@ -24,7 +30,13 @@ interface MessageProps {
 //   [optional error / cd / killed line] ← context-specific footers
 //   [Stop button]                       ← only while executing
 //   [details panel: steps]              ← collapsible, default open
-export function Message({ message, onStop, onTogglePeek }: MessageProps) {
+export function Message({
+  message,
+  onStop,
+  onTogglePeek,
+  onConfirmPlan,
+  onCancelPlan,
+}: MessageProps) {
   const {
     status,
     statusIndicator,
@@ -33,12 +45,18 @@ export function Message({ message, onStop, onTogglePeek }: MessageProps) {
     steps,
     displayMode,
     peekEnabled,
+    plan,
   } = message;
 
   // The details panel becomes visible the moment we have any steps to
   // show. Hidden for refusal / cd / planning-error turns where steps
-  // never get initialized.
-  const showDetails = steps.length > 0;
+  // never get initialized. Also hidden during the Plan Mode pause and
+  // after a cancellation — the Plan Card already shows the steps list,
+  // and "Plan discarded." turns have nothing to expand into.
+  const showDetails =
+    steps.length > 0 &&
+    status !== 'awaiting-confirmation' &&
+    status !== 'cancelled-before-run';
 
   // Auto-open while the turn is in motion, auto-collapse once it
   // settles. The DetailsPanel honours this UNTIL the user manually
@@ -79,6 +97,27 @@ export function Message({ message, onStop, onTogglePeek }: MessageProps) {
           synthesizing phases. Hidden as soon as the response starts
           streaming or any terminal status is reached. */}
       {statusIndicator !== null && <StatusIndicator phase={statusIndicator} />}
+
+      {/* Plan Card — only visible while the orchestrator is paused
+          awaiting confirmation. The card itself is the UI surface;
+          status indicator is null in this state. */}
+      {status === 'awaiting-confirmation' && plan && (
+        <PlanCard
+          plan={plan}
+          steps={steps}
+          onConfirm={() => onConfirmPlan(message.id)}
+          onCancel={() => onCancelPlan(message.id)}
+        />
+      )}
+
+      {/* Cancelled-before-run footer — terminal state when the user
+          clicks Cancel on the Plan Card. The intent heading above stays
+          visible so scroll-back history is honest. */}
+      {status === 'cancelled-before-run' && (
+        <p className="text-[14px] leading-relaxed text-ink-label italic">
+          Plan discarded.
+        </p>
+      )}
 
       {/* AI response prose — visible in streaming, done, refused, and
           synthesize-error states. Inter 15px, reveal-smoothed. Only
