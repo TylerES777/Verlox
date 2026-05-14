@@ -18,6 +18,16 @@ interface PlanCardProps {
 // heading and what would be the execution surface. Pauses the orchestrator
 // until the user clicks Run or Cancel.
 //
+// Two render variants (Chunk 5 adds the second):
+//   - Plan Mode: caption "PLAN MODE", plan prose visible, button "Run".
+//                Triggered by the session-wide planMode flag.
+//   - Footgun:   caption "REVIEW NEEDED", reason banner under intent,
+//                plan prose hidden, button "Run anyway".
+//                Triggered by backend's footgunDetected on any step.
+//                Composition rule: when BOTH planMode is on AND a footgun
+//                is flagged, the footgun variant wins — it's the stricter
+//                gate, and a Plan Mode user already opted into review.
+//
 // Keyboard contract (mirrors Phase 3.4's TranslationCard):
 //   - Cancel button is auto-focused on mount.
 //   - Enter on focused Cancel → fires onCancel (browser default).
@@ -29,6 +39,18 @@ interface PlanCardProps {
 export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Variant selection. Footgun wins when both apply.
+  const isFootgun = plan.footgunDetected !== false;
+  const captionText = isFootgun ? 'Review needed' : 'Plan Mode';
+  const runLabel = isFootgun ? 'Run anyway' : 'Run';
+  // The full sentence form reads as a complete thought. Backend reasons
+  // are written as fragments ("recursive force delete", "drop a database,
+  // schema, or table") so we prepend "This will " and append a period.
+  const footgunSentence =
+    plan.footgunDetected !== false
+      ? `This will ${plan.footgunDetected.reason}.`
+      : null;
 
   // Steal focus to the Cancel button on mount. The dependency is empty
   // because PlanCard only mounts when status is 'awaiting-confirmation',
@@ -56,10 +78,11 @@ export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
       ref={containerRef}
       className="my-3 rounded-lg border-[0.5px] border-subtle-border bg-surface-faint p-5"
     >
-      {/* Caption — deep black, uppercase, tracked out. Reads as
+      {/* Caption — deep black, uppercase, tracked out. Same treatment for
+          both variants; the only difference is the word. Reads as
           "engaged," not "warning." (User: NOT amber.) */}
       <div className="mb-3 text-[10.5px] font-medium uppercase tracking-[0.08em] text-ink">
-        Plan Mode
+        {captionText}
       </div>
 
       {/* Intent — Source Serif italic. The model's interpretation of
@@ -71,8 +94,21 @@ export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
         {plan.intent}
       </p>
 
-      {/* Plan prose — one-paragraph approach summary in Inter. */}
-      {plan.plan && (
+      {/* Footgun reason banner — only in the footgun variant. Italic,
+          slightly heavier text colour than the plan prose to draw the
+          eye without resorting to a color accent. Replaces (not
+          augments) the plan prose below. */}
+      {footgunSentence && (
+        <p className="mb-4 text-[14px] italic leading-relaxed text-ink-body">
+          {footgunSentence}
+        </p>
+      )}
+
+      {/* Plan prose — one-paragraph approach summary in Inter. Hidden
+          in the footgun variant since the reason banner above is the
+          focal explanation; layering the model's prose on top dilutes
+          the warning. */}
+      {!isFootgun && plan.plan && (
         <p className="mb-4 text-[14px] leading-relaxed text-ink-body">
           {plan.plan}
         </p>
@@ -110,7 +146,7 @@ export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
           onClick={onConfirm}
           className="rounded-md bg-ink px-4 py-1.5 text-[13px] font-medium text-card hover:bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/30 transition-colors"
         >
-          Run
+          {runLabel}
         </button>
       </div>
     </div>

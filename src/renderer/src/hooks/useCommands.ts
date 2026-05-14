@@ -125,15 +125,18 @@ type Action =
       cwd: string;
       peekEnabled: boolean;
     }
-  // PLAN_RECEIVED's planMode flag decides the initial status:
-  //   planMode=false → 'executing' (orchestrator runs steps immediately)
-  //   planMode=true  → 'awaiting-confirmation' (Plan Card renders, orchestrator
-  //                    parks on a promise until confirmPlan/cancelPlan fires)
+  // PLAN_RECEIVED's pauseForConfirmation flag decides the initial status:
+  //   false → 'executing' (orchestrator runs steps immediately)
+  //   true  → 'awaiting-confirmation' (Plan Card renders, orchestrator parks
+  //           on a promise until confirmPlan/cancelPlan fires)
+  // The orchestrator sets this true when either the session-wide Plan Mode
+  // is on OR the backend flagged a footgun on the plan. Renamed from
+  // 'planMode' in Chunk 5 because footguns also flip it.
   | {
       type: 'PLAN_RECEIVED';
       id: string;
       plan: PlanResponse;
-      planMode: boolean;
+      pauseForConfirmation: boolean;
     }
   // PLAN_CONFIRMED flips a paused turn from 'awaiting-confirmation' →
   // 'executing'. The orchestrator resumes step execution after this.
@@ -225,11 +228,13 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
               ...m,
               plan: action.plan,
               displayMode: action.plan.displayMode,
-              // Plan Mode parks the turn on the Plan Card with no status
-              // indicator (the card itself is the UI). Non-plan-mode
-              // proceeds straight to execution with "Running…" indicator.
-              status: action.planMode ? 'awaiting-confirmation' : 'executing',
-              statusIndicator: action.planMode ? null : 'running',
+              // Pausing parks the turn on the Plan Card with no status
+              // indicator (the card itself is the UI). Non-paused turns
+              // proceed straight to execution with "Running…" indicator.
+              status: action.pauseForConfirmation
+                ? 'awaiting-confirmation'
+                : 'executing',
+              statusIndicator: action.pauseForConfirmation ? null : 'running',
             }
           : m,
       );
@@ -788,37 +793,40 @@ export function useCommands(
         return;
       }
 
-      // 3. footgun (Chunk 2a placeholder — render as refusal-style message;
-      //    Chunk 5 replaces this branch with the stripped Plan Card).
-      if (plan.footgunDetected) {
-        dispatch({
-          type: 'REFUSED',
-          id,
-          text: `That action is risky: ${plan.footgunDetected.reason}. Vorlox isn't running it without explicit approval.`,
-        });
-        return;
-      }
-
-      // 4. refusal — model returned empty steps and not a cd intent.
+      // 3. refusal — model returned empty steps and not a cd intent.
+      //    'refused' is reserved for model-driven refusals after Chunk 5:
+      //    footguns no longer fall through here, they trigger the Review
+      //    Needed card below.
       if (plan.steps.length === 0) {
         dispatch({ type: 'REFUSED', id, text: plan.plan });
         return;
       }
 
-      // 5. Execute each step locally.
+      // 4. Execute each step locally.
       //    PLAN_RECEIVED flips status → 'executing' OR 'awaiting-confirmation'
-      //    depending on the planMode flag. STEPS_INITIALIZED seeds steps[]
-      //    with everything queued (the Plan Card uses the same steps[] so
-      //    the StepRows it renders are identical visual entities to the
-      //    ones that animate during execution).
-      dispatch({ type: 'PLAN_RECEIVED', id, plan, planMode });
+      //    depending on whether the turn needs human approval first.
+      //    Approval is required when EITHER:
+      //      a) the user has Plan Mode on (session-wide review preference),
+      //      b) the backend flagged a footgun on any step (forced gate even
+      //         with Plan Mode off; the stripped Plan Card surfaces the
+      //         specific risk).
+      //    The Plan Card component branches its render on plan.footgunDetected
+      //    to swap caption/copy/button label, so a single pause-and-await
+      //    path handles both cases.
+      const needsConfirmation = planMode || plan.footgunDetected !== false;
+      dispatch({
+        type: 'PLAN_RECEIVED',
+        id,
+        plan,
+        pauseForConfirmation: needsConfirmation,
+      });
       dispatch({ type: 'STEPS_INITIALIZED', id, steps: plan.steps });
 
-      // 5b. Plan Mode pause. Stash a resolver, await user decision.
+      // 4b. Pause for confirmation. Stash a resolver, await user decision.
       //     confirmPlan / cancelPlan dispatch the status transition AND
       //     resolve the promise. bounceToLogin resolves all pending as
       //     cancelled to unblock the orchestrator.
-      if (planMode) {
+      if (needsConfirmation) {
         const confirmed = await new Promise<boolean>((resolve) => {
           pendingConfirmationsRef.current.set(id, resolve);
         });
