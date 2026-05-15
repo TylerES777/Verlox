@@ -77,9 +77,9 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input({ onSubm
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Type a message..."
+        placeholder="Ask Vorlox…"
         rows={1}
-        className="block w-full resize-none rounded-lg border border-transparent bg-[#F5F5F2] px-4 py-3 text-[14px] leading-6 text-gray-700 placeholder:text-gray-400 focus:border-gray-300 focus:outline-none"
+        className="block w-full resize-none rounded-xl border-[0.5px] border-subtle-border bg-surface-subtle px-4 py-3 text-[14px] leading-6 text-ink placeholder:text-ink-hint focus:border-input-border focus:outline-none transition-colors"
       />
     </div>
   );

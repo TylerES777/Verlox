@@ -27,8 +27,8 @@ function EmptyState({ onExampleClick }: EmptyStateProps) {
         What would you like to do?
       </h1>
       <p className="mt-3 max-w-[460px] text-center text-[14px] leading-relaxed text-ink-hint">
-        Type what you&rsquo;d like to do, in plain English. Vorlox will translate it to a
-        command and ask before running anything risky.
+        Type in plain English. Vorlox plans the steps, runs them, and tells you what
+        happened. Turn on Plan Mode to review every plan before it runs.
       </p>
       <div className="mt-8 flex w-full max-w-[380px] flex-col gap-2">
         {EXAMPLES.map((prompt) => (

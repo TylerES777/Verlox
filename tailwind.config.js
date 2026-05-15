@@ -85,9 +85,27 @@ export default {
           '0%, 100%': { opacity: '1' },
           '50%': { opacity: '0.85' },
         },
+        // 200ms cross-fade for the StatusIndicator phase transitions.
+        // Paired keyframes: the outgoing label runs 'fade-out' while the
+        // incoming label runs 'fade-in' over the same 200ms window. Both
+        // layers are absolutely stacked in the indicator's relative
+        // container so the words occupy the same on-screen position.
+        'fade-in': {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
+        },
+        'fade-out': {
+          from: { opacity: '1' },
+          to: { opacity: '0' },
+        },
       },
       animation: {
         flicker: 'flicker 2.5s ease-in-out infinite',
+        // ease-out lands the fade more gently than the default ease.
+        // forwards keeps the final opacity locked when the animation
+        // completes so the incoming label doesn't flicker back to 0.
+        'fade-in': 'fade-in 200ms ease-out forwards',
+        'fade-out': 'fade-out 200ms ease-out forwards',
       },
     },
   },
