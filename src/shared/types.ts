@@ -123,10 +123,24 @@ export interface TurnContext {
   focusedFile: string | null;
 }
 
+// One earlier turn in the conversation, compacted for the backend.
+// Phase 5 Chunk 1 (Memory): the renderer builds these from the tab's
+// prior messages so the AI sees the thread — what was asked and what
+// happened — instead of treating every turn as amnesiac.
+export interface TurnHistoryEntry {
+  userInput: string;
+  // Compact description of the outcome: commands run + (truncated)
+  // output, or the AI's reply, or a cd / error / cancellation note.
+  outcome: string;
+}
+
 export interface TurnInput {
   userInput: string;
   context: TurnContext;
   planMode: boolean;
+  // Earlier turns in this conversation tab, oldest first. Empty for the
+  // first turn of a conversation.
+  history: TurnHistoryEntry[];
 }
 
 export interface PlanStep {

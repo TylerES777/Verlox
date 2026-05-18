@@ -7,6 +7,7 @@ import type {
   PlanDisplayMode,
   PlanResponse,
   PlanStep,
+  TurnHistoryEntry,
 } from '@shared/types';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -488,6 +489,56 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
   }
 }
 
+// ── Conversation history (Phase 5 Chunk 1: Memory) ────────────────────────
+
+// Prior turns' command output is capped at this many lines in the
+// history transcript. The CURRENT turn always sends full output —
+// only the backward-looking history is trimmed, so a once-huge
+// listing doesn't bloat every later request.
+const HISTORY_OUTPUT_LINE_CAP = 40;
+
+function truncateForHistory(text: string): string {
+  const trimmed = text.trimEnd();
+  if (trimmed.length === 0) return '';
+  const lines = trimmed.split('\n');
+  if (lines.length <= HISTORY_OUTPUT_LINE_CAP) return trimmed;
+  return `${lines.slice(0, HISTORY_OUTPUT_LINE_CAP).join('\n')}\n…(trimmed)`;
+}
+
+// Compact one completed turn into a history entry for /api/turn. Carries
+// what the user asked and what happened — commands + trimmed output, the
+// AI's reply, or a cd / error / cancellation note.
+function toHistoryEntry(m: CommandMessage): TurnHistoryEntry {
+  let outcome: string;
+  switch (m.status) {
+    case 'cd-success':
+      outcome = `Changed working directory to ${m.cdResolvedDisplay ?? '(unknown)'}.`;
+      break;
+    case 'cd-error':
+    case 'planning-error':
+      outcome = m.errorMessage ?? 'Something went wrong.';
+      break;
+    case 'cancelled-before-run':
+      outcome = 'The plan was discarded before running.';
+      break;
+    default: {
+      if (m.executionLog.length > 0) {
+        const blocks = m.executionLog.map((e) => {
+          const out = truncateForHistory(e.output) || '(no output)';
+          return `$ ${e.command}\n${out}`;
+        });
+        outcome = blocks.join('\n\n');
+        const reply = m.finalResponse || m.pendingResponse;
+        if (reply) outcome += `\n\nVorlox replied: ${reply}`;
+      } else {
+        // Reply / refusal turns ran nothing — the AI's prose is the outcome.
+        outcome = m.finalResponse || m.pendingResponse || '(no response)';
+      }
+    }
+  }
+  return { userInput: m.userInput, outcome };
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────
 
 export function useCommands(
@@ -789,6 +840,11 @@ export function useCommands(
       if (!environment) return;
       const effectiveCwd = cwd?.absolute ?? environment.homeDir;
 
+      // Snapshot the conversation thread BEFORE adding the new turn.
+      // messagesRef is authoritative immediately (custom synchronous
+      // dispatch), so this must be captured before INPUT_SUBMITTED.
+      const history = messagesRef.current.map(toHistoryEntry);
+
       const id = crypto.randomUUID();
       dispatch({
         type: 'INPUT_SUBMITTED',
@@ -812,6 +868,7 @@ export function useCommands(
           focusedFile,
         },
         planMode,
+        history,
       });
 
       if (!planResult.ok) {
