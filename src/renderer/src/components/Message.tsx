@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { CommandMessage, MessageStep } from '../hooks/useCommands';
 import { StatusIndicator } from './StatusIndicator';
 import { StepRow } from './StepRow';
@@ -62,10 +63,17 @@ export function Message({
   // settles. The DetailsPanel honours this UNTIL the user manually
   // toggles — after that, the user's choice wins for the rest of the
   // message's life.
+  //
+  // 'killed' is included so the panel stays open after a stop: the
+  // cancelled step (and any skipped ones) are the whole reason the user
+  // pressed stop, so auto-collapsing them out of sight reads as the app
+  // hiding the outcome. 'done' still auto-collapses — a clean finish
+  // doesn't need the steps in the user's face.
   const detailsDesiredOpen =
     status === 'executing' ||
     status === 'synthesizing' ||
-    status === 'streaming';
+    status === 'streaming' ||
+    status === 'killed';
 
   // Verbatim raw-output blocks render only in verbatim mode after at
   // least one step has produced output. We render once the turn is
@@ -83,6 +91,12 @@ export function Message({
   // never shows commands inside StepRows (the verbatim block above is
   // the canonical surface for those).
   const stepShowCommand = peekEnabled && displayMode === 'summary';
+
+  // Counter bumped every time the peek toggle is clicked. Passed to
+  // DetailsPanel as expandSignal so a click while the panel is collapsed
+  // expands it — otherwise toggling "show/hide command" produces no
+  // visible change and the click feels dead.
+  const [peekExpandSignal, setPeekExpandSignal] = useState(0);
 
   return (
     <article className="mb-12">
@@ -189,11 +203,17 @@ export function Message({
         <DetailsPanel
           label={`Steps (${steps.length})`}
           desiredOpen={detailsDesiredOpen}
+          expandSignal={peekExpandSignal}
           headerRight={
             showPeekToggle ? (
               <button
                 type="button"
-                onClick={() => onTogglePeek(message.id)}
+                onClick={() => {
+                  onTogglePeek(message.id);
+                  // Bump the signal so DetailsPanel expands — makes the
+                  // toggle visible even when the panel was collapsed.
+                  setPeekExpandSignal((n) => n + 1);
+                }}
                 className="text-[12px] text-ink-label hover:text-ink focus:outline-none transition-colors"
               >
                 {peekEnabled ? 'hide command' : 'show command'}

@@ -15,6 +15,13 @@ interface DetailsPanelProps {
   // (it's part of the header, not the collapsible body) so users can flip
   // peek without expanding the panel first.
   headerRight?: ReactNode;
+  // Optional "force open" signal. Each time this number changes, the
+  // panel opens (and locks in as manually-toggled so it won't auto-
+  // collapse afterward). Used by the peek toggle: clicking "show/hide
+  // command" while the panel is collapsed would otherwise produce no
+  // visible change, so the toggle bumps this signal to surface the
+  // step list. The number's value is meaningless — only changes matter.
+  expandSignal?: number;
   children: ReactNode;
 }
 
@@ -43,16 +50,31 @@ export function DetailsPanel({
   desiredOpen,
   label,
   headerRight,
+  expandSignal,
   children,
 }: DetailsPanelProps) {
   const [open, setOpen] = useState(desiredOpen);
   const manuallyToggledRef = useRef(false);
+  // Tracks the last expandSignal value acted on. Initialized to the
+  // prop's mount value so the effect below skips the initial render
+  // and only fires on genuine changes.
+  const expandSignalSeenRef = useRef(expandSignal);
 
   // Sync open to desiredOpen until the user takes manual control.
   useEffect(() => {
     if (manuallyToggledRef.current) return;
     setOpen(desiredOpen);
   }, [desiredOpen]);
+
+  // Force-open on every expandSignal change. Treated as a manual toggle
+  // (the user clicked something that implies intent to see the steps),
+  // so it also locks out the desiredOpen auto-sync from here on.
+  useEffect(() => {
+    if (expandSignal === expandSignalSeenRef.current) return;
+    expandSignalSeenRef.current = expandSignal;
+    manuallyToggledRef.current = true;
+    setOpen(true);
+  }, [expandSignal]);
 
   const handleToggle = () => {
     manuallyToggledRef.current = true;
