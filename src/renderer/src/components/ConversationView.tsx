@@ -29,8 +29,8 @@ function EmptyState({ onExampleClick }: EmptyStateProps) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8">
       <h1
-        className="text-center font-serif text-[28px] italic font-normal text-ink"
-        style={{ letterSpacing: '-0.005em' }}
+        className="text-center text-[22px] font-semibold text-ink"
+        style={{ letterSpacing: '-0.02em' }}
       >
         What would you like to do?
       </h1>

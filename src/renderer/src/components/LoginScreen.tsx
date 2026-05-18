@@ -123,7 +123,9 @@ export function LoginScreen() {
     <div className="flex h-full w-full flex-col bg-card">
       {/* Wordmark header */}
       <div className="flex justify-center pb-2 pt-8">
-        <span className="font-serif text-[17px] font-medium text-ink">Vorlox</span>
+        <span className="font-mono text-[14px] font-medium tracking-tight text-ink">
+          <span className="text-amber">›</span>vorlox
+        </span>
       </div>
 
       {/* Centered welcome + form */}
@@ -139,8 +141,8 @@ export function LoginScreen() {
           )}
 
           <h1
-            className="font-serif text-[32px] font-normal text-ink"
-            style={{ letterSpacing: '-0.01em' }}
+            className="text-[25px] font-semibold text-ink"
+            style={{ letterSpacing: '-0.02em' }}
           >
             {isSignUp ? 'Create your account.' : 'Welcome back.'}
           </h1>

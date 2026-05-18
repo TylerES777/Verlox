@@ -15,10 +15,12 @@ interface StatusIndicatorProps {
 // The container reserves a fixed height (h-[20px]) so the page doesn't
 // reflow during the fade. The first phase (no previous label) renders
 // without any outgoing layer — just a clean fade-in.
+// Lowercase, mono — reads as terminal status output, not an editorial
+// caption. The trailing ellipsis stays as the "still working" cue.
 const PHASE_LABEL: Record<Exclude<StatusIndicatorPhase, null>, string> = {
-  examining: 'Examining…',
-  running: 'Running…',
-  reviewing: 'Reviewing…',
+  examining: 'examining…',
+  running: 'running…',
+  reviewing: 'reviewing…',
 };
 
 export function StatusIndicator({ phase }: StatusIndicatorProps) {
@@ -61,7 +63,7 @@ export function StatusIndicator({ phase }: StatusIndicatorProps) {
       {previous !== null && (
         <div
           key={`prev-${previous}`}
-          className="absolute inset-0 font-serif text-[13px] italic text-ink-micro animate-fade-out"
+          className="absolute inset-0 font-mono text-[12px] text-ink-micro animate-fade-out"
         >
           {PHASE_LABEL[previous]}
         </div>
@@ -72,7 +74,7 @@ export function StatusIndicator({ phase }: StatusIndicatorProps) {
       {current !== null && (
         <div
           key={`curr-${current}`}
-          className="absolute inset-0 font-serif text-[13px] italic text-ink-micro animate-fade-in"
+          className="absolute inset-0 font-mono text-[12px] text-ink-micro animate-fade-in"
         >
           {PHASE_LABEL[current]}
         </div>

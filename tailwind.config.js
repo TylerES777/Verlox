@@ -43,10 +43,10 @@ export default {
           'system-ui',
           'sans-serif',
         ],
-        // Source Serif 4 — for display headings, the empty-state heading,
-        // timestamps, the wordmark, and the translating ellipsis.
-        serif: ['"Source Serif 4"', 'Georgia', 'Cambria', 'serif'],
-        // JetBrains Mono — for command, output, cwd, all monospace blocks.
+        // JetBrains Mono — for command, output, cwd, the wordmark, status
+        // words, and all monospace blocks. Phase 5 visual pass: the serif
+        // (Source Serif 4) was dropped entirely — it read as "blog post,"
+        // not "developer tool." Everything is now sans (Inter) + mono.
         mono: [
           '"JetBrains Mono"',
           'ui-monospace',

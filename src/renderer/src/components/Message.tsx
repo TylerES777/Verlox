@@ -24,13 +24,13 @@ interface MessageProps {
 // command access; Chunks 4–5 add Plan Card and footgun review.
 //
 // Visual hierarchy per turn:
-//   [intent in Source Serif 22px]      ← user's natural-language input
-//   [optional status indicator]         ← italic Source Serif, gray
-//   [optional response prose]           ← Inter 15px, reveal-smoothed
-//   [verbatim raw output blocks]        ← only when displayMode='verbatim'
-//   [optional error / cd / killed line] ← context-specific footers
-//   [Stop button]                       ← only while executing
-//   [details panel: steps]              ← collapsible, default open
+//   [intent — "› " prompt + tight sans]  ← user's natural-language input
+//   [optional status indicator]          ← lowercase mono, gray
+//   [optional response prose]            ← Inter 15px, reveal-smoothed
+//   [verbatim raw output blocks]         ← only when displayMode='verbatim'
+//   [optional error / cd / killed line]  ← context-specific footers
+//   [Stop button]                        ← only while executing
+//   [details panel: steps]               ← collapsible, default open
 export function Message({
   message,
   onStop,
@@ -99,12 +99,21 @@ export function Message({
   const [peekExpandSignal, setPeekExpandSignal] = useState(0);
 
   return (
-    <article className="mb-12">
+    <article className="mb-8">
+      {/* Intent — the user's request, framed as a terminal prompt line:
+          an amber "›" marker + the text in tight sans. Reads as a
+          command entered, not an article headline. */}
       <h2
-        className="mb-3 font-serif text-[22px] font-normal text-ink"
-        style={{ letterSpacing: '-0.005em' }}
+        className="mb-3 flex items-start gap-2 text-[16px] font-semibold text-ink leading-snug"
+        style={{ letterSpacing: '-0.01em' }}
       >
-        {message.userInput}
+        <span
+          className="shrink-0 select-none font-mono font-medium text-amber"
+          aria-hidden="true"
+        >
+          ›
+        </span>
+        <span className="min-w-0">{message.userInput}</span>
       </h2>
 
       {/* Status indicator — visible during translating / executing /
@@ -232,17 +241,22 @@ export function Message({
   );
 }
 
-// Per-step raw output block for verbatim mode. The left border is a
-// 2px hairline that visually anchors the command-and-output pair so
-// adjacent step blocks read as separate units without needing a card.
+// Per-step raw output block for verbatim mode — a contained terminal
+// block: a command-prompt header strip, a hairline divider, then the raw
+// output. The boxed surface reads as a discrete unit (like a Warp block
+// or a code block), not a blog pullquote.
 function VerbatimBlock({ step }: { step: MessageStep }) {
   return (
-    <div className="border-l-2 border-hairline pl-3">
-      <div className="font-mono text-[13px] font-medium text-ink leading-relaxed">
-        {step.command}
+    <div className="overflow-hidden rounded-lg border border-subtle-border bg-surface-subtle">
+      {/* Command header — the prompt line. */}
+      <div className="flex gap-2 px-3 py-2 font-mono text-[12.5px] font-medium text-ink">
+        <span className="shrink-0 select-none text-amber" aria-hidden="true">
+          ›
+        </span>
+        <span className="min-w-0 break-all">{step.command}</span>
       </div>
       {step.output.length > 0 && (
-        <pre className="font-mono text-[13px] font-normal text-ink-body whitespace-pre-wrap leading-relaxed mt-1">
+        <pre className="whitespace-pre-wrap border-t border-subtle-border bg-surface-faint px-3 py-2 font-mono text-[12.5px] font-normal leading-relaxed text-ink-body">
           {step.output}
         </pre>
       )}

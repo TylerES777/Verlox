@@ -31,8 +31,8 @@ export function Header({
 }: HeaderProps) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b-[0.5px] border-hairline px-6">
-      <span className="shrink-0 font-serif text-[17px] font-medium text-ink">
-        Vorlox
+      <span className="shrink-0 font-mono text-[14px] font-medium tracking-tight text-ink">
+        <span className="text-amber">›</span>vorlox
       </span>
       {/* The locked path takes the whole middle. flex-1 + min-w-0 lets it
           use the full available width so the entire folder trace shows;

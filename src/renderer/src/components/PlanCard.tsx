@@ -85,11 +85,11 @@ export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
         {captionText}
       </div>
 
-      {/* Intent — Source Serif italic. The model's interpretation of
-          what was asked, surfaced for explicit confirmation. */}
+      {/* Intent — the model's interpretation of what was asked, in tight
+          sans, surfaced for explicit confirmation. */}
       <p
-        className="mb-3 font-serif text-[17px] italic font-normal text-ink leading-snug"
-        style={{ letterSpacing: '-0.005em' }}
+        className="mb-3 text-[15px] font-semibold text-ink leading-snug"
+        style={{ letterSpacing: '-0.01em' }}
       >
         {plan.intent}
       </p>
