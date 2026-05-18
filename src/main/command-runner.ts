@@ -2,7 +2,6 @@ import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import type { WebContents } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
 import type { CommandExitEvent, CommandOutputEvent } from '@shared/types';
-import { getCwd } from './store';
 
 const running = new Map<string, ChildProcess>();
 
@@ -45,14 +44,16 @@ export function startCommand(
   webContents: WebContents,
   id: string,
   command: string,
+  cwd: string,
 ): void {
   if (running.has(id)) return;
 
-  const cwd = getCwd().absolute;
-
-  // NOTE: each command runs in a fresh shell, so `cd` inside a command
-  // does not affect Vorlox's tracked cwd. Phase 3's AI layer will handle
-  // `cd` as a special case that updates the persisted cwd via setCwd().
+  // `cwd` is supplied by the renderer per-conversation — each conversation
+  // tracks its own working directory (or none, in which case the renderer
+  // passes the user's home directory). Each command runs in a fresh shell,
+  // so a `cd` inside a command does not affect Vorlox's tracked cwd; the
+  // AI layer handles `cd` as a special case that updates the conversation's
+  // cwd via setCwd().
   const child = spawn(command, {
     shell: shellFor(),
     cwd,

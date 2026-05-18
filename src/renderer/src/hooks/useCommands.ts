@@ -491,6 +491,10 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
 // ── Hook ──────────────────────────────────────────────────────────────────
 
 export function useCommands(
+  // The conversation's working directory, or null if the user hasn't
+  // chosen one ("folderless"). Folderless conversations still work —
+  // commands run from the user's home directory as the invisible
+  // default (see effectiveCwd below).
   cwd: CwdInfo | null,
   // Session-wide peek default. Each new turn copies this value into its
   // CommandMessage at INPUT_SUBMITTED time. Read via a ref so submitInput
@@ -504,6 +508,11 @@ export function useCommands(
   // Cd-only and footgun-only turns bypass Plan Mode (cd is auto-handled;
   // footguns get their own stripped Plan Card in Chunk 5).
   planMode: boolean,
+  // Called when a `cd` turn succeeds. The conversation owns its own cwd
+  // state (one cwd per tab); useCommands resolves the path via the
+  // backend validator but hands the result back here so the owning
+  // ConversationView can update its state and re-render the header.
+  onCwdChange: (next: CwdInfo) => void,
 ): {
   messages: CommandMessage[];
   forceScrollVersion: number;
@@ -534,6 +543,14 @@ export function useCommands(
   useEffect(() => {
     planModeRef.current = planMode;
   }, [planMode]);
+
+  // Mirror onCwdChange into a ref so the cd branch of submitInput always
+  // calls the latest callback without re-creating the orchestrator
+  // closure when the parent re-renders.
+  const onCwdChangeRef = useRef(onCwdChange);
+  useEffect(() => {
+    onCwdChangeRef.current = onCwdChange;
+  }, [onCwdChange]);
 
   // Resolver-map for the Plan Mode pause. When the orchestrator enters
   // 'awaiting-confirmation' it stashes a resolver here keyed by message
@@ -654,6 +671,31 @@ export function useCommands(
     return () => off();
   }, [dispatch, bounceToLogin]);
 
+  // Unmount cleanup. A conversation tab can be closed while a command is
+  // still running or a synthesize stream is open; without this the shell
+  // process would keep running with its IPC events landing on a
+  // listener that no longer exists. Mirrors bounceToLogin's teardown,
+  // minus the message clear (the component is going away anyway).
+  //
+  // Reading the refs' .current inside the cleanup is intentional — we
+  // want the LATEST running steps / streaming messages at unmount time,
+  // not whatever was set when the effect first ran. The exhaustive-deps
+  // ref-in-cleanup warning assumes a DOM-node ref; these are data refs,
+  // so the warning doesn't apply.
+  useEffect(() => {
+    return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      for (const stepId of activeStepIdsRef.current.values()) {
+        window.api.stopCommand(stepId);
+      }
+      for (const m of messagesRef.current) {
+        if (m.status === 'synthesizing' || m.status === 'streaming') {
+          window.api.synthesizeCancel(m.id);
+        }
+      }
+    };
+  }, []);
+
   // ── Step execution helper ──────────────────────────────────────────────
   // Runs one step locally via the existing command-runner IPC. Resolves
   // when the step exits (naturally or via signal). Throws nothing — even
@@ -671,6 +713,10 @@ export function useCommands(
       messageId: string,
       stepIndex: number,
       step: PlanStep,
+      // Absolute directory to run the command in. Resolved once per turn
+      // by submitInput (the conversation's cwd, or home if folderless)
+      // and threaded through so every step of the turn runs consistently.
+      stepCwd: string,
     ): Promise<ExecutionLogEntry> => {
       return new Promise<ExecutionLogEntry>((resolve) => {
         const stepId = `${messageId}::${stepIndex}`;
@@ -720,7 +766,7 @@ export function useCommands(
 
         activeStepIdsRef.current.set(messageId, stepId);
         dispatch({ type: 'STEP_START', id: messageId, index: stepIndex });
-        window.api.startCommand({ id: stepId, command: step.command });
+        window.api.startCommand({ id: stepId, command: step.command, cwd: stepCwd });
       });
     },
     [dispatch],
@@ -731,14 +777,21 @@ export function useCommands(
     async (userInput: string) => {
       const trimmed = userInput.trim();
       if (trimmed.length === 0) return;
-      if (!cwd || !environment) return;
+      // Only `environment` is mandatory now — a folderless conversation
+      // (cwd === null) is fine. The effective directory for both the
+      // backend plan context and local command execution falls back to
+      // the user's home directory when no folder is chosen.
+      if (!environment) return;
+      const effectiveCwd = cwd?.absolute ?? environment.homeDir;
 
       const id = crypto.randomUUID();
       dispatch({
         type: 'INPUT_SUBMITTED',
         id,
         userInput: trimmed,
-        cwd: cwd.display,
+        // Empty string for folderless turns — the field is stored for
+        // history but isn't rendered prominently.
+        cwd: cwd?.display ?? '',
         peekEnabled: peekDefaultRef.current,
       });
       setForceScrollVersion((v) => v + 1);
@@ -748,7 +801,7 @@ export function useCommands(
       const planResult = await window.api.planTurn({
         userInput: trimmed,
         context: {
-          cwd: cwd.absolute,
+          cwd: effectiveCwd,
           platform: environment.platform,
           shell: environment.shell,
         },
@@ -782,6 +835,11 @@ export function useCommands(
         }
         try {
           const newCwd = await window.api.setCwd(plan.cdTarget);
+          // Hand the resolved cwd back to the owning ConversationView so
+          // its per-tab cwd state (and the header) update. window.api.setCwd
+          // only validates + resolves the path here; it is no longer the
+          // source of truth for the working directory.
+          onCwdChangeRef.current(newCwd);
           dispatch({ type: 'CD_SUCCESS', id, displayPath: newCwd.display });
         } catch {
           dispatch({
@@ -842,7 +900,7 @@ export function useCommands(
       let killed = false;
 
       for (let i = 0; i < plan.steps.length; i += 1) {
-        const entry = await runStep(id, i, plan.steps[i]);
+        const entry = await runStep(id, i, plan.steps[i], effectiveCwd);
         executionLog.push(entry);
         if (entry.signal != null) {
           killed = true;

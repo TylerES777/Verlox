@@ -1,5 +1,5 @@
 import { AuthLoading } from './components/AuthLoading';
-import { ConversationScreen } from './components/ConversationScreen';
+import { ConversationsShell } from './components/ConversationsShell';
 import { LoginScreen } from './components/LoginScreen';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 
@@ -7,7 +7,7 @@ function AuthGate() {
   const { status } = useAuth();
   if (status === 'hydrating') return <AuthLoading />;
   if (status === 'unauthenticated') return <LoginScreen />;
-  return <ConversationScreen />;
+  return <ConversationsShell />;
 }
 
 export default function App() {

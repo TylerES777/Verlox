@@ -1,4 +1,5 @@
 import { basename } from 'node:path';
+import { homedir } from 'node:os';
 import type { EnvironmentInfo, Platform, Shell } from '@shared/types';
 
 function detectPlatform(): Platform {
@@ -39,6 +40,6 @@ export function getEnvironment(): EnvironmentInfo {
   if (cached) return cached;
   const platform = detectPlatform();
   const shell = detectShell(platform);
-  cached = { platform, shell };
+  cached = { platform, shell, homeDir: homedir() };
   return cached;
 }

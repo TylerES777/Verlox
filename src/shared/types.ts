@@ -8,6 +8,11 @@ export type CommandStream = 'stdout' | 'stderr';
 export interface CommandStartPayload {
   id: string;
   command: string;
+  // Absolute directory to spawn the command in. The renderer always
+  // resolves this to a real path before sending — for a folderless
+  // conversation it passes the user's home directory (the invisible
+  // default), so the main process never has to guess.
+  cwd: string;
 }
 
 export interface CommandOutputEvent {
@@ -65,6 +70,10 @@ export type Shell = 'powershell' | 'bash' | 'zsh' | 'fish' | 'cmd';
 export interface EnvironmentInfo {
   platform: Platform;
   shell: Shell;
+  // Absolute path to the user's home directory. Used by the renderer as
+  // the invisible working-directory fallback for folderless
+  // conversations — the renderer has no os.homedir() of its own.
+  homeDir: string;
 }
 
 // Backend error code (shared by all backend calls) --------------------------

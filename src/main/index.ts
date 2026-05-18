@@ -81,7 +81,7 @@ ipcMain.handle(IpcChannels.CwdGet, () => getCwd());
 ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
 
 ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
-  startCommand(event.sender, payload.id, payload.command);
+  startCommand(event.sender, payload.id, payload.command, payload.cwd);
 });
 
 ipcMain.on(IpcChannels.CommandStop, (_event, id: string) => {
