@@ -142,7 +142,7 @@ export function Message({
         </p>
       )}
 
-      {/* AI response prose — visible in streaming, done, refused, and
+      {/* AI response prose — visible in streaming, done, replied, and
           synthesize-error states. Inter 15px, reveal-smoothed. Only
           rendered for summary mode (verbatim mode has no synthesize
           prose; the raw output blocks below stand in). */}

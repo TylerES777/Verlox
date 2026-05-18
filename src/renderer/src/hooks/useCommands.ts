@@ -16,7 +16,8 @@ import { useAuth } from '../contexts/AuthContext';
 export type TurnStatus =
   | 'translating'             // /api/turn in flight
   | 'planning-error'          // /api/turn failed (network/server/rate-limit)
-  | 'refused'                 // model returned empty steps OR footgun (2a placeholder)
+  | 'replied'                 // AI answered without running commands — a
+                              //   clarifying question, advice, or a decline
   | 'cd-success'              // cd handled
   | 'cd-error'                // cd path invalid
   | 'awaiting-confirmation'   // Plan Mode: Plan Card visible, awaiting Run/Cancel
@@ -24,7 +25,7 @@ export type TurnStatus =
   | 'executing'               // running steps locally via window.api.startCommand
   | 'synthesizing'            // /api/synthesize connected, no deltas yet
   | 'streaming'               // first delta arrived; response prose flowing
-  | 'done'                    // synthesis complete (or refusal/cd-success terminal)
+  | 'done'                    // synthesis complete, or verbatim turn finished
   | 'killed'                  // user pressed stop on a running step
   | 'synthesize-error';       // /api/synthesize errored
 
@@ -146,7 +147,9 @@ type Action =
   // The turn stays in conversation history with the "Plan discarded." footer.
   | { type: 'PLAN_CANCELLED'; id: string }
   | { type: 'PLANNING_ERROR'; id: string; message: string }
-  | { type: 'REFUSED'; id: string; text: string }
+  // REPLIED: the AI answered without running commands — a clarifying
+  // question, advice, or a calm decline. `text` is its message.
+  | { type: 'REPLIED'; id: string; text: string }
   | { type: 'CD_SUCCESS'; id: string; displayPath: string }
   | { type: 'CD_ERROR'; id: string; message: string }
   | { type: 'STATUS_INDICATOR'; id: string; phase: StatusIndicatorPhase }
@@ -317,13 +320,13 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
           : m,
       );
 
-    case 'REFUSED':
-      // Refusal text flows through reveal-smoothing (it's AI-generated prose).
+    case 'REPLIED':
+      // The AI's message flows through reveal-smoothing (it's AI prose).
       return state.map((m) =>
         m.id === action.id
           ? {
               ...m,
-              status: 'refused',
+              status: 'replied',
               statusIndicator: null,
               pendingResponse: action.text,
               endedAt: Date.now(),
@@ -914,12 +917,13 @@ export function useCommands(
         return;
       }
 
-      // 3. refusal — model returned empty steps and not a cd intent.
-      //    'refused' is reserved for model-driven refusals after Chunk 5:
-      //    footguns no longer fall through here, they trigger the Review
-      //    Needed card below.
+      // 3. reply — the AI answered without running commands: a clarifying
+      //    question, advice, a recommendation, or a calm decline. The
+      //    backend signals this with empty steps (and not a cd intent);
+      //    plan.plan carries the AI's message. Footguns don't fall here —
+      //    they have steps and trigger the Review Needed card below.
       if (plan.steps.length === 0) {
-        dispatch({ type: 'REFUSED', id, text: plan.plan });
+        dispatch({ type: 'REPLIED', id, text: plan.plan });
         return;
       }
 
