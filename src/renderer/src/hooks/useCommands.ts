@@ -513,6 +513,11 @@ export function useCommands(
   // backend validator but hands the result back here so the owning
   // ConversationView can update its state and re-render the header.
   onCwdChange: (next: CwdInfo) => void,
+  // Absolute path of the file the conversation is locked to, or null.
+  // Sent to the backend in the turn context so the AI reads requests as
+  // being about that file. Set via the path picker, owned by
+  // ConversationView.
+  focusedFile: string | null,
 ): {
   messages: CommandMessage[];
   forceScrollVersion: number;
@@ -804,6 +809,7 @@ export function useCommands(
           cwd: effectiveCwd,
           platform: environment.platform,
           shell: environment.shell,
+          focusedFile,
         },
         planMode,
       });
@@ -948,7 +954,7 @@ export function useCommands(
       // SYNTHESIZE_DELTA / TURN_DONE / SYNTHESIZE_ERROR dispatches.
       // No further action needed in this orchestrator.
     },
-    [cwd, environment, dispatch, bounceToLogin, runStep],
+    [cwd, environment, focusedFile, dispatch, bounceToLogin, runStep],
   );
 
   // Public stop: cancels the currently-running step for the given message.

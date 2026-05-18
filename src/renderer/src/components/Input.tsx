@@ -7,6 +7,7 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react';
+import { PathPicker, type PathSelection } from './PathPicker';
 
 const MAX_LINES = 6;
 
@@ -20,12 +21,31 @@ export interface InputHandle {
 
 interface InputProps {
   onSubmit: (value: string) => void;
+  // Directory the path picker starts browsing in (the conversation's
+  // current folder, or null for home).
+  pickerInitialPath: string | null;
+  // Called when the user locks the conversation to a folder/file via the
+  // picker. ConversationView turns this into the per-conversation lock.
+  onPickPath: (selection: PathSelection) => void;
+  // True when the conversation has a folder or file locked. Drives the
+  // folder button's amber "locked" state so the user gets confirmation
+  // from the button itself, without checking the header.
+  locked: boolean;
 }
 
-export const Input = forwardRef<InputHandle, InputProps>(function Input({ onSubmit }, ref) {
+export const Input = forwardRef<InputHandle, InputProps>(function Input(
+  { onSubmit, pickerInitialPath, onPickPath, locked },
+  ref,
+) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineHeightRef = useRef<number>(0);
   const [value, setValue] = useState('');
+
+  // Path picker open state. The wrapper ref spans BOTH the folder button
+  // and the picker panel, so a click on either counts as "inside" and
+  // the click-outside handler only fires for genuine outside clicks.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerWrapRef = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
@@ -59,6 +79,28 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input({ onSubm
     textareaRef.current?.focus();
   }, []);
 
+  // Close the picker on click-outside or Escape — only while it's open.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    function onPointerDown(e: MouseEvent) {
+      if (
+        pickerWrapRef.current &&
+        !pickerWrapRef.current.contains(e.target as Node)
+      ) {
+        setPickerOpen(false);
+      }
+    }
+    function onKey(e: globalThis.KeyboardEvent) {
+      if (e.key === 'Escape') setPickerOpen(false);
+    }
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pickerOpen]);
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -70,17 +112,72 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input({ onSubm
     }
   };
 
+  const handlePick = (selection: PathSelection) => {
+    onPickPath(selection);
+    setPickerOpen(false);
+    textareaRef.current?.focus();
+  };
+
   return (
     <div className="shrink-0 p-4">
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Ask Vorlox…"
-        rows={1}
-        className="block w-full resize-none rounded-xl border-[0.5px] border-subtle-border bg-surface-subtle px-4 py-3 text-[14px] leading-6 text-ink placeholder:text-ink-hint focus:border-input-border focus:outline-none transition-colors"
-      />
+      <div className="flex items-end gap-2">
+        {/* Folder-icon button — opens the lock-to-folder/file picker.
+            The picker panel renders inside this wrapper so a click on
+            either the button or the panel is "inside". */}
+        <div ref={pickerWrapRef} className="relative shrink-0">
+          {pickerOpen && (
+            <PathPicker initialPath={pickerInitialPath} onPick={handlePick} />
+          )}
+          <button
+            type="button"
+            onClick={() => setPickerOpen((o) => !o)}
+            aria-label="Lock to a folder or file"
+            title={
+              locked
+                ? 'Locked — change the folder or file'
+                : 'Lock to a folder or file'
+            }
+            aria-pressed={locked}
+            className={`flex h-12 w-12 items-center justify-center rounded-xl border-[0.5px] transition-colors focus:outline-none ${
+              locked
+                ? // A lock is active — amber state. Confirmation lives on
+                  // the button itself; no need to glance at the header.
+                  'border-amber/50 bg-amber/[0.08] text-amber'
+                : pickerOpen
+                  ? 'border-input-border bg-surface-subtle text-ink'
+                  : 'border-subtle-border bg-surface-subtle text-ink-label hover:text-ink'
+            }`}
+          >
+            <FolderIcon />
+          </button>
+        </div>
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Ask Vorlox…"
+          rows={1}
+          className="block w-full flex-1 resize-none rounded-xl border-[0.5px] border-subtle-border bg-surface-subtle px-4 py-3 text-[14px] leading-6 text-ink placeholder:text-ink-hint focus:border-input-border focus:outline-none transition-colors"
+        />
+      </div>
     </div>
   );
 });
+
+function FolderIcon() {
+  return (
+    <svg
+      viewBox="0 0 18 18"
+      className="h-[18px] w-[18px]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 4.5h5l1.7 2H16v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+    </svg>
+  );
+}

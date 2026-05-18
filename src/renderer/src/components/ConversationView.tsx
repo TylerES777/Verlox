@@ -3,6 +3,7 @@ import type { CwdInfo } from '@shared/types';
 import { Header } from './Header';
 import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
+import type { PathSelection } from './PathPicker';
 import { useCommands } from '../hooks/useCommands';
 
 const EXAMPLES = [
@@ -87,10 +88,37 @@ export function ConversationView({
   // still run (from the home directory), the header shows "No folder".
   // A successful `cd` turn fills this in via onCwdChange below.
   const [cwd, setCwd] = useState<CwdInfo | null>(null);
+  // Absolute path of the file the conversation is locked to, or null.
+  // When set, cwd is the file's parent folder and the AI is told the
+  // file is the focus. Set via the path picker; cleared by a folder
+  // lock or a `cd` turn.
+  const [focusedFile, setFocusedFile] = useState<string | null>(null);
   const inputRef = useRef<InputHandle>(null);
 
+  // A `cd` turn locks to a folder, so it also clears any file focus.
   const handleCwdChange = useCallback((next: CwdInfo) => {
     setCwd(next);
+    setFocusedFile(null);
+  }, []);
+
+  // Path picker result. Folder → lock cwd to it, no file focus. File →
+  // lock cwd to the file's parent folder and record the file as focus.
+  // window.api.setCwd validates the directory and returns its CwdInfo.
+  const handlePickPath = useCallback(async (selection: PathSelection) => {
+    try {
+      if (selection.isDirectory) {
+        const info = await window.api.setCwd(selection.path);
+        setCwd(info);
+        setFocusedFile(null);
+      } else {
+        const info = await window.api.setCwd(selection.dir);
+        setCwd(info);
+        setFocusedFile(selection.path);
+      }
+    } catch {
+      // The directory vanished between listing and selecting — rare.
+      // Leave the current lock untouched.
+    }
   }, []);
 
   const {
@@ -101,7 +129,7 @@ export function ConversationView({
     togglePeek,
     confirmPlan,
     cancelPlan,
-  } = useCommands(cwd, peekDefault, planMode, handleCwdChange);
+  } = useCommands(cwd, peekDefault, planMode, handleCwdChange, focusedFile);
 
   // Report the tab title up to the shell. The title is "New conversation"
   // until the first message lands, then a truncation of that message.
@@ -151,10 +179,26 @@ export function ConversationView({
     inputRef.current?.focus();
   };
 
+  // What the header shows for this conversation's lock:
+  //   file lock   → the file's full path (folder trace + filename)
+  //   folder lock → the folder's display path
+  //   nothing     → null (Header renders "No folder")
+  // For a file lock, cwd is the file's parent (display form); the
+  // separator is taken from the raw focusedFile so Windows shows '\'
+  // and POSIX shows '/'.
+  const headerPath = focusedFile
+    ? `${cwd?.display ?? ''}${focusedFile.includes('\\') ? '\\' : '/'}${
+        focusedFile.split(/[\\/]/).filter(Boolean).pop() ?? focusedFile
+      }`
+    : (cwd?.display ?? null);
+
+  // A folder or file is locked (file locks always set cwd too).
+  const locked = cwd !== null || focusedFile !== null;
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-[14px] bg-card shadow-card">
       <Header
-        displayPath={cwd?.display ?? null}
+        displayPath={headerPath}
         peekDefault={peekDefault}
         onPeekDefaultChange={onPeekDefaultChange}
         planMode={planMode}
@@ -175,7 +219,13 @@ export function ConversationView({
           onBackgroundClick={handleConversationClick}
         />
       )}
-      <Input ref={inputRef} onSubmit={submitInput} />
+      <Input
+        ref={inputRef}
+        onSubmit={submitInput}
+        pickerInitialPath={cwd?.absolute ?? null}
+        onPickPath={handlePickPath}
+        locked={locked}
+      />
     </div>
   );
 }

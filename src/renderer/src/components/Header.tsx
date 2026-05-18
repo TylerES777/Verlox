@@ -31,17 +31,22 @@ export function Header({
 }: HeaderProps) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b-[0.5px] border-hairline px-6">
-      <span className="font-serif text-[17px] font-medium text-ink">Vorlox</span>
+      <span className="shrink-0 font-serif text-[17px] font-medium text-ink">
+        Vorlox
+      </span>
+      {/* The locked path takes the whole middle. flex-1 + min-w-0 lets it
+          use the full available width so the entire folder trace shows;
+          truncate is only a last-resort guard on an extreme path. */}
       {displayPath === null ? (
-        <span className="font-mono text-[12px] italic text-ink-micro mx-4">
+        <span className="mx-4 flex-1 text-center font-mono text-[12px] italic text-ink-micro">
           No folder
         </span>
       ) : (
-        <span className="truncate font-mono text-[12px] text-ink-hint max-w-[40%] mx-4">
+        <span className="mx-4 min-w-0 flex-1 truncate text-center font-mono text-[12px] text-ink-hint">
           {displayPath}
         </span>
       )}
-      <div className="flex items-center gap-3">
+      <div className="flex shrink-0 items-center gap-3">
         <PlanModeToggle on={planMode} onChange={onPlanModeChange} />
         <HeaderMenu
           peekDefault={peekDefault}

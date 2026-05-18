@@ -2,6 +2,8 @@ export const IpcChannels = {
   Ping: 'ping',
   CwdGet: 'cwd:get',
   CwdSet: 'cwd:set',
+  // Directory browsing for the path picker (lock-to-folder/file UI).
+  DirList: 'dir:list',
   CommandStart: 'command:start',
   CommandStop: 'command:stop',
   CommandOutput: 'command:output',

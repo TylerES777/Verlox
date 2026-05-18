@@ -9,6 +9,7 @@ import type {
   TurnInput,
 } from '@shared/types';
 import { getCwd, initCwd, setCwd } from './store';
+import { listDirectory } from './directory';
 import { killAllSync, startCommand, stopCommand } from './command-runner';
 import * as backend from './backend-client';
 import { getEnvironment } from './detect-environment';
@@ -79,6 +80,7 @@ function createWindow(): void {
 ipcMain.handle(IpcChannels.Ping, (): 'pong' => 'pong');
 ipcMain.handle(IpcChannels.CwdGet, () => getCwd());
 ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
+ipcMain.handle(IpcChannels.DirList, (_e, path: string) => listDirectory(path));
 
 ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
   startCommand(event.sender, payload.id, payload.command, payload.cwd);

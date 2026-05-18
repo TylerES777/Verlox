@@ -29,6 +29,32 @@ export interface CommandExitEvent {
 
 export type Unsubscribe = () => void;
 
+// Directory browsing -------------------------------------------------------
+// Backs the path picker (the folder-icon button in the input). The
+// renderer has no filesystem access of its own, so the main process
+// lists directory contents on request.
+
+export interface DirEntry {
+  name: string;
+  // Absolute path of this entry. The picker drills / selects using this
+  // directly so the renderer never has to do path math.
+  path: string;
+  isDirectory: boolean;
+}
+
+export interface DirListing {
+  // Absolute path that was listed. For a request with an empty/'~' path
+  // this resolves to the user's home directory.
+  path: string;
+  // Absolute parent path, or null when `path` is a filesystem root.
+  parent: string | null;
+  // Folders first, then files; each group alphabetical, case-insensitive.
+  entries: DirEntry[];
+  // Non-null when the listing failed (path missing, permission denied).
+  // On error `entries` is empty and `path` echoes the requested path.
+  error: string | null;
+}
+
 // Auth ----------------------------------------------------------------------
 
 export interface AuthUser {
@@ -91,6 +117,10 @@ export interface TurnContext {
   cwd: string;
   platform: Platform;
   shell: Shell;
+  // Absolute path of the file the conversation is locked to, or null.
+  // When set, the backend reads the user's requests as being about this
+  // file. null when locked to a folder (or nothing).
+  focusedFile: string | null;
 }
 
 export interface TurnInput {
@@ -179,6 +209,10 @@ export interface IpcApi {
   ping: () => Promise<'pong'>;
   getCwd: () => Promise<CwdInfo>;
   setCwd: (path: string) => Promise<CwdInfo>;
+  // Lists a directory for the path picker. Pass an empty string or '~'
+  // to list the user's home directory. Always resolves (never rejects) —
+  // failures come back as a DirListing with a non-null `error`.
+  listDir: (path: string) => Promise<DirListing>;
   startCommand: (payload: CommandStartPayload) => void;
   stopCommand: (id: string) => void;
   onCommandOutput: (cb: (event: CommandOutputEvent) => void) => Unsubscribe;
