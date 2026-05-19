@@ -76,7 +76,7 @@ export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
   return (
     <div
       ref={containerRef}
-      className="my-3 rounded-lg border-[0.5px] border-subtle-border bg-surface-faint p-5"
+      className="my-3 rounded-2xl border-[0.5px] border-subtle-border bg-surface-faint p-5"
     >
       {/* Caption — deep black, uppercase, tracked out. Same treatment for
           both variants; the only difference is the word. Reads as

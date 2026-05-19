@@ -59,7 +59,7 @@ export function ConversationsShell() {
   }, []);
 
   return (
-    <div className="flex h-full w-full flex-col bg-canvas p-6">
+    <div className="flex h-full w-full flex-col p-6">
       <div className="mx-auto flex w-full max-w-app flex-1 flex-col min-h-0">
         <TabBar
           tabs={tabs}

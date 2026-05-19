@@ -215,7 +215,12 @@ export function Message({
           choice from that point on. */}
       {showDetails && (
         <DetailsPanel
-          label={`Steps (${steps.length})`}
+          label={
+            <span className="flex items-center gap-1.5">
+              <EyeGlyph />
+              {steps.length}
+            </span>
+          }
           desiredOpen={detailsDesiredOpen}
           expandSignal={peekExpandSignal}
           headerRight={
@@ -253,7 +258,7 @@ export function Message({
 function VerbatimBlock({ step }: { step: MessageStep }) {
   const hasOutput = step.output.length > 0;
   return (
-    <div className="overflow-hidden rounded-lg border border-subtle-border bg-surface-subtle">
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
       {/* Command header — the prompt line, with a copy affordance for the
           output on the right. The "›" is a subtle gray prompt marker —
           terminal-conventional, not an accent. */}
@@ -272,5 +277,25 @@ function VerbatimBlock({ step }: { step: MessageStep }) {
         </pre>
       )}
     </div>
+  );
+}
+
+// Eye glyph for the steps disclosure — "view what ran" reads cleaner
+// than the word "Steps" repeated under every turn.
+function EyeGlyph() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M1 8s2.6-4.5 7-4.5S15 8 15 8s-2.6 4.5-7 4.5S1 8 1 8z" />
+      <circle cx="8" cy="8" r="2" />
+    </svg>
   );
 }

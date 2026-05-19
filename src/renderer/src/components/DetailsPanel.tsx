@@ -7,8 +7,8 @@ interface DetailsPanelProps {
   // value UNTIL the user manually toggles, after which the user's choice
   // wins for the rest of the turn.
   desiredOpen: boolean;
-  // Small label shown next to the chevron, e.g. "Steps" or "Details".
-  label: string;
+  // Content shown next to the chevron — an icon, a count, a label.
+  label: ReactNode;
   // Optional slot rendered to the right of the label, on the same line as
   // the chevron — used for per-turn affordances like the Chunk 3 peek
   // toggle. The slot stays in the document flow regardless of open state
@@ -93,7 +93,7 @@ export function DetailsPanel({
           className="flex items-center gap-1.5 text-[12px] text-ink-label hover:text-ink focus:outline-none transition-colors"
         >
           <Chevron open={open} />
-          <span>{label}</span>
+          {label}
         </button>
         {headerRight !== undefined && <div>{headerRight}</div>}
       </div>

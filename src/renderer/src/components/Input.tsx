@@ -101,16 +101,22 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
     };
   }, [pickerOpen]);
 
+  const submit = () => {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      onSubmit(trimmed);
+    }
+    setValue('');
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      const trimmed = value.trim();
-      if (trimmed.length > 0) {
-        onSubmit(trimmed);
-      }
-      setValue('');
+      submit();
     }
   };
+
+  const canSend = value.trim().length > 0;
 
   const handlePick = (selection: PathSelection) => {
     onPickPath(selection);
@@ -158,12 +164,45 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
           onKeyDown={handleKeyDown}
           placeholder="Ask Vorlox…"
           rows={1}
-          className="block w-full flex-1 resize-none rounded-xl border-[0.5px] border-subtle-border bg-surface-subtle px-4 py-3 text-[14px] leading-6 text-ink placeholder:text-ink-hint focus:border-input-border focus:outline-none transition-colors"
+          className="block w-full flex-1 resize-none rounded-2xl border-[0.5px] border-subtle-border bg-surface-subtle px-4 py-3 text-[14px] leading-6 text-ink placeholder:text-ink-hint focus:border-input-border focus:outline-none transition-colors"
         />
+        {/* Send button — a dark circle. Enter still submits; this is the
+            visible affordance. Fades when there's nothing to send. */}
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!canSend}
+          aria-label="Send"
+          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition-colors focus:outline-none ${
+            canSend
+              ? 'bg-ink text-card hover:bg-black'
+              : 'bg-ink/25 text-card'
+          }`}
+        >
+          <SendIcon />
+        </button>
       </div>
     </div>
   );
 });
+
+function SendIcon() {
+  return (
+    <svg
+      viewBox="0 0 18 18"
+      className="h-[17px] w-[17px]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="9" y1="14.5" x2="9" y2="3.5" />
+      <polyline points="4.5,8 9,3.5 13.5,8" />
+    </svg>
+  );
+}
 
 function FolderIcon() {
   return (

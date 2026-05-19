@@ -62,8 +62,10 @@ export default {
       },
       boxShadow: {
         // Soft elevation on the main app card. Two-layer shadow: a tight
-        // 1px contact shadow plus a wider lifted shadow.
-        card: '0 1px 2px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.05)',
+        // 1px contact shadow plus a wide, soft lifted shadow with a
+        // negative spread so it falls off gently — the card reads as
+        // genuinely floating above the gradient canvas.
+        card: '0 1px 3px rgba(0,0,0,0.04), 0 20px 50px -12px rgba(0,0,0,0.12)',
         // Sign-out popover.
         popover: '0 4px 16px rgba(0,0,0,0.08)',
       },

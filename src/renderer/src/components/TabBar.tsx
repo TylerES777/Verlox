@@ -24,7 +24,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
         return (
           <div
             key={tab.id}
-            className={`group flex shrink-0 items-center gap-1 rounded-lg px-1 transition-colors ${
+            className={`group flex shrink-0 items-center gap-1 rounded-xl px-1 transition-colors ${
               active
                 ? 'bg-card shadow-[0_1px_2px_rgba(0,0,0,0.04)]'
                 : 'hover:bg-surface-subtle'
@@ -57,7 +57,7 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
         onClick={onNew}
         aria-label="New conversation"
         title="New conversation"
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
       >
         <PlusGlyph />
       </button>

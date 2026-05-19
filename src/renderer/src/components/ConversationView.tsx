@@ -196,7 +196,7 @@ export function ConversationView({
   const locked = cwd !== null || focusedFile !== null;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-[14px] bg-card shadow-card">
+    <div className="flex h-full flex-col overflow-hidden rounded-[22px] bg-card shadow-card">
       <Header
         displayPath={headerPath}
         peekDefault={peekDefault}
