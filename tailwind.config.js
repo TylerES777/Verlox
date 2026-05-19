@@ -29,6 +29,7 @@ export default {
         'step-done': '#10B981',         // muted calm green
         'step-failed': '#E94B4B',       // soft red leaning amber
         'step-failed-tint': '#FEF2F2',  // very subtle wash on failed rows
+        'step-done-tint': '#F0FDF8',    // very subtle wash on finished blocks
       },
       fontFamily: {
         // `soft` is the existing alias — kept stable so Phase 0–3.4 className
