@@ -151,11 +151,7 @@ export function Message({
           synthesize-error states. Inter 15px, reveal-smoothed. Only
           rendered for summary mode (verbatim mode has no synthesize
           prose; the raw output blocks below stand in). */}
-      {finalResponse.length > 0 && (
-        <p className="whitespace-pre-wrap text-[15px] leading-[1.65] text-[#3A3A3A]">
-          {finalResponse}
-        </p>
-      )}
+      {finalResponse.length > 0 && <ProseResponse text={finalResponse} />}
 
       {/* Verbatim raw-output blocks — one per step that has run. Each
           block is a left-bordered group: the command header (JetBrains
@@ -287,6 +283,48 @@ function VerbatimBlock({ step }: { step: MessageStep }) {
         </pre>
       )}
     </div>
+  );
+}
+
+// The AI's prose response, with backtick-delimited technical tokens
+// (file names, paths, commands) rendered as distinct inline code chips
+// instead of literal `backtick` text. Keeps the prose clean — the token
+// stands apart on its own tinted chip, no dash-crutch needed.
+//
+// Only CLOSED backtick pairs become chips. A dangling backtick — which
+// happens mid reveal-smoothing, before the closer streams in — stays as
+// plain text until its partner arrives, then snaps to a chip.
+function ProseResponse({ text }: { text: string }) {
+  const segments: { code: boolean; text: string }[] = [];
+  const re = /`([^`]+)`/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      segments.push({ code: false, text: text.slice(last, m.index) });
+    }
+    segments.push({ code: true, text: m[1] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    segments.push({ code: false, text: text.slice(last) });
+  }
+
+  return (
+    <p className="whitespace-pre-wrap text-[15px] leading-[1.65] text-[#3A3A3A]">
+      {segments.map((s, i) =>
+        s.code ? (
+          <code
+            key={i}
+            className="rounded-md border-[0.5px] border-subtle-border bg-[#eef1f6] px-1.5 py-0.5 font-mono text-[13px] text-ink"
+          >
+            {s.text}
+          </code>
+        ) : (
+          <span key={i}>{s.text}</span>
+        ),
+      )}
+    </p>
   );
 }
 
