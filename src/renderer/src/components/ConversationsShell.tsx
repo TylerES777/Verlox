@@ -1,8 +1,12 @@
 import { useCallback, useState } from 'react';
 import { ConversationView } from './ConversationView';
 import { TabBar, type ConversationTab } from './TabBar';
+import { RunningPill, type RunningItem } from './RunningPill';
 import { usePeekDefault } from '../hooks/usePeekDefault';
 import { usePlanMode } from '../hooks/usePlanMode';
+
+// What each ConversationView reports about its in-flight commands.
+type RunningEntry = { stepId: string; command: string };
 
 function makeConversation(): ConversationTab {
   return { id: crypto.randomUUID(), title: 'New conversation' };
@@ -58,16 +62,46 @@ export function ConversationsShell() {
     setTabs((cs) => cs.map((c) => (c.id === id ? { ...c, title } : c)));
   }, []);
 
+  // Running commands per conversation, reported by each ConversationView.
+  // The global running pill aggregates these across all tabs.
+  const [runningByConv, setRunningByConv] = useState<Record<string, RunningEntry[]>>(
+    {},
+  );
+  const handleRunningChange = useCallback(
+    (id: string, running: RunningEntry[]) => {
+      setRunningByConv((prev) => ({ ...prev, [id]: running }));
+    },
+    [],
+  );
+
+  // Flatten into pill items, attaching each conversation's current title.
+  // Iterating `tabs` (not runningByConv) means a closed tab's stale entry
+  // is naturally excluded — no separate cleanup needed.
+  const runningItems: RunningItem[] = tabs.flatMap((tab) =>
+    (runningByConv[tab.id] ?? []).map((rc) => ({
+      conversationId: tab.id,
+      conversationTitle: tab.title,
+      stepId: rc.stepId,
+      command: rc.command,
+    })),
+  );
+
   return (
     <div className="flex h-full w-full flex-col p-6">
       <div className="mx-auto flex w-full max-w-app flex-1 flex-col min-h-0">
-        <TabBar
-          tabs={tabs}
-          activeId={activeId}
-          onSelect={setActiveId}
-          onClose={handleClose}
-          onNew={handleNew}
-        />
+        {/* Tab strip + the global running-commands pill on the right. */}
+        <div className="flex items-center gap-3 pb-3">
+          <div className="min-w-0 flex-1">
+            <TabBar
+              tabs={tabs}
+              activeId={activeId}
+              onSelect={setActiveId}
+              onClose={handleClose}
+              onNew={handleNew}
+            />
+          </div>
+          <RunningPill items={runningItems} onJump={setActiveId} />
+        </div>
         {/* Every conversation stays mounted; inactive ones are display:none
             so background work survives a tab switch. */}
         <div className="flex-1 min-h-0">
@@ -84,6 +118,7 @@ export function ConversationsShell() {
                 planMode={planMode}
                 onPlanModeChange={setPlanMode}
                 onTitleChange={handleTitleChange}
+                onRunningChange={handleRunningChange}
               />
             </div>
           ))}

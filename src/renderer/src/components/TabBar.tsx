@@ -18,7 +18,7 @@ interface TabBarProps {
 // app — ConversationsShell handles that.
 export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps) {
   return (
-    <div className="flex shrink-0 items-center gap-1 overflow-x-auto pb-3">
+    <div className="flex shrink-0 items-center gap-1 overflow-x-auto">
       {tabs.map((tab) => {
         const active = tab.id === activeId;
         return (
