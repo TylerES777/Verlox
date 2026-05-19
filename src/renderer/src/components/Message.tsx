@@ -96,9 +96,10 @@ export function Message({
     displayMode === 'verbatim' &&
     (status === 'executing' || status === 'done' || status === 'killed');
 
-  // Peek toggle lives in the details panel header — so it shows exactly
-  // when the panel does (showDetails already implies summary mode).
-  const showPeekToggle = showDetails;
+  // The eye toggle (show/hide raw command) only earns its place on
+  // summary turns — verbatim turns already show every command in their
+  // raw-output blocks, so an eye there would toggle nothing visible.
+  const showPeekToggle = showDetails && displayMode === 'summary';
 
   // showCommand on each StepRow follows the same gate. Verbatim mode
   // never shows commands inside StepRows (the verbatim block above is
@@ -112,7 +113,7 @@ export function Message({
   const [peekExpandSignal, setPeekExpandSignal] = useState(0);
 
   return (
-    <article className="mb-8">
+    <article className="mb-8 border-t border-hairline pt-8 first:border-t-0 first:pt-0">
       {/* Intent — the user's request, in tight semibold sans. */}
       <h2
         className="mb-3 text-[16px] font-semibold text-ink leading-snug"
@@ -203,14 +204,17 @@ export function Message({
         </p>
       )}
 
-      {/* Stop affordance during execution. Quiet, gray, hover ink. */}
+      {/* Stop affordance during execution — a stop icon, quiet until
+          hovered. The "Stopped." footer above stays plain text. */}
       {status === 'executing' && (
         <button
           type="button"
           onClick={() => onStop(message.id)}
-          className="mt-2 text-[12px] text-ink-hint hover:text-ink focus:outline-none"
+          aria-label="Stop"
+          title="Stop"
+          className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
         >
-          stop
+          <StopGlyph />
         </button>
       )}
 
@@ -221,27 +225,28 @@ export function Message({
           choice from that point on. */}
       {showDetails && (
         <DetailsPanel
-          label={
-            <span className="flex items-center gap-1.5">
-              <EyeGlyph />
-              {steps.length}
-            </span>
-          }
+          label={`${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`}
           desiredOpen={detailsDesiredOpen}
           expandSignal={peekExpandSignal}
           headerRight={
             showPeekToggle ? (
+              // The eye IS the show/hide-command control: one icon, no
+              // separate text label. A slash through it means the
+              // command is currently hidden; clicking reveals it (and
+              // expands the panel via the signal bump).
               <button
                 type="button"
                 onClick={() => {
                   onTogglePeek(message.id);
-                  // Bump the signal so DetailsPanel expands — makes the
-                  // toggle visible even when the panel was collapsed.
                   setPeekExpandSignal((n) => n + 1);
                 }}
-                className="text-[12px] text-ink-label hover:text-ink focus:outline-none transition-colors"
+                aria-label={peekEnabled ? 'Hide command' : 'Show command'}
+                title={peekEnabled ? 'Hide command' : 'Show command'}
+                className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-surface-subtle focus:outline-none ${
+                  peekEnabled ? 'text-ink' : 'text-ink-label hover:text-ink'
+                }`}
               >
-                {peekEnabled ? 'hide command' : 'show command'}
+                <EyeGlyph off={!peekEnabled} />
               </button>
             ) : undefined
           }
@@ -328,9 +333,9 @@ function ProseResponse({ text }: { text: string }) {
   );
 }
 
-// Eye glyph for the steps disclosure — "view what ran" reads cleaner
-// than the word "Steps" repeated under every turn.
-function EyeGlyph() {
+// Eye glyph for the show/hide-command toggle. `off` draws a slash
+// through it — the command is currently hidden.
+function EyeGlyph({ off }: { off?: boolean }) {
   return (
     <svg
       viewBox="0 0 16 16"
@@ -344,6 +349,21 @@ function EyeGlyph() {
     >
       <path d="M1 8s2.6-4.5 7-4.5S15 8 15 8s-2.6 4.5-7 4.5S1 8 1 8z" />
       <circle cx="8" cy="8" r="2" />
+      {off && <line x1="2.5" y1="13.5" x2="13.5" y2="2.5" />}
+    </svg>
+  );
+}
+
+// Stop glyph — a rounded square, the universal stop affordance.
+function StopGlyph() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      className="h-2.5 w-2.5"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="1.5" y="1.5" width="9" height="9" rx="1.6" />
     </svg>
   );
 }
