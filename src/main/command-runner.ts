@@ -5,6 +5,25 @@ import type { CommandExitEvent, CommandOutputEvent } from '@shared/types';
 
 const running = new Map<string, ChildProcess>();
 
+// ANSI escape sequences — colour codes, cursor moves, window-title sets.
+// Many CLI tools emit these; Vorlox renders plain text, so unstripped
+// they show as noise. Stripped at the source so output is clean
+// everywhere downstream (display, copy, the history sent to the backend).
+//
+// Both alternatives are anchored on the ESC byte (), so the
+// pattern can only ever hit real escape sequences, never ordinary text
+// that happens to contain brackets:
+//   - CSI: ESC [ <params> <final letter>  — colours, cursor control
+//   - OSC: ESC ] <data> BEL               — window-title sets etc.
+// Per-chunk: a sequence split across two data chunks can slip through —
+// rare, cosmetic at worst, not worth a reassembly buffer.
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\u001B\[[0-9;?]*[A-Za-z]|\u001B\][^\u0007]*\u0007/g;
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_PATTERN, '');
+}
+
 // Set of command ids that have been kill-requested by the user via
 // stopCommand(). Cross-platform "killed by user" tracking — Windows's
 // TerminateProcess (via taskkill /F) doesn't translate to a Unix signal
@@ -73,11 +92,11 @@ export function startCommand(
   child.stderr?.setEncoding('utf8');
 
   child.stdout?.on('data', (data: string) => {
-    send(IpcChannels.CommandOutput, { id, stream: 'stdout', data });
+    send(IpcChannels.CommandOutput, { id, stream: 'stdout', data: stripAnsi(data) });
   });
 
   child.stderr?.on('data', (data: string) => {
-    send(IpcChannels.CommandOutput, { id, stream: 'stderr', data });
+    send(IpcChannels.CommandOutput, { id, stream: 'stderr', data: stripAnsi(data) });
   });
 
   const finish = (code: number | null, signal: string | null) => {

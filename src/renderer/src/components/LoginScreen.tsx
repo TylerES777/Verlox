@@ -124,7 +124,7 @@ export function LoginScreen() {
       {/* Wordmark header */}
       <div className="flex justify-center pb-2 pt-8">
         <span className="font-mono text-[14px] font-medium tracking-tight text-ink">
-          <span className="text-amber">›</span>vorlox
+          vorlox
         </span>
       </div>
 

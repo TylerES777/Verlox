@@ -32,19 +32,18 @@ export function Header({
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b-[0.5px] border-hairline px-6">
       <span className="shrink-0 font-mono text-[14px] font-medium tracking-tight text-ink">
-        <span className="text-amber">›</span>vorlox
+        vorlox
       </span>
       {/* The locked path takes the whole middle. flex-1 + min-w-0 lets it
           use the full available width so the entire folder trace shows;
-          truncate is only a last-resort guard on an extreme path. */}
-      {displayPath === null ? (
-        <span className="mx-4 flex-1 text-center font-mono text-[12px] italic text-ink-micro">
-          No folder
-        </span>
-      ) : (
+          truncate is only a last-resort guard on an extreme path. When
+          there's no folder the middle is simply empty — no placeholder. */}
+      {displayPath !== null ? (
         <span className="mx-4 min-w-0 flex-1 truncate text-center font-mono text-[12px] text-ink-hint">
           {displayPath}
         </span>
+      ) : (
+        <span className="flex-1" />
       )}
       <div className="flex shrink-0 items-center gap-3">
         <PlanModeToggle on={planMode} onChange={onPlanModeChange} />

@@ -4,6 +4,7 @@ import { StatusIndicator } from './StatusIndicator';
 import { StepRow } from './StepRow';
 import { DetailsPanel } from './DetailsPanel';
 import { PlanCard } from './PlanCard';
+import { CopyButton } from './CopyButton';
 
 interface MessageProps {
   message: CommandMessage;
@@ -49,13 +50,23 @@ export function Message({
     plan,
   } = message;
 
-  // The details panel becomes visible the moment we have any steps to
-  // show. Hidden for refusal / cd / planning-error turns where steps
-  // never get initialized. Also hidden during the Plan Mode pause and
-  // after a cancellation — the Plan Card already shows the steps list,
-  // and "Plan discarded." turns have nothing to expand into.
+  // A step failed or was cancelled — the turn's outcome isn't obvious
+  // from the raw output alone, so the steps panel earns its place.
+  const hasTrouble = steps.some(
+    (s) => s.status === 'failed' || s.status === 'cancelled',
+  );
+
+  // The details panel shows only when it adds something. Summary turns
+  // always get it — commands are hidden behind prose, so the panel (and
+  // its peek toggle) is the only place to see what ran. Verbatim turns
+  // get it only when it isn't pure redundancy with the command+output
+  // blocks: more than one step, or a step that failed / was cancelled.
+  // A lone command that succeeded shows nothing extra — its block says
+  // it all. Never shown for step-less turns, the Plan Mode pause, or
+  // cancellations (the Plan Card covers those).
   const showDetails =
     steps.length > 0 &&
+    (displayMode === 'summary' || steps.length > 1 || hasTrouble) &&
     status !== 'awaiting-confirmation' &&
     status !== 'cancelled-before-run';
 
@@ -73,7 +84,10 @@ export function Message({
     status === 'executing' ||
     status === 'synthesizing' ||
     status === 'streaming' ||
-    status === 'killed';
+    status === 'killed' ||
+    // A failed/cancelled step: open the panel so the outcome is visible
+    // without a click — the panel is showing precisely because of it.
+    hasTrouble;
 
   // Verbatim raw-output blocks render only in verbatim mode after at
   // least one step has produced output. We render once the turn is
@@ -82,10 +96,9 @@ export function Message({
     displayMode === 'verbatim' &&
     (status === 'executing' || status === 'done' || status === 'killed');
 
-  // Peek toggle visibility (Chunk 3). Only summary-mode turns get the
-  // affordance — verbatim turns already show every command in their
-  // VerbatimBlock, and refusal/cd/planning-error turns have no steps.
-  const showPeekToggle = showDetails && displayMode === 'summary';
+  // Peek toggle lives in the details panel header — so it shows exactly
+  // when the panel does (showDetails already implies summary mode).
+  const showPeekToggle = showDetails;
 
   // showCommand on each StepRow follows the same gate. Verbatim mode
   // never shows commands inside StepRows (the verbatim block above is
@@ -100,20 +113,12 @@ export function Message({
 
   return (
     <article className="mb-8">
-      {/* Intent — the user's request, framed as a terminal prompt line:
-          an amber "›" marker + the text in tight sans. Reads as a
-          command entered, not an article headline. */}
+      {/* Intent — the user's request, in tight semibold sans. */}
       <h2
-        className="mb-3 flex items-start gap-2 text-[16px] font-semibold text-ink leading-snug"
+        className="mb-3 text-[16px] font-semibold text-ink leading-snug"
         style={{ letterSpacing: '-0.01em' }}
       >
-        <span
-          className="shrink-0 select-none font-mono font-medium text-amber"
-          aria-hidden="true"
-        >
-          ›
-        </span>
-        <span className="min-w-0">{message.userInput}</span>
+        {message.userInput}
       </h2>
 
       {/* Status indicator — visible during translating / executing /
@@ -246,17 +251,23 @@ export function Message({
 // output. The boxed surface reads as a discrete unit (like a Warp block
 // or a code block), not a blog pullquote.
 function VerbatimBlock({ step }: { step: MessageStep }) {
+  const hasOutput = step.output.length > 0;
   return (
     <div className="overflow-hidden rounded-lg border border-subtle-border bg-surface-subtle">
-      {/* Command header — the prompt line. */}
-      <div className="flex gap-2 px-3 py-2 font-mono text-[12.5px] font-medium text-ink">
-        <span className="shrink-0 select-none text-amber" aria-hidden="true">
+      {/* Command header — the prompt line, with a copy affordance for the
+          output on the right. The "›" is a subtle gray prompt marker —
+          terminal-conventional, not an accent. */}
+      <div className="flex items-start gap-2 px-3 py-2 font-mono text-[12.5px] font-medium text-ink">
+        <span className="shrink-0 select-none text-ink-hint" aria-hidden="true">
           ›
         </span>
-        <span className="min-w-0 break-all">{step.command}</span>
+        <span className="min-w-0 flex-1 break-all">{step.command}</span>
+        {hasOutput && <CopyButton text={step.output} />}
       </div>
-      {step.output.length > 0 && (
-        <pre className="whitespace-pre-wrap border-t border-subtle-border bg-surface-faint px-3 py-2 font-mono text-[12.5px] font-normal leading-relaxed text-ink-body">
+      {/* Output — capped height so a huge dump becomes a scroll box
+          rather than an endless block that buries the rest of the turn. */}
+      {hasOutput && (
+        <pre className="max-h-[360px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-surface-faint px-3 py-2 font-mono text-[12.5px] font-normal leading-relaxed text-ink-body">
           {step.output}
         </pre>
       )}
