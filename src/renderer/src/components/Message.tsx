@@ -197,6 +197,16 @@ export function Message({
         <p className="mt-3 text-[12px] text-ink-micro">Stopped.</p>
       )}
 
+      {/* Silent-command backstop. When a running command has gone quiet
+          for a while it may be waiting for input — which Vorlox can't
+          answer. A calm notice, not an auto-kill: the user decides. */}
+      {status === 'executing' && message.stalled && (
+        <p className="mt-3 text-[12px] leading-relaxed text-ink-label">
+          This has been quiet for a while. If it&rsquo;s waiting for input,
+          Vorlox can&rsquo;t answer it — you may want to stop it.
+        </p>
+      )}
+
       {/* Stop affordance during execution. Quiet, gray, hover ink. */}
       {status === 'executing' && (
         <button

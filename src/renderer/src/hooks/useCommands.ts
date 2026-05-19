@@ -115,6 +115,13 @@ export interface CommandMessage {
   // verbatim turns ignore this since the verbatim block already shows
   // the command.
   peekEnabled: boolean;
+
+  // Backstop for the hang-on-prompt hazard. Set true when the running
+  // step has produced no output and not exited for a while — it may be
+  // a command waiting for input Vorlox can't answer. Non-destructive:
+  // the Message just shows a calm notice. Cleared the moment output
+  // resumes or the step ends. Only meaningful while status==='executing'.
+  stalled: boolean;
 }
 
 // ── Reducer actions ───────────────────────────────────────────────────────
@@ -160,7 +167,12 @@ type Action =
   | { type: 'STEP_START'; id: string; index: number }
   // STEP_OUTPUT appends raw shell output to a running step. Fires on every
   // stdout/stderr chunk so the verbatim/details panels can render live.
+  // Also clears the `stalled` flag — output means the command is alive.
   | { type: 'STEP_OUTPUT'; id: string; index: number; data: string }
+  // STEP_STALLED marks a turn whose running step has been silent too
+  // long — it may be a command waiting for input. Sets the `stalled`
+  // flag; the Message renders a calm notice. Non-destructive.
+  | { type: 'STEP_STALLED'; id: string }
   // STEP_DONE finalizes a step. status mapping:
   //   'done'      → exit 0
   //   'failed'    → non-zero exit (real command error)
@@ -214,6 +226,7 @@ function newMessage(
     cdResolvedDisplay: null,
     errorMessage: null,
     peekEnabled,
+    stalled: false,
   };
 }
 
@@ -286,6 +299,8 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
         m.id === action.id
           ? {
               ...m,
+              // Fresh step — clear any stale "stalled" flag from a prior one.
+              stalled: false,
               steps: m.steps.map((s) =>
                 s.index === action.index ? { ...s, status: 'running' as const } : s,
               ),
@@ -293,11 +308,18 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
           : m,
       );
 
+    case 'STEP_STALLED':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, stalled: true } : m,
+      );
+
     case 'STEP_OUTPUT':
       return state.map((m) =>
         m.id === action.id
           ? {
               ...m,
+              // Output arrived — the command is alive, not stalled.
+              stalled: false,
               steps: m.steps.map((s) =>
                 s.index === action.index
                   ? { ...s, output: s.output + action.data }
@@ -491,6 +513,12 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
       return "Couldn't generate a summary. The commands ran.";
   }
 }
+
+// A running step silent (no output, no exit) for this long is flagged as
+// possibly waiting for input — the hang-on-prompt backstop. Generous so a
+// genuinely slow-but-working command (a quiet npm install, a big fetch)
+// rarely trips it; and the notice is non-destructive anyway.
+const SILENCE_NOTICE_MS = 30000;
 
 // ── Conversation history (Phase 5 Chunk 1: Memory) ────────────────────────
 
@@ -781,16 +809,37 @@ export function useCommands(
         const stepId = `${messageId}::${stepIndex}`;
         let output = '';
 
+        // Silence backstop: if the step produces no output and doesn't
+        // exit for SILENCE_NOTICE_MS, it may be a command waiting for
+        // input Vorlox can't answer. armSilence (re)starts the timer;
+        // any output or the exit clears it. STEP_STALLED just surfaces a
+        // calm notice — nothing is killed.
+        let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+        const clearSilence = () => {
+          if (silenceTimer !== null) {
+            clearTimeout(silenceTimer);
+            silenceTimer = null;
+          }
+        };
+        const armSilence = () => {
+          clearSilence();
+          silenceTimer = setTimeout(() => {
+            dispatch({ type: 'STEP_STALLED', id: messageId });
+          }, SILENCE_NOTICE_MS);
+        };
+
         // Subscribe to output and exit events for THIS step's id.
         const offOutput = window.api.onCommandOutput(({ id, data }) => {
           if (id !== stepId) return;
           output += data;
           dispatch({ type: 'STEP_OUTPUT', id: messageId, index: stepIndex, data });
+          armSilence(); // output means it's alive — restart the clock
         });
         const offExit = window.api.onCommandExit(({ id, code, signal }) => {
           if (id !== stepId) return;
           offOutput();
           offExit();
+          clearSilence();
           activeStepIdsRef.current.delete(messageId);
 
           // Decide step status from exit info:
@@ -826,6 +875,7 @@ export function useCommands(
         activeStepIdsRef.current.set(messageId, stepId);
         dispatch({ type: 'STEP_START', id: messageId, index: stepIndex });
         window.api.startCommand({ id: stepId, command: step.command, cwd: stepCwd });
+        armSilence(); // start the silence clock for this step
       });
     },
     [dispatch],
