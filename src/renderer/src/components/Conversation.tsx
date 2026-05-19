@@ -6,9 +6,6 @@ interface ConversationProps {
   messages: CommandMessage[];
   forceScrollVersion: number;
   onStop: (id: string) => void;
-  // Per-turn peek toggle (Chunk 3). Threaded down to each Message so
-  // its DetailsPanel header can flip the message's peekEnabled flag.
-  onTogglePeek: (id: string) => void;
   // Plan Card buttons (Chunk 4). Threaded to each Message so a paused
   // turn can resolve via Run or Cancel.
   onConfirmPlan: (id: string) => void;
@@ -20,7 +17,6 @@ export function Conversation({
   messages,
   forceScrollVersion,
   onStop,
-  onTogglePeek,
   onConfirmPlan,
   onCancelPlan,
   onBackgroundClick,
@@ -70,7 +66,6 @@ export function Conversation({
             key={m.id}
             message={m}
             onStop={onStop}
-            onTogglePeek={onTogglePeek}
             onConfirmPlan={onConfirmPlan}
             onCancelPlan={onCancelPlan}
           />

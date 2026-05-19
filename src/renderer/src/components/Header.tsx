@@ -7,10 +7,6 @@ interface HeaderProps {
   // renders a faint "No folder" — commands still run, from the home
   // directory, but the header is honest that no folder was picked.
   displayPath: string | null;
-  // Session-wide peek default (Chunk 3). Threaded through to the
-  // sign-out popover, which surfaces an "Always show commands" toggle.
-  peekDefault: boolean;
-  onPeekDefaultChange: (value: boolean) => void;
   // Session-wide Plan Mode (Chunk 4). Rendered as a header pill between
   // the cwd and the avatar.
   planMode: boolean;
@@ -24,8 +20,6 @@ interface HeaderProps {
 // in sync. The cwd slot is the one genuinely per-conversation piece.
 export function Header({
   displayPath,
-  peekDefault,
-  onPeekDefaultChange,
   planMode,
   onPlanModeChange,
 }: HeaderProps) {
@@ -47,10 +41,7 @@ export function Header({
       )}
       <div className="flex shrink-0 items-center gap-3">
         <PlanModeToggle on={planMode} onChange={onPlanModeChange} />
-        <HeaderMenu
-          peekDefault={peekDefault}
-          onPeekDefaultChange={onPeekDefaultChange}
-        />
+        <HeaderMenu />
       </div>
     </header>
   );

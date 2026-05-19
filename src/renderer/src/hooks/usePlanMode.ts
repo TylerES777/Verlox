@@ -27,8 +27,7 @@ export function usePlanMode(): {
 } {
   const [planMode, setState] = useState<boolean>(readInitial);
 
-  // Cross-tab sync, same rationale as usePeekDefault — defensive against
-  // future multi-window builds.
+  // Cross-tab sync — defensive against future multi-window builds.
   useEffect(() => {
     function onStorage(e: StorageEvent) {
       if (e.key !== STORAGE_KEY) return;

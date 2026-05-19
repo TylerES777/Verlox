@@ -114,9 +114,8 @@ export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
         </p>
       )}
 
-      {/* Steps — full list with commands always shown. Peek default
-          does not apply in Plan Mode: the user opted into review, so
-          there's no scenario where hiding the command serves them. */}
+      {/* Steps — full list with commands always shown: the user is
+          reviewing a plan before it runs, so every command is visible. */}
       {steps.length > 0 && (
         <div className="mb-4 space-y-1">
           {steps.map((s) => (

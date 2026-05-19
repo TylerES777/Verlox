@@ -107,15 +107,6 @@ export interface CommandMessage {
   // For *-error states + planning-error / synthesize-error:
   errorMessage: string | null;
 
-  // Peek state (Chunk 3). When true, StepRow renders the raw shell
-  // command in JetBrains Mono below the title/description. Seeded from
-  // the session-wide default at INPUT_SUBMITTED time and toggled per
-  // turn via PEEK_TOGGLE — per-turn changes don't update the session
-  // default. Only meaningful for displayMode === 'summary' turns;
-  // verbatim turns ignore this since the verbatim block already shows
-  // the command.
-  peekEnabled: boolean;
-
   // Backstop for the hang-on-prompt hazard. Set true when the running
   // step has produced no output and not exited for a while — it may be
   // a command waiting for input Vorlox can't answer. Non-destructive:
@@ -132,7 +123,6 @@ type Action =
       id: string;
       userInput: string;
       cwd: string;
-      peekEnabled: boolean;
     }
   // PLAN_RECEIVED's pauseForConfirmation flag decides the initial status:
   //   false → 'executing' (orchestrator runs steps immediately)
@@ -197,18 +187,9 @@ type Action =
   // the last step in verbatim mode (no synthesize call).
   | { type: 'TURN_DONE'; id: string }
   | { type: 'SYNTHESIZE_ERROR'; id: string; message: string }
-  // PEEK_TOGGLE flips the per-turn peekEnabled flag. Per-turn only —
-  // the session-wide default lives in usePeekDefault and is only read
-  // at INPUT_SUBMITTED time.
-  | { type: 'PEEK_TOGGLE'; id: string }
   | { type: 'CLEAR_ALL' };
 
-function newMessage(
-  id: string,
-  userInput: string,
-  cwd: string,
-  peekEnabled: boolean,
-): CommandMessage {
+function newMessage(id: string, userInput: string, cwd: string): CommandMessage {
   return {
     id,
     userInput,
@@ -225,7 +206,6 @@ function newMessage(
     finalResponse: '',
     cdResolvedDisplay: null,
     errorMessage: null,
-    peekEnabled,
     stalled: false,
   };
 }
@@ -233,10 +213,7 @@ function newMessage(
 function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
   switch (action.type) {
     case 'INPUT_SUBMITTED':
-      return [
-        ...state,
-        newMessage(action.id, action.userInput, action.cwd, action.peekEnabled),
-      ];
+      return [...state, newMessage(action.id, action.userInput, action.cwd)];
 
     case 'PLAN_RECEIVED':
       return state.map((m) =>
@@ -473,11 +450,6 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
           : m,
       );
 
-    case 'PEEK_TOGGLE':
-      return state.map((m) =>
-        m.id === action.id ? { ...m, peekEnabled: !m.peekEnabled } : m,
-      );
-
     case 'CLEAR_ALL':
       return [];
   }
@@ -578,12 +550,6 @@ export function useCommands(
   // commands run from the user's home directory as the invisible
   // default (see effectiveCwd below).
   cwd: CwdInfo | null,
-  // Session-wide peek default. Each new turn copies this value into its
-  // CommandMessage at INPUT_SUBMITTED time. Read via a ref so submitInput
-  // always sees the latest value without listing it as a dependency
-  // (changing the default mid-session shouldn't tear down the orchestrator
-  // closures or invalidate any in-flight turn).
-  peekDefault: boolean,
   // Session-wide Plan Mode flag (Chunk 4). When true, every new turn
   // pauses after /api/turn and renders the Plan Card instead of running
   // immediately. Read via a ref so submitInput sees the latest value.
@@ -605,7 +571,6 @@ export function useCommands(
   forceScrollVersion: number;
   submitInput: (userInput: string) => Promise<void>;
   stopCommand: (id: string) => void;
-  togglePeek: (messageId: string) => void;
   confirmPlan: (messageId: string) => void;
   cancelPlan: (messageId: string) => void;
 } {
@@ -615,15 +580,8 @@ export function useCommands(
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
   const { forceSignOut } = useAuth();
 
-  // Mirror peekDefault into a ref so submitInput reads the latest value
-  // without re-creating its useCallback closure when the user toggles
-  // the session preference.
-  const peekDefaultRef = useRef(peekDefault);
-  useEffect(() => {
-    peekDefaultRef.current = peekDefault;
-  }, [peekDefault]);
-
-  // Same pattern for planMode. The orchestrator captures the value at
+  // Mirror planMode into a ref so submitInput reads the latest value
+  // without re-creating its closure. The orchestrator captures the value at
   // submit time (not at confirm time) — flipping Plan Mode off mid-turn
   // does NOT release a paused turn; it has to be confirmed or cancelled.
   const planModeRef = useRef(planMode);
@@ -906,7 +864,6 @@ export function useCommands(
         // Empty string for folderless turns — the field is stored for
         // history but isn't rendered prominently.
         cwd: cwd?.display ?? '',
-        peekEnabled: peekDefaultRef.current,
       });
       setForceScrollVersion((v) => v + 1);
 
@@ -1074,16 +1031,6 @@ export function useCommands(
     if (stepId) window.api.stopCommand(stepId);
   }, []);
 
-  // Public per-turn peek toggle. Flips peekEnabled on the given message.
-  // Independent of the session-wide default — toggling here does not
-  // call setPeekDefault.
-  const togglePeek = useCallback(
-    (messageId: string) => {
-      dispatch({ type: 'PEEK_TOGGLE', id: messageId });
-    },
-    [dispatch],
-  );
-
   // Plan Card "Run" handler. Pulls the resolver from the pending map,
   // dispatches PLAN_CONFIRMED (which flips status to 'executing'), then
   // resolves the orchestrator's awaited promise with true. Order matters:
@@ -1121,7 +1068,6 @@ export function useCommands(
     forceScrollVersion,
     submitInput,
     stopCommand,
-    togglePeek,
     confirmPlan,
     cancelPlan,
   };

@@ -2,11 +2,10 @@ import type { MessageStep, StepStatus } from '../hooks/useCommands';
 
 interface StepRowProps {
   step: MessageStep;
-  // Chunk 3: when true, render the raw shell command in JetBrains Mono
-  // below the description. Toggled per-turn by the peek control in the
-  // DetailsPanel header. Only meaningful for summary-mode turns —
-  // verbatim turns already show commands in their VerbatimBlock above
-  // and pass false here.
+  // When true, render the raw shell command in JetBrains Mono below the
+  // description. True for summary-mode turns (the step list is the only
+  // place their command is shown); false for verbatim turns, whose
+  // VerbatimBlock above already carries the command.
   showCommand?: boolean;
 }
 
@@ -50,7 +49,7 @@ export function StepRow({ step, showCommand = false }: StepRowProps) {
             {step.description}
           </div>
         )}
-        {/* Raw command line — only when the per-turn peek is on. JetBrains
+        {/* Raw command line — shown for summary turns. JetBrains
             Mono 13px ink-body to match the verbatim block's body styling
             and read as "this is the actual shell input" without competing
             with the title hierarchy. break-all so long commands wrap

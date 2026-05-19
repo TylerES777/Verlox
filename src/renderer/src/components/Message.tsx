@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { CommandMessage, MessageStep } from '../hooks/useCommands';
 import { StatusIndicator } from './StatusIndicator';
 import { StepRow } from './StepRow';
@@ -9,10 +8,6 @@ import { CopyButton } from './CopyButton';
 interface MessageProps {
   message: CommandMessage;
   onStop: (id: string) => void;
-  // Per-turn peek toggle (Chunk 3). Flips the message's peekEnabled
-  // flag. Only invoked for summary-mode turns where the toggle UI is
-  // visible — verbatim and step-less turns don't render the affordance.
-  onTogglePeek: (id: string) => void;
   // Plan Card actions (Chunk 4). Called when the user clicks Run or
   // Cancel on a paused turn. Resolve the orchestrator's awaited promise
   // inside useCommands.
@@ -20,22 +15,21 @@ interface MessageProps {
   onCancelPlan: (id: string) => void;
 }
 
-// Phase 4 Chunk 2b: adds StepRow list (in a collapsible DetailsPanel) and
-// the verbatim raw-output block. Chunk 3 adds the peek toggle and raw
-// command access; Chunks 4–5 add Plan Card and footgun review.
+// One conversation turn. Renders the StepRow list inside a collapsible
+// DetailsPanel (the eye toggle reveals steps + raw commands together),
+// the verbatim raw-output blocks, the Plan Card, and footgun review.
 //
 // Visual hierarchy per turn:
-//   [intent — "› " prompt + tight sans]  ← user's natural-language input
+//   [intent — tight semibold sans]        ← user's natural-language input
 //   [optional status indicator]          ← lowercase mono, gray
 //   [optional response prose]            ← Inter 15px, reveal-smoothed
 //   [verbatim raw output blocks]         ← only when displayMode='verbatim'
 //   [optional error / cd / killed line]  ← context-specific footers
 //   [Stop button]                        ← only while executing
-//   [details panel: steps]               ← collapsible, default open
+//   [details panel: steps]               ← collapsible behind the eye
 export function Message({
   message,
   onStop,
-  onTogglePeek,
   onConfirmPlan,
   onCancelPlan,
 }: MessageProps) {
@@ -46,7 +40,6 @@ export function Message({
     errorMessage,
     steps,
     displayMode,
-    peekEnabled,
     plan,
   } = message;
 
@@ -57,9 +50,9 @@ export function Message({
   );
 
   // The details panel shows only when it adds something. Summary turns
-  // always get it — commands are hidden behind prose, so the panel (and
-  // its peek toggle) is the only place to see what ran. Verbatim turns
-  // get it only when it isn't pure redundancy with the command+output
+  // always get it — commands are hidden behind prose, so the panel is
+  // the only place to see what ran. Verbatim turns get it only when it
+  // isn't pure redundancy with the command+output
   // blocks: more than one step, or a step that failed / was cancelled.
   // A lone command that succeeded shows nothing extra — its block says
   // it all. Never shown for step-less turns, the Plan Mode pause, or
@@ -96,21 +89,10 @@ export function Message({
     displayMode === 'verbatim' &&
     (status === 'executing' || status === 'done' || status === 'killed');
 
-  // The eye toggle (show/hide raw command) only earns its place on
-  // summary turns — verbatim turns already show every command in their
-  // raw-output blocks, so an eye there would toggle nothing visible.
-  const showPeekToggle = showDetails && displayMode === 'summary';
-
-  // showCommand on each StepRow follows the same gate. Verbatim mode
-  // never shows commands inside StepRows (the verbatim block above is
-  // the canonical surface for those).
-  const stepShowCommand = peekEnabled && displayMode === 'summary';
-
-  // Counter bumped every time the peek toggle is clicked. Passed to
-  // DetailsPanel as expandSignal so a click while the panel is collapsed
-  // expands it — otherwise toggling "show/hide command" produces no
-  // visible change and the click feels dead.
-  const [peekExpandSignal, setPeekExpandSignal] = useState(0);
+  // Each StepRow shows its raw command inside the panel for summary
+  // turns; verbatim turns don't (their raw-output blocks already carry
+  // the command). Either way it's only visible when the panel is open.
+  const stepShowCommand = displayMode === 'summary';
 
   return (
     <article className="mb-8 border-t border-hairline pt-8 first:border-t-0 first:pt-0">
@@ -224,33 +206,7 @@ export function Message({
           collapse a running one — DetailsPanel locks in the manual
           choice from that point on. */}
       {showDetails && (
-        <DetailsPanel
-          label={`${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`}
-          desiredOpen={detailsDesiredOpen}
-          expandSignal={peekExpandSignal}
-          headerRight={
-            showPeekToggle ? (
-              // The eye IS the show/hide-command control: one icon, no
-              // separate text label. A slash through it means the
-              // command is currently hidden; clicking reveals it (and
-              // expands the panel via the signal bump).
-              <button
-                type="button"
-                onClick={() => {
-                  onTogglePeek(message.id);
-                  setPeekExpandSignal((n) => n + 1);
-                }}
-                aria-label={peekEnabled ? 'Hide command' : 'Show command'}
-                title={peekEnabled ? 'Hide command' : 'Show command'}
-                className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-surface-subtle focus:outline-none ${
-                  peekEnabled ? 'text-ink' : 'text-ink-label hover:text-ink'
-                }`}
-              >
-                <EyeGlyph off={!peekEnabled} />
-              </button>
-            ) : undefined
-          }
-        >
+        <DetailsPanel desiredOpen={detailsDesiredOpen}>
           <div className="space-y-1">
             {steps.map((s) => (
               <StepRow key={s.index} step={s} showCommand={stepShowCommand} />
@@ -330,27 +286,6 @@ function ProseResponse({ text }: { text: string }) {
         ),
       )}
     </p>
-  );
-}
-
-// Eye glyph for the show/hide-command toggle. `off` draws a slash
-// through it — the command is currently hidden.
-function EyeGlyph({ off }: { off?: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      className="h-3.5 w-3.5"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M1 8s2.6-4.5 7-4.5S15 8 15 8s-2.6 4.5-7 4.5S1 8 1 8z" />
-      <circle cx="8" cy="8" r="2" />
-      {off && <line x1="2.5" y1="13.5" x2="13.5" y2="2.5" />}
-    </svg>
   );
 }
 

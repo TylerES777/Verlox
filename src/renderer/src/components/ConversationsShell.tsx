@@ -2,7 +2,6 @@ import { useCallback, useState } from 'react';
 import { ConversationView } from './ConversationView';
 import { TabBar, type ConversationTab } from './TabBar';
 import { RunningPill, type RunningItem } from './RunningPill';
-import { usePeekDefault } from '../hooks/usePeekDefault';
 import { usePlanMode } from '../hooks/usePlanMode';
 
 // What each ConversationView reports about its in-flight commands.
@@ -13,15 +12,14 @@ function makeConversation(): ConversationTab {
 }
 
 // Top-level authed screen. Owns the list of open conversations (tabs),
-// which one is active, and the two session-wide preferences (peek
-// default, Plan Mode). Each conversation is an independent <ConversationView>
-// — all kept mounted so a command running in a background tab keeps
-// going; only the active one is visible.
+// which one is active, and the session-wide Plan Mode preference. Each
+// conversation is an independent <ConversationView> — all kept mounted
+// so a command running in a background tab keeps going; only the active
+// one is visible.
 //
 // Conversations do not persist across app restarts (decided for v1):
 // every launch starts with a single empty conversation.
 export function ConversationsShell() {
-  const { peekDefault, setPeekDefault } = usePeekDefault();
   const { planMode, setPlanMode } = usePlanMode();
 
   // Seed with one conversation. The second initializer reads `tabs`
@@ -113,8 +111,6 @@ export function ConversationsShell() {
               <ConversationView
                 conversationId={tab.id}
                 isActive={tab.id === activeId}
-                peekDefault={peekDefault}
-                onPeekDefaultChange={setPeekDefault}
                 planMode={planMode}
                 onPlanModeChange={setPlanMode}
                 onTitleChange={handleTitleChange}
