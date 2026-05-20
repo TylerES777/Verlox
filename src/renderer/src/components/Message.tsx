@@ -320,41 +320,43 @@ function FolderGlyph({ className = '', open = false }: { className?: string; ope
 }
 
 // Live ping panel — replaces the raw monospace block when the planner
-// sets outputUi="ping". The parser handles both Windows ("Reply from X:
-// bytes=32 time<1ms TTL=128") and POSIX ("64 bytes from X: icmp_seq=1
-// ttl=64 time=0.045 ms") output shapes; everything else (unreachable,
-// name lookup errors) falls back to a raw block at the bottom.
+// sets outputUi="ping". Same visual language as the folder listing
+// board: subtle bordered card, mono header with target + meta count on
+// the right, calm rows with secondary info trailing. The parser handles
+// both Windows ("Reply from X: bytes=32 time<1ms TTL=128") and POSIX
+// ("64 bytes from X: icmp_seq=1 ttl=64 time=0.045 ms") output; anything
+// else (name lookup errors, unreachable) falls back to a raw block.
 function PingBoard({ step }: { step: MessageStep }) {
   const { target, events, summary } = parsePingOutput(step.output);
   const running = step.status === 'running';
-  const failed = step.status === 'failed';
   const replyCount = events.filter((e) => e.kind === 'reply').length;
   const timeoutCount = events.filter((e) => e.kind === 'timeout').length;
 
-  // Accent: red if failed or all-timeouts, green if any replies after
-  // completion, amber while still pinging, neutral otherwise.
-  const accent =
-    failed || (events.length > 0 && replyCount === 0 && !running)
-      ? 'border-l-step-failed'
-      : !running && replyCount > 0
-        ? 'border-l-step-done'
-        : running
-          ? 'border-l-amber'
-          : 'border-l-subtle-border';
-
   // Target label: prefer what the ping output announced; fall back to
-  // pulling the last token of the command line ("ping -n 4 X" → "X").
+  // pulling the last bare token of the command line ("ping -n 4 X" → "X").
   const headerTarget = target ?? extractPingTarget(step.command) ?? '(unknown)';
 
+  // Right-aligned meta in the header. Live state shows "listening…";
+  // a settled summary shows the loss-aware tally; otherwise a running
+  // tally of what's accumulated so far.
+  let headerMeta: string;
+  if (running) {
+    headerMeta = 'listening…';
+  } else if (summary) {
+    headerMeta = `${summary.received}/${summary.sent} received · ${summary.lossPct ?? 0}% loss`;
+  } else if (replyCount + timeoutCount > 0) {
+    headerMeta = `${replyCount} received · ${timeoutCount} timed out`;
+  } else {
+    headerMeta = '';
+  }
+
   return (
-    <div
-      className={`overflow-hidden rounded-xl border border-subtle-border border-l-[3px] ${accent} bg-surface-subtle`}
-    >
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
       <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
-        <StepDot status={step.status} />
+        <PingGlyph className="text-ink-label" />
         <span className="min-w-0 flex-1 truncate">ping {headerTarget}</span>
-        {running && (
-          <span className="shrink-0 text-[11px] text-ink-micro">listening…</span>
+        {headerMeta && (
+          <span className="shrink-0 text-[11px] text-ink-micro">{headerMeta}</span>
         )}
       </div>
 
@@ -372,33 +374,13 @@ function PingBoard({ step }: { step: MessageStep }) {
         </ul>
       )}
 
-      {/* Summary footer — shown once the run-statistics block parses. */}
-      {summary && (
-        <div className="border-t border-subtle-border bg-card/60 px-3.5 py-2 font-mono text-[12px] text-ink-label">
-          {summary.sent} sent · {summary.received} received ·{' '}
-          <span
-            className={summary.lossPct && summary.lossPct > 0 ? 'text-step-failed' : ''}
-          >
-            {summary.lossPct ?? 0}% loss
-          </span>
-        </div>
-      )}
-
       {/* Fallback: the run produced no parseable reply lines but did
           finish (or fail). Show the raw output so the user still sees
           why — name-lookup errors, target-unreachable, etc. */}
       {!running && events.length === 0 && step.output.length > 0 && (
-        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card/60 px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
           {step.output}
         </pre>
-      )}
-
-      {/* Trailing tally when there's no summary line yet (e.g. user
-          stopped the ping mid-stream, infinite ping cancelled). */}
-      {!running && !summary && (replyCount > 0 || timeoutCount > 0) && (
-        <div className="border-t border-subtle-border bg-card/60 px-3.5 py-2 font-mono text-[12px] text-ink-label">
-          {replyCount} received · {timeoutCount} timed out
-        </div>
       )}
     </div>
   );
@@ -407,37 +389,51 @@ function PingBoard({ step }: { step: MessageStep }) {
 function PingRow({ event }: { event: PingEvent }) {
   if (event.kind === 'timeout') {
     return (
-      <li className="flex items-center gap-3 px-3.5 py-1.5 font-mono text-[12.5px]">
+      <li className="flex items-center gap-2 px-3.5 py-1.5 text-[13.5px] text-ink-body">
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-step-failed" />
-        <span className="shrink-0 text-ink-micro">
-          {event.seq != null ? `#${event.seq}` : '—'}
-        </span>
-        <span className="min-w-0 flex-1 text-ink-body">Request timed out</span>
+        <span className="min-w-0 flex-1 truncate">Request timed out</span>
+        {event.seq != null && (
+          <span className="shrink-0 text-[11px] text-ink-micro">#{event.seq}</span>
+        )}
       </li>
     );
   }
-  // Reply.
-  const latencyClass =
-    event.time == null
-      ? 'text-ink-body'
-      : event.time < 50
-        ? 'text-step-done'
-        : event.time < 200
-          ? 'text-amber'
-          : 'text-step-failed';
   return (
-    <li className="flex items-center gap-3 px-3.5 py-1.5 font-mono text-[12.5px]">
+    <li className="flex items-center gap-2 px-3.5 py-1.5 text-[13.5px] text-ink-body">
       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-step-done" />
-      <span className="shrink-0 text-ink-micro">
-        {event.seq != null ? `#${event.seq}` : '—'}
+      <span className="min-w-0 flex-1 truncate">
+        Reply{event.seq != null ? ` #${event.seq}` : ''}
       </span>
-      <span className={`shrink-0 w-16 ${latencyClass}`}>
-        {event.time != null ? `${event.time} ms` : '— ms'}
-      </span>
-      <span className="shrink-0 text-ink-label">
-        {event.ttl != null ? `TTL ${event.ttl}` : ''}
-      </span>
+      {event.time != null && (
+        <span className="shrink-0 text-[12px] text-ink-label">
+          {event.time} ms
+        </span>
+      )}
+      {event.ttl != null && (
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          TTL {event.ttl}
+        </span>
+      )}
     </li>
+  );
+}
+
+function PingGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2.5 9.5a7 7 0 0 1 11 0" />
+      <path d="M5 11.5a3.5 3.5 0 0 1 6 0" />
+      <circle cx="8" cy="13" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
   );
 }
 
