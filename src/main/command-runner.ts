@@ -126,7 +126,13 @@ export function startCommand(
   const { bin, args } = invocationFor(shell, command);
   const child = spawn(bin, args, {
     cwd,
-    env: process.env,
+    // PYTHONUNBUFFERED forces Python to flush stdout/stderr line by
+    // line instead of buffering. Without it, `python -m http.server`
+    // sits on its "Serving HTTP on …" banner until a request hits,
+    // which means the Running board's URL detector never sees the
+    // localhost URL and no "Open" button appears. Setting this for
+    // every spawn is harmless for non-Python commands.
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
     windowsHide: true,
   });
 
