@@ -228,14 +228,11 @@ export function Message({
         <p className="mt-3 text-[12px] text-ink-micro">Stopped.</p>
       )}
 
-      {/* Silent-command backstop — a calm notice while a running command
-          has gone quiet. Plain text, not a board: it's transient. */}
-      {status === 'executing' && message.stalled && (
-        <p className="mt-3 text-[12px] leading-relaxed text-ink-label">
-          This has been quiet for a while. If it&rsquo;s waiting for input,
-          Vorlox can&rsquo;t answer it — you may want to stop it.
-        </p>
-      )}
+      {/* (The old silent-command notice used to render here. Removed
+          once the Running processes board became the canonical place
+          to see and stop in-flight commands — the notice fired too
+          often on dev servers / silent long-running processes and
+          read as noise.) */}
 
       {/* Stop / pause affordance for the pre-prose phases:
             - executing      → kill the running command

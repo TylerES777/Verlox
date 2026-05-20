@@ -622,12 +622,6 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
   }
 }
 
-// A running step silent (no output, no exit) for this long is flagged as
-// possibly waiting for input — the hang-on-prompt backstop. Generous so a
-// genuinely slow-but-working command (a quiet npm install, a big fetch)
-// rarely trips it; and the notice is non-destructive anyway.
-const SILENCE_NOTICE_MS = 30000;
-
 // Settlement check for the Timeline hover card sync. Anything that's
 // reached a terminal state — successfully done, replied, a system
 // outcome like cd/list/history, an error, a cancel.
@@ -1064,43 +1058,16 @@ export function useCommands(
         const stepId = `${messageId}::${stepIndex}`;
         let output = '';
 
-        // Silence backstop: if the step produces no output and doesn't
-        // exit for SILENCE_NOTICE_MS, it may be a command waiting for
-        // input Vorlox can't answer. armSilence (re)starts the timer;
-        // any output or the exit clears it. STEP_STALLED just surfaces a
-        // calm notice — nothing is killed.
-        let silenceTimer: ReturnType<typeof setTimeout> | null = null;
-        const clearSilence = () => {
-          if (silenceTimer !== null) {
-            clearTimeout(silenceTimer);
-            silenceTimer = null;
-          }
-        };
-        const armSilence = () => {
-          clearSilence();
-          silenceTimer = setTimeout(() => {
-            dispatch({ type: 'STEP_STALLED', id: messageId });
-          }, SILENCE_NOTICE_MS);
-        };
-
         // Subscribe to output and exit events for THIS step's id.
         const offOutput = window.api.onCommandOutput(({ id, data }) => {
           if (id !== stepId) return;
           output += data;
           dispatch({ type: 'STEP_OUTPUT', id: messageId, index: stepIndex, data });
-          // First output is the "this command is alive" signal: clear
-          // the silence backstop permanently. After this, going quiet
-          // is normal (dev servers, watchers, idle processes) and
-          // shouldn't trigger the "may be waiting for input" notice.
-          // Re-arming would fire the warning on every long-running
-          // server that ever printed a startup banner.
-          clearSilence();
         });
         const offExit = window.api.onCommandExit(({ id, code, signal }) => {
           if (id !== stepId) return;
           offOutput();
           offExit();
-          clearSilence();
           activeStepIdsRef.current.delete(messageId);
 
           // Decide step status from exit info:
@@ -1155,7 +1122,6 @@ export function useCommands(
           // cmdlets get invoked through cmd.exe and fail.
           shell: stepShell,
         });
-        armSilence(); // start the silence clock for this step
       });
     },
     [dispatch, conversationId],
