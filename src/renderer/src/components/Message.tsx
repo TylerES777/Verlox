@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import type { DiagramSchema, DirListing } from '@shared/types';
 import type { CommandMessage, MessageStep, StepStatus } from '../hooks/useCommands';
+import type { PromptHistoryEntry } from '../hooks/usePromptHistory';
 import { StatusIndicator } from './StatusIndicator';
 import { DetailsPanel } from './DetailsPanel';
 import { Diagram } from './Diagram';
@@ -50,6 +51,7 @@ export function Message({
     displayMode,
     plan,
     listing,
+    promptHistory,
   } = message;
 
   // Steps that have actually run (or are running) — queued and skipped
@@ -178,6 +180,14 @@ export function Message({
       {status === 'list-success' && listing && (
         <div className="mt-3">
           <FileListingBoard listing={listing} />
+        </div>
+      )}
+
+      {/* history-shown — Vorlox's own prompt history from localStorage.
+          Not the user's shell history. */}
+      {status === 'history-shown' && promptHistory && (
+        <div className="mt-3">
+          <PromptHistoryBoard entries={promptHistory} />
         </div>
       )}
 
@@ -446,6 +456,84 @@ function NotificationBoard({
 function BoardText({ children }: { children: ReactNode }) {
   return (
     <p className="text-[14px] leading-relaxed text-ink-body">{children}</p>
+  );
+}
+
+// Built-in prompt-history panel — what the user sees when they ask
+// "show me my history". Lists Vorlox's own log of prompts across
+// sessions, not the shell's. Newest first. Empty case gets a calm
+// "Nothing yet." line so the panel isn't ever blank.
+function PromptHistoryBoard({ entries }: { entries: PromptHistoryEntry[] }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <HistoryGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">history</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {entries.length === 0
+            ? 'empty'
+            : `${entries.length} prompt${entries.length === 1 ? '' : 's'}`}
+        </span>
+      </div>
+      {entries.length === 0 ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">Nothing yet.</p>
+      ) : (
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-hairline">
+          {entries.map((e, i) => (
+            <li
+              key={`${e.timestamp}-${i}`}
+              className="flex items-start gap-3 px-3.5 py-1.5 text-[13.5px] text-ink-body"
+            >
+              <span className="w-16 shrink-0 pt-0.5 text-right font-mono text-[10.5px] text-ink-micro tabular-nums">
+                {formatRelativeTime(e.timestamp)}
+              </span>
+              <span
+                className="min-w-0 flex-1 break-words"
+                title={e.text}
+              >
+                {e.text}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function formatRelativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 0) return 'just now';
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  // Older than a month → fall back to a short date.
+  const date = new Date(ts);
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function HistoryGlyph({ className = '' }: { className?: string }) {
+  // A clock-with-arrow motif — clearly "history" without competing
+  // with the calmer glyphs on the other panels.
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 3a5 5 0 1 1-4.5 2.8" />
+      <polyline points="3 3 3 6 6 6" />
+      <polyline points="8 5 8 8.5 10.5 10" />
+    </svg>
   );
 }
 

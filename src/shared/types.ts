@@ -180,6 +180,13 @@ export interface PlanResponse {
   // Absolute or "~/"-prefixed path to list, or null for the current
   // working directory. Only meaningful when isListCommand is true.
   listTarget: string | null;
+  // Built-in prompt-history intent. When true, Vorlox renders the
+  // user's own prompt log directly — no shell command runs. steps is
+  // empty in this case.
+  isHistoryCommand: boolean;
+  // How many recent prompts to show, or null for the default. Only
+  // meaningful when isHistoryCommand is true.
+  historyLimit: number | null;
   // Dedicated structured renderer for the planned command's output.
   // When set, the desktop client parses the step's live output and
   // renders a purpose-built panel instead of the monospace block.

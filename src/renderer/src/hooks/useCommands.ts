@@ -12,6 +12,11 @@ import type {
   TurnHistoryEntry,
 } from '@shared/types';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  appendPrompt,
+  readPromptHistory,
+  type PromptHistoryEntry,
+} from './usePromptHistory';
 
 // ── State machine ─────────────────────────────────────────────────────────
 
@@ -24,6 +29,7 @@ export type TurnStatus =
   | 'cd-error'                // cd path invalid
   | 'list-success'            // built-in file listing rendered
   | 'list-error'              // built-in file listing failed
+  | 'history-shown'           // built-in prompt-history rendered
   | 'awaiting-confirmation'   // Plan Mode: Plan Card visible, awaiting Run/Cancel
   | 'cancelled-before-run'    // user clicked Cancel on the Plan Card
   | 'executing'               // running steps locally via window.api.startCommand
@@ -122,6 +128,10 @@ export interface CommandMessage {
   // Null for any other status.
   listing: DirListing | null;
 
+  // For history-shown render: the snapshot of prompt history this
+  // turn rendered. Null for any other status.
+  promptHistory: PromptHistoryEntry[] | null;
+
   // For *-error states + planning-error / synthesize-error:
   errorMessage: string | null;
 
@@ -173,6 +183,9 @@ type Action =
   | { type: 'LIST_SUCCESS'; id: string; listing: DirListing }
   // LIST_ERROR: the directory couldn't be opened (missing, permission).
   | { type: 'LIST_ERROR'; id: string; message: string }
+  // HISTORY_SHOWN: the built-in prompt-history view rendered with a
+  // snapshot of the user's prompt log.
+  | { type: 'HISTORY_SHOWN'; id: string; entries: PromptHistoryEntry[] }
   | { type: 'STATUS_INDICATOR'; id: string; info: StatusIndicatorState }
   // STEPS_INITIALIZED takes the plan steps and seeds steps[] all queued.
   // Dispatched right after PLAN_RECEIVED, before any step starts.
@@ -233,6 +246,7 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
     finalResponse: '',
     cdResolvedDisplay: null,
     listing: null,
+    promptHistory: null,
     errorMessage: null,
     stalled: false,
   };
@@ -431,6 +445,19 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
           : m,
       );
 
+    case 'HISTORY_SHOWN':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: 'history-shown',
+              statusIndicator: null,
+              promptHistory: action.entries,
+              endedAt: Date.now(),
+            }
+          : m,
+      );
+
     case 'STATUS_INDICATOR':
       return state.map((m) =>
         m.id === action.id ? { ...m, statusIndicator: action.info } : m,
@@ -615,6 +642,9 @@ function toHistoryEntry(m: CommandMessage): TurnHistoryEntry {
       } else {
         outcome = 'Listed a folder.';
       }
+      break;
+    case 'history-shown':
+      outcome = `Showed the user's ${m.promptHistory?.length ?? 0} most recent Vorlox prompts.`;
       break;
     case 'cd-error':
     case 'list-error':
@@ -967,6 +997,12 @@ export function useCommands(
       // dispatch), so this must be captured before INPUT_SUBMITTED.
       const history = messagesRef.current.map(toHistoryEntry);
 
+      // Append every prompt to Vorlox's own persistent log, so the
+      // built-in "show me my history" view can list what the user has
+      // asked across sessions. Done before any branching so even
+      // failed turns are remembered.
+      appendPrompt(trimmed);
+
       const id = crypto.randomUUID();
       dispatch({
         type: 'INPUT_SUBMITTED',
@@ -1048,6 +1084,21 @@ export function useCommands(
           return;
         }
         dispatch({ type: 'LIST_SUCCESS', id, listing });
+        return;
+      }
+
+      // 2c. built-in prompt history — Vorlox reads its own log from
+      //     localStorage and renders the entries directly. No shell
+      //     command runs. Drop the current prompt (just appended) so
+      //     the user doesn't see "show me history" at the top of its
+      //     own history.
+      if (plan.isHistoryCommand) {
+        const limit = plan.historyLimit ?? 50;
+        const all = readPromptHistory();
+        const entries = all
+          .filter((e) => e.text !== trimmed)
+          .slice(0, Math.max(1, limit));
+        dispatch({ type: 'HISTORY_SHOWN', id, entries });
         return;
       }
 
