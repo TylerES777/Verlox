@@ -59,7 +59,7 @@ export function Timeline({ onSelect }: TimelineProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center px-5 pb-4 pt-5">
+      <div className="flex shrink-0 items-center pb-4 pl-10 pr-5 pt-5">
         <h2 className="text-[14px] font-semibold text-ink">Timeline</h2>
       </div>
       {entries.length === 0 ? (
@@ -67,7 +67,7 @@ export function Timeline({ onSelect }: TimelineProps) {
           Your prompts will appear here as you go.
         </p>
       ) : (
-        <div className="relative min-h-0 flex-1 overflow-y-auto px-5 pb-8">
+        <div className="relative min-h-0 flex-1 overflow-y-auto pb-8 pl-5 pr-5">
           {/* The connecting vertical line — runs from near the first
               dot to near the last. Positioned at the dot column. */}
           <div
@@ -124,7 +124,7 @@ function TimelineGroup({
   const headingDot = headingDotStyle(group.isToday);
   return (
     <div className={isFirst ? '' : 'mt-8'}>
-      <div className="relative flex items-center pl-8">
+      <div className="relative flex items-center pl-10">
         {/* Group-heading dot — sits centred on the rail. */}
         <span
           className="absolute left-[24px] h-2.5 w-2.5 -translate-x-1/2 rounded-full"
@@ -178,7 +178,7 @@ function TimelineEntry({
   return (
     <li className="relative">
       <span
-        className={`absolute left-[24px] top-[11px] h-2 w-2 -translate-x-1/2 rounded-full ${dot.extraClass}`}
+        className={`absolute left-[24px] top-[13px] h-2 w-2 -translate-x-1/2 rounded-full ${dot.extraClass}`}
         style={dot.style}
         aria-hidden="true"
       />
@@ -190,11 +190,11 @@ function TimelineEntry({
         onMouseLeave={onLeaveEntry}
         onFocus={handleEnter}
         onBlur={onLeaveEntry}
-        className={`w-full rounded-md py-1.5 pl-8 pr-2 text-left text-[12.5px] leading-snug transition-colors hover:bg-surface-subtle focus:outline-none ${
+        className={`w-full rounded-md py-2 pl-10 pr-3 text-left text-[12.5px] leading-snug transition-colors hover:bg-surface-subtle focus:outline-none ${
           faded ? 'text-ink-label hover:text-ink' : 'text-ink-body hover:text-ink'
         }`}
       >
-        <span className="line-clamp-2 break-words">{entry.text}</span>
+        <span className="line-clamp-3 break-words">{entry.text}</span>
       </button>
     </li>
   );
