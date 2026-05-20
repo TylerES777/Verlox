@@ -138,6 +138,8 @@ export function Message({
         <div className="mt-3 space-y-3">
           {plan?.outputUi === 'ping' ? (
             <PingBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'git-status' ? (
+            <GitStatusBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -415,6 +417,270 @@ function PingRow({ event }: { event: PingEvent }) {
         </span>
       )}
     </li>
+  );
+}
+
+// Live git-status panel — replaces the raw monospace block when the
+// planner sets outputUi="git-status". Parses the stable porcelain v1
+// format (`git status --porcelain=v1 --branch`) and groups entries
+// into Staged, Modified, Untracked, and Conflict sections. Same
+// surface as the folder-listing and ping boards. If parsing fails or
+// the step exits non-zero (e.g. not a git repo) the raw output falls
+// through as a trailing block.
+function GitStatusBoard({ step }: { step: MessageStep }) {
+  const parsed = parseGitStatus(step.output);
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+
+  // Group entries into the four visible sections. A file with index
+  // changes (X) goes to Staged even if it ALSO has worktree changes —
+  // the 2-char code on the row tells the full story.
+  const sections: { label: string; entries: GitStatusEntry[] }[] = [
+    { label: 'Staged', entries: [] },
+    { label: 'Modified', entries: [] },
+    { label: 'Untracked', entries: [] },
+    { label: 'Conflicts', entries: [] },
+  ];
+  for (const e of parsed.entries) {
+    const cat = categorizeGitEntry(e);
+    const idx = cat === 'staged' ? 0 : cat === 'modified' ? 1 : cat === 'untracked' ? 2 : 3;
+    sections[idx].entries.push(e);
+  }
+
+  const totalEntries = parsed.entries.length;
+  const isClean = !failed && totalEntries === 0 && !running;
+
+  // Header right slot — branch + ahead/behind, or running/failed cues.
+  const headerMeta = buildGitStatusMeta(parsed, running, failed);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <GitGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">git status</span>
+        {headerMeta && (
+          <span className="shrink-0 text-[11px] text-ink-micro">{headerMeta}</span>
+        )}
+      </div>
+
+      {isClean ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">
+          Working tree clean.
+        </p>
+      ) : totalEntries > 0 ? (
+        <div className="max-h-[440px] overflow-y-auto">
+          {sections.map((section) =>
+            section.entries.length === 0 ? null : (
+              <section key={section.label}>
+                <div className="px-3.5 pt-2.5 pb-1 text-[11px] uppercase tracking-[0.06em] text-ink-micro">
+                  {section.label}{' '}
+                  <span className="text-ink-hint">({section.entries.length})</span>
+                </div>
+                <ul className="divide-y divide-hairline">
+                  {section.entries.map((e, i) => (
+                    <GitStatusRow key={`${e.path}::${i}`} entry={e} />
+                  ))}
+                </ul>
+              </section>
+            ),
+          )}
+        </div>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">Reading repo…</p>
+      ) : null}
+
+      {/* Fallback: command failed or produced unparseable output (e.g.
+          "fatal: not a git repository"). Show the raw text so the user
+          knows what happened. */}
+      {!running && totalEntries === 0 && !isClean && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function GitStatusRow({ entry }: { entry: GitStatusEntry }) {
+  return (
+    <li className="flex items-center gap-2 px-3.5 py-1.5 text-[13.5px] text-ink-body">
+      <span className="shrink-0 w-7 font-mono text-[12px] text-ink-label">
+        {gitCodeLabel(entry.code)}
+      </span>
+      <span className="min-w-0 flex-1 truncate">
+        {entry.oldPath ? (
+          <>
+            <span className="text-ink-label">{entry.oldPath}</span>
+            <span className="px-1 text-ink-micro">→</span>
+            <span>{entry.path}</span>
+          </>
+        ) : (
+          entry.path
+        )}
+      </span>
+    </li>
+  );
+}
+
+// Pretty 2-char code: render an unmodified slot as "·" so the badge
+// reads cleanly (" M" → "·M", "M " → "M·"). "??" → "?" (a single char
+// for untracked — the section label already says "Untracked").
+function gitCodeLabel(code: string): string {
+  if (code === '??') return '?';
+  const a = code[0] === ' ' ? '·' : code[0];
+  const b = code[1] === ' ' ? '·' : code[1];
+  return `${a}${b}`;
+}
+
+function categorizeGitEntry(
+  e: GitStatusEntry,
+): 'staged' | 'modified' | 'untracked' | 'conflict' {
+  if (e.code === '??') return 'untracked';
+  // Any U in either slot, or symmetrical AA / DD, is a merge conflict.
+  if (
+    e.indexStatus === 'U' ||
+    e.worktreeStatus === 'U' ||
+    e.code === 'AA' ||
+    e.code === 'DD'
+  ) {
+    return 'conflict';
+  }
+  // Index has a non-space, non-? char → staged (even if worktree also
+  // dirty; the row's code shows both letters).
+  if (e.indexStatus !== ' ' && e.indexStatus !== '?') return 'staged';
+  return 'modified';
+}
+
+interface GitStatusEntry {
+  // Raw 2-char porcelain code (e.g. " M", "MM", "??", "R ").
+  code: string;
+  // First char of the code — the index status.
+  indexStatus: string;
+  // Second char of the code — the worktree status.
+  worktreeStatus: string;
+  // The (new) path for this entry. Renames/copies put the old name in
+  // `oldPath` and the new name here.
+  path: string;
+  oldPath: string | null;
+}
+
+interface GitStatusParseResult {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+  entries: GitStatusEntry[];
+}
+
+function parseGitStatus(text: string): GitStatusParseResult {
+  const result: GitStatusParseResult = {
+    branch: null,
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    detached: false,
+    entries: [],
+  };
+  if (text.length === 0) return result;
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    if (rawLine.length === 0) continue;
+
+    // Branch line: "## main...origin/main [ahead 1, behind 2]" or
+    // "## main" or "## HEAD (no branch)".
+    if (rawLine.startsWith('## ')) {
+      const body = rawLine.slice(3);
+      if (body.startsWith('HEAD (no branch)')) {
+        result.detached = true;
+        continue;
+      }
+      const bracketIdx = body.indexOf(' [');
+      const branchPart =
+        bracketIdx >= 0 ? body.slice(0, bracketIdx) : body.trimEnd();
+      const bracketPart =
+        bracketIdx >= 0
+          ? body.slice(bracketIdx + 2, body.lastIndexOf(']'))
+          : '';
+
+      const dotsIdx = branchPart.indexOf('...');
+      if (dotsIdx >= 0) {
+        result.branch = branchPart.slice(0, dotsIdx);
+        result.upstream = branchPart.slice(dotsIdx + 3);
+      } else {
+        result.branch = branchPart;
+      }
+
+      if (bracketPart) {
+        const aheadMatch = /ahead (\d+)/.exec(bracketPart);
+        const behindMatch = /behind (\d+)/.exec(bracketPart);
+        if (aheadMatch) result.ahead = parseInt(aheadMatch[1], 10);
+        if (behindMatch) result.behind = parseInt(behindMatch[1], 10);
+      }
+      continue;
+    }
+
+    // Entry: "XY path" — exactly 2 status chars, a space, then the path.
+    if (rawLine.length < 4) continue;
+    const code = rawLine.slice(0, 2);
+    let path = rawLine.slice(3);
+    let oldPath: string | null = null;
+    // Renames / copies show "old -> new" in the path field.
+    if (code[0] === 'R' || code[0] === 'C') {
+      const arrowIdx = path.indexOf(' -> ');
+      if (arrowIdx >= 0) {
+        oldPath = path.slice(0, arrowIdx);
+        path = path.slice(arrowIdx + 4);
+      }
+    }
+    result.entries.push({
+      code,
+      indexStatus: code[0],
+      worktreeStatus: code[1],
+      path,
+      oldPath,
+    });
+  }
+  return result;
+}
+
+function buildGitStatusMeta(
+  parsed: GitStatusParseResult,
+  running: boolean,
+  failed: boolean,
+): string {
+  if (running) return 'reading…';
+  if (failed && parsed.entries.length === 0 && !parsed.branch) return 'failed';
+  if (parsed.detached) return '(detached HEAD)';
+  if (!parsed.branch) return '';
+  const arrows: string[] = [];
+  if (parsed.ahead > 0) arrows.push(`↑${parsed.ahead}`);
+  if (parsed.behind > 0) arrows.push(`↓${parsed.behind}`);
+  return arrows.length > 0
+    ? `${parsed.branch} · ${arrows.join(' ')}`
+    : parsed.branch;
+}
+
+function GitGlyph({ className = '' }: { className?: string }) {
+  // Minimal "branch" glyph — two nodes joined by a curve, calm sans
+  // weight so it sits with the folder / file / ping glyphs.
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="4" cy="3.5" r="1.4" />
+      <circle cx="4" cy="12.5" r="1.4" />
+      <circle cx="12" cy="6" r="1.4" />
+      <path d="M4 5v6" />
+      <path d="M4 8.5C4 7 6 6 8 6h2.6" />
+    </svg>
   );
 }
 
