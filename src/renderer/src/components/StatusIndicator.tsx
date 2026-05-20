@@ -5,78 +5,122 @@ interface StatusIndicatorProps {
   phase: StatusIndicatorPhase;
 }
 
-// Phase 4 Chunk 6 polish: 200ms cross-fade on phase transitions.
-//
-// Two layers are absolutely stacked in a relatively-positioned container.
-// When `phase` changes, the old label becomes the outgoing layer (runs
-// the fade-out keyframe) and the new label mounts as the incoming layer
-// (runs fade-in). After 200ms the outgoing layer is unmounted.
-//
-// The container reserves a fixed height (h-[20px]) so the page doesn't
-// reflow during the fade. The first phase (no previous label) renders
-// without any outgoing layer — just a clean fade-in.
-// Lowercase, mono — reads as terminal status output, not an editorial
-// caption. The trailing ellipsis stays as the "still working" cue.
-const PHASE_LABEL: Record<Exclude<StatusIndicatorPhase, null>, string> = {
-  examining: 'examining…',
-  running: 'running…',
-  reviewing: 'reviewing…',
+// Each phase has several calm labels that rotate while the phase
+// persists, so the indicator never reads as stuck on a single word
+// when the backend is sitting on one beat (most reply turns only
+// ever pass through 'examining', for instance — without rotation
+// the user just sees "examining…" for the whole wait).
+const PHASE_LABELS: Record<Exclude<StatusIndicatorPhase, null>, string[]> = {
+  examining: ['examining…', 'thinking…', 'composing…'],
+  running: ['running…', 'watching output…'],
+  reviewing: ['reviewing…', 'writing reply…'],
 };
 
-export function StatusIndicator({ phase }: StatusIndicatorProps) {
-  // `current` mirrors the live phase prop; `previous` holds the prior
-  // value for the 200ms fade-out window, then nulls out.
-  const [current, setCurrent] = useState<StatusIndicatorPhase>(phase);
-  const [previous, setPrevious] = useState<StatusIndicatorPhase>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+// How long each label is shown before rotating to the next within
+// the same phase. Slow enough to read, fast enough to feel alive.
+const ROTATE_MS = 2000;
 
-  useEffect(() => {
-    // No transition needed if the phase didn't actually change.
-    if (phase === current) return;
-    // Cancel any in-flight fade-out timer — back-to-back phase changes
-    // shouldn't strand a stale label on screen.
-    if (timeoutRef.current !== null) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
+// Cross-fade duration when the label swaps. Matches the existing
+// fade-in / fade-out keyframes in tailwind.config.
+const FADE_MS = 200;
+
+// Phase 4 Chunk 6 polish: 200ms cross-fade on label transitions.
+//
+// Two layers absolutely stacked in a relatively-positioned container.
+// When the label changes — either because the orchestrator pushed a
+// new phase, or because the within-phase rotation timer ticked — the
+// old label runs the fade-out keyframe and the new one fades in.
+// After 200ms the outgoing layer is unmounted.
+//
+// The container reserves a fixed height (h-[20px]) so the page
+// doesn't reflow during the fade. The first label (no previous) just
+// fades in cleanly.
+export function StatusIndicator({ phase }: StatusIndicatorProps) {
+  // The phase the indicator is currently showing. Tracks the prop
+  // but lags behind a fade window when the prop changes.
+  const [shownPhase, setShownPhase] = useState<StatusIndicatorPhase>(phase);
+  // Index within the current phase's label rotation.
+  const [labelIndex, setLabelIndex] = useState(0);
+  // The outgoing label string mid-fade-out, if any.
+  const [outgoingLabel, setOutgoingLabel] = useState<string | null>(null);
+
+  const fadeOutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Helper used by both the phase-change effect and the rotation
+  // interval — set outgoingLabel for FADE_MS, then clear it.
+  function startFadeOut(label: string | null) {
+    if (fadeOutTimeoutRef.current !== null) {
+      clearTimeout(fadeOutTimeoutRef.current);
     }
-    setPrevious(current);
-    setCurrent(phase);
-    timeoutRef.current = setTimeout(() => {
-      setPrevious(null);
-      timeoutRef.current = null;
-    }, 200);
+    setOutgoingLabel(label);
+    fadeOutTimeoutRef.current = setTimeout(() => {
+      setOutgoingLabel(null);
+      fadeOutTimeoutRef.current = null;
+    }, FADE_MS);
+  }
+
+  // React to phase changes from the orchestrator. Resets the
+  // within-phase rotation to the first label of the new phase.
+  useEffect(() => {
+    if (phase === shownPhase) return;
+    const oldLabel =
+      shownPhase !== null ? PHASE_LABELS[shownPhase][labelIndex] ?? null : null;
+    startFadeOut(oldLabel);
+    setShownPhase(phase);
+    setLabelIndex(0);
+    // labelIndex is intentionally read but not in deps — we only want
+    // to capture its current value at the moment the phase changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, shownPhase]);
+
+  // Rotate labels within the current phase. The interval restarts
+  // only when the phase changes, so a long-running phase keeps the
+  // same heartbeat across many ticks.
+  useEffect(() => {
+    if (shownPhase === null) return;
+    const labels = PHASE_LABELS[shownPhase];
+    if (labels.length <= 1) return;
+    const interval = setInterval(() => {
+      setLabelIndex((prev) => {
+        const oldLabel = labels[prev];
+        startFadeOut(oldLabel);
+        return (prev + 1) % labels.length;
+      });
+    }, ROTATE_MS);
+    return () => clearInterval(interval);
+  }, [shownPhase]);
+
+  // Clean up any pending fade timer on unmount.
+  useEffect(() => {
     return () => {
-      if (timeoutRef.current !== null) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
+      if (fadeOutTimeoutRef.current !== null) {
+        clearTimeout(fadeOutTimeoutRef.current);
       }
     };
-  }, [phase, current]);
+  }, []);
 
-  // Pure null → null: render nothing at all. Saves a layout slot when
-  // the indicator is fully off (e.g. terminal states like 'done').
-  if (current === null && previous === null) return null;
+  // Pure null → null with no outgoing label: render nothing.
+  if (shownPhase === null && outgoingLabel === null) return null;
+
+  const currentLabel =
+    shownPhase !== null ? PHASE_LABELS[shownPhase][labelIndex] : null;
 
   return (
     <div className="relative h-[20px]">
-      {/* Outgoing layer — fades from 1 → 0 over 200ms then unmounts. */}
-      {previous !== null && (
+      {outgoingLabel !== null && (
         <div
-          key={`prev-${previous}`}
+          key={`out-${outgoingLabel}`}
           className="absolute inset-0 font-mono text-[12px] text-ink-micro animate-fade-out"
         >
-          {PHASE_LABEL[previous]}
+          {outgoingLabel}
         </div>
       )}
-      {/* Incoming layer — fades from 0 → 1 over 200ms.
-          `key` is the phase string so React mounts a fresh element on
-          every change and the keyframe restarts. */}
-      {current !== null && (
+      {currentLabel !== null && (
         <div
-          key={`curr-${current}`}
+          key={`in-${currentLabel}`}
           className="absolute inset-0 font-mono text-[12px] text-ink-micro animate-fade-in"
         >
-          {PHASE_LABEL[current]}
+          {currentLabel}
         </div>
       )}
     </div>
