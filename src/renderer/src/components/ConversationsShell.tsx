@@ -103,15 +103,22 @@ export function ConversationsShell() {
       {/* Timeline sidebar — always visible. Fixed-width column on the
           left; no collapse affordance because the app's empty-state
           felt off without it. */}
-      {/* Sidebar widened to 440px so it absorbs the leftover gray
-          space that otherwise sits between the rail and the centred
-          conversation card. Wide enough that entries breathe; narrow
-          enough that the Timeline stays ambient, not dominant. */}
+      {/* Sidebar — 440px wide. The Timeline lives in a bounded
+          area near the top (max 65vh) so it stays a board, not a
+          full-height column; everything below is reserved for future
+          additions. A soft white fade at the Timeline's bottom edge
+          softens the scroll cut-off into the empty space. */}
       <aside
-        className="w-[440px] shrink-0 border-r border-hairline"
+        className="flex w-[440px] shrink-0 flex-col border-r border-hairline"
         aria-label="Prompt timeline"
       >
-        <Timeline onSelect={handleTimelineSelect} />
+        <div className="relative max-h-[65vh] min-h-0 shrink overflow-hidden">
+          <Timeline onSelect={handleTimelineSelect} />
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-b from-transparent to-white"
+            aria-hidden="true"
+          />
+        </div>
       </aside>
 
       {/* Main pane — conversation centred in its available space.

@@ -526,6 +526,12 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
               ...m,
               status: 'killed',
               statusIndicator: null,
+              // Freeze reveal-smoothing at the current visible
+              // position. Without this, the smoothing tick keeps
+              // walking pendingResponse → finalResponse one char at
+              // a time after the user cancelled, which looks like
+              // the AI is still typing despite the stop.
+              pendingResponse: m.finalResponse,
               endedAt: Date.now(),
             }
           : m,
@@ -1362,11 +1368,32 @@ export function useCommands(
     [cwd, environment, focusedFile, dispatch, bounceToLogin, runStep],
   );
 
-  // Public stop: cancels the currently-running step for the given message.
-  const stopCommand = useCallback((messageId: string) => {
-    const stepId = activeStepIdsRef.current.get(messageId);
-    if (stepId) window.api.stopCommand(stepId);
-  }, []);
+  // Public stop / pause. Cancels whatever is currently in motion for
+  // this turn:
+  //   - executing      → kill the running step (existing behaviour;
+  //                      step exit handler will dispatch KILLED).
+  //   - synthesizing /
+  //     streaming      → cancel the synthesize SSE stream AND
+  //                      dispatch KILLED so the message flips out of
+  //                      the in-progress state and reveal-smoothing
+  //                      stops at the current visible position.
+  //   - other states   → no-op (nothing to stop).
+  const stopCommand = useCallback(
+    (messageId: string) => {
+      const stepId = activeStepIdsRef.current.get(messageId);
+      if (stepId) {
+        window.api.stopCommand(stepId);
+        return;
+      }
+      const message = messagesRef.current.find((m) => m.id === messageId);
+      if (!message) return;
+      if (message.status === 'synthesizing' || message.status === 'streaming') {
+        window.api.synthesizeCancel(messageId);
+        dispatch({ type: 'KILLED', id: messageId });
+      }
+    },
+    [dispatch],
+  );
 
   // Plan Card "Run" handler. Pulls the resolver from the pending map,
   // dispatches PLAN_CONFIRMED (which flips status to 'executing'), then

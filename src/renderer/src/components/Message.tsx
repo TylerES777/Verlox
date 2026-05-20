@@ -223,17 +223,22 @@ export function Message({
         </p>
       )}
 
-      {/* Stop affordance during execution — a stop icon, quiet until
-          hovered. */}
-      {status === 'executing' && (
+      {/* Stop / pause affordance. Shown while a command is running
+          (stop icon — kills the process), while the synthesise stream
+          is connecting, and while the response is streaming in
+          (pause icon — cancels the AI's generation and freezes the
+          prose at the current visible position). */}
+      {(status === 'executing' ||
+        status === 'synthesizing' ||
+        status === 'streaming') && (
         <button
           type="button"
           onClick={() => onStop(message.id)}
-          aria-label="Stop"
-          title="Stop"
+          aria-label={status === 'executing' ? 'Stop' : 'Pause'}
+          title={status === 'executing' ? 'Stop' : 'Pause'}
           className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
         >
-          <StopGlyph />
+          {status === 'executing' ? <StopGlyph /> : <PauseGlyph />}
         </button>
       )}
 
@@ -3025,6 +3030,24 @@ function StopGlyph() {
       aria-hidden="true"
     >
       <rect x="1.5" y="1.5" width="9" height="9" rx="1.6" />
+    </svg>
+  );
+}
+
+// Pause glyph — two rounded vertical bars. Used when the AI's
+// response is generating; semantically the action is cancel, but the
+// pause visual reads as the right affordance for "stop the AI from
+// writing more."
+function PauseGlyph() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      className="h-2.5 w-2.5"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="2" y="1.5" width="2.6" height="9" rx="0.8" />
+      <rect x="7.4" y="1.5" width="2.6" height="9" rx="0.8" />
     </svg>
   );
 }
