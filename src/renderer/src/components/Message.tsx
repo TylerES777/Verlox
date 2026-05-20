@@ -2800,7 +2800,12 @@ type ProseBlockNode =
   | { kind: 'paragraph'; text: string }
   | { kind: 'heading'; level: 1 | 2 | 3; text: string }
   | { kind: 'bullets'; items: string[] }
-  | { kind: 'ordered'; items: string[] };
+  | { kind: 'ordered'; items: string[] }
+  // Inline fill-bar primitive — written by the synthesiser as
+  // {{bar N% optional label}} on its own line. Used to communicate
+  // measurable percentages (storage, port counts, etc.) without
+  // dumping raw tables.
+  | { kind: 'bar'; percent: number; label: string | null };
 
 function parseProseBlocks(text: string): ProseBlockNode[] {
   const lines = text.split(/\r?\n/);
@@ -2810,6 +2815,15 @@ function parseProseBlocks(text: string): ProseBlockNode[] {
     const line = lines[i];
     // Blank line → block separator.
     if (line.trim().length === 0) {
+      i += 1;
+      continue;
+    }
+    // Fill bar — {{bar N% optional label}} on its own line.
+    const barMatch = /^\{\{bar\s+(\d+(?:\.\d+)?)\s*%\s*(.*?)\s*\}\}$/.exec(line);
+    if (barMatch) {
+      const percent = parseFloat(barMatch[1]);
+      const label = barMatch[2].trim().length > 0 ? barMatch[2].trim() : null;
+      blocks.push({ kind: 'bar', percent, label });
       i += 1;
       continue;
     }
@@ -2847,7 +2861,10 @@ function parseProseBlocks(text: string): ProseBlockNode[] {
     while (
       i < lines.length &&
       lines[i].trim().length > 0 &&
-      !/^(#{1,3}\s|[-*]\s|\d+\.\s)/.test(lines[i])
+      // Break the paragraph on the next block-level marker so an
+      // inline {{bar}} line doesn't get absorbed into surrounding
+      // prose.
+      !/^(#{1,3}\s|[-*]\s|\d+\.\s|\{\{bar\s)/.test(lines[i])
     ) {
       paragraphLines.push(lines[i]);
       i += 1;
@@ -2893,10 +2910,39 @@ function ProseBlock({ block }: { block: ProseBlockNode }) {
       </ol>
     );
   }
+  if (block.kind === 'bar') {
+    return <ProseBar percent={block.percent} label={block.label} />;
+  }
   return (
     <p className="whitespace-pre-wrap">
       <ProseInline text={block.text} />
     </p>
+  );
+}
+
+// Inline fill-bar block — rendered when the synthesiser writes
+// {{bar N% optional label}} on its own line. Color tier matches the
+// disk-usage panel's row bars (green <70, amber <90, red >=90) so the
+// visual reads consistently across the app.
+function ProseBar({ percent, label }: { percent: number; label: string | null }) {
+  const clamped = Math.min(100, Math.max(0, percent));
+  const tone =
+    clamped >= 90 ? 'bg-step-failed' : clamped >= 70 ? 'bg-amber' : 'bg-step-done';
+  return (
+    <div className="flex items-center gap-3 py-1">
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-card border border-subtle-border/40">
+        <div
+          className={`h-full ${tone} transition-all`}
+          style={{ width: `${clamped}%` }}
+        />
+      </div>
+      <span className="w-10 shrink-0 text-right font-mono text-[12px] text-ink-label tabular-nums">
+        {clamped.toFixed(0)}%
+      </span>
+      {label && (
+        <span className="shrink-0 text-[12.5px] text-ink-label">{label}</span>
+      )}
+    </div>
   );
 }
 
