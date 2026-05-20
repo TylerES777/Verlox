@@ -355,6 +355,11 @@ export interface IpcApi {
   // Environment (platform + shell). Static for the app's lifetime.
   getEnvironment: () => Promise<EnvironmentInfo>;
 
+  // Open a URL (http/https only) in the user's default browser via
+  // Electron's shell.openExternal. Used by the live processes board
+  // when a dev server's localhost URL has been detected in output.
+  openExternal: (url: string) => void;
+
   // Plan turn (synchronous JSON; replaces the Phase 3 translate call).
   planTurn: (input: TurnInput) => Promise<TurnResultWire>;
 

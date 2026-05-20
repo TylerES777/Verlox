@@ -1,9 +1,11 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ConversationView } from './ConversationView';
 import { TabBar, type ConversationTab } from './TabBar';
 import { RunningPill, type RunningItem } from './RunningPill';
+import { RunningProcesses } from './RunningProcesses';
 import { Timeline } from './Timeline';
 import { usePlanMode } from '../hooks/usePlanMode';
+import { installProcessListeners } from '../hooks/useRunningProcesses';
 
 // What each ConversationView reports about its in-flight commands.
 type RunningEntry = { stepId: string; command: string };
@@ -24,6 +26,12 @@ function makeConversation(): ConversationTab {
 export function ConversationsShell() {
   const { planMode, setPlanMode } = usePlanMode();
 
+  // Install the singleton IPC listeners that route command output /
+  // exit into the live-processes board. Once per app lifetime.
+  useEffect(() => {
+    installProcessListeners();
+  }, []);
+
   // Seed with one conversation. The second initializer reads `tabs`
   // (already initialized by the first hook) so both agree on the id.
   const [tabs, setTabs] = useState<ConversationTab[]>(() => [makeConversation()]);
@@ -40,6 +48,16 @@ export function ConversationsShell() {
   const handleTimelineSelect = useCallback((text: string) => {
     setInsertRequest({ value: text, tick: Date.now() });
   }, []);
+
+  // "Ask Vorlox why" from the processes board — activates the source
+  // conversation AND pre-fills its input with a diagnostic prompt.
+  const handleAskWhy = useCallback(
+    (conversationId: string, prompt: string) => {
+      setActiveId(conversationId);
+      setInsertRequest({ value: prompt, tick: Date.now() });
+    },
+    [],
+  );
 
   const handleNew = useCallback(() => {
     const c = makeConversation();
@@ -110,13 +128,24 @@ export function ConversationsShell() {
           softens the scroll cut-off into the empty space. */}
       <aside
         className="flex w-[440px] shrink-0 flex-col border-r border-hairline"
-        aria-label="Prompt timeline"
+        aria-label="Prompt timeline and running processes"
       >
         <div className="relative max-h-[65vh] min-h-0 shrink overflow-hidden">
           <Timeline onSelect={handleTimelineSelect} />
           <div
             className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-b from-transparent to-white"
             aria-hidden="true"
+          />
+        </div>
+        {/* Live processes board — sits below the Timeline, takes the
+            remaining vertical space. Lists every long-lived shell
+            process Vorlox has running with stop / restart / open / ask
+            controls. */}
+        <div className="min-h-0 flex-1 border-t border-hairline">
+          <RunningProcesses
+            tabs={tabs}
+            onJump={setActiveId}
+            onAskWhy={handleAskWhy}
           />
         </div>
       </aside>

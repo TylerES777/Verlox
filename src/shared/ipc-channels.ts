@@ -18,6 +18,9 @@ export const IpcChannels = {
   // Environment
   EnvGet: 'env:get',
 
+  // System shell
+  ShellOpenExternal: 'shell:open-external',
+
   // Backend AI
   BackendPlanTurn: 'backend:plan-turn',
   BackendSynthesizeStart: 'backend:synthesize:start',

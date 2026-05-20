@@ -19,6 +19,7 @@ import {
   type PromptHistoryEntry,
   type PromptHistoryStatus,
 } from './usePromptHistory';
+import { registerProcess } from './useRunningProcesses';
 
 // ── State machine ─────────────────────────────────────────────────────────
 
@@ -812,6 +813,10 @@ function toHistoryEntry(m: CommandMessage): TurnHistoryEntry {
 // ── Hook ──────────────────────────────────────────────────────────────────
 
 export function useCommands(
+  // The owning conversation tab's id. Long-lived processes register
+  // against this so the global processes board can jump back to /
+  // pre-fill the right tab on Restart or "Ask Vorlox why".
+  conversationId: string,
   // The conversation's working directory, or null if the user hasn't
   // chosen one ("folderless"). Folderless conversations still work —
   // commands run from the user's home directory as the invisible
@@ -1124,6 +1129,17 @@ export function useCommands(
 
         activeStepIdsRef.current.set(messageId, stepId);
         dispatch({ type: 'STEP_START', id: messageId, index: stepIndex });
+        // Register in the global processes board so long-lived
+        // commands (dev servers, watchers) show up there with
+        // stop/open/restart affordances. Same step id we use for
+        // window.api.stopCommand.
+        registerProcess({
+          stepId,
+          conversationId,
+          command: step.command,
+          cwd: stepCwd,
+          shell: stepShell,
+        });
         window.api.startCommand({
           id: stepId,
           command: step.command,
@@ -1136,7 +1152,7 @@ export function useCommands(
         armSilence(); // start the silence clock for this step
       });
     },
-    [dispatch],
+    [dispatch, conversationId],
   );
 
   // ── submitInput: the orchestrator ──────────────────────────────────────

@@ -112,6 +112,14 @@ ipcMain.handle(IpcChannels.AuthGetCurrentUser, () => backend.getCurrentUser());
 
 ipcMain.handle(IpcChannels.EnvGet, () => getEnvironment());
 
+ipcMain.on(IpcChannels.ShellOpenExternal, (_event, url: string) => {
+  // Only http(s) — refuse file://, javascript:, etc. Defensive guard
+  // because the URL comes from parsed stdout of arbitrary processes.
+  if (typeof url !== 'string') return;
+  if (!/^https?:\/\//.test(url)) return;
+  void shell.openExternal(url);
+});
+
 // --- AI handlers ----------------------------------------------------------
 
 ipcMain.handle(IpcChannels.BackendPlanTurn, (_e, input: TurnInput) =>

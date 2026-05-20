@@ -41,6 +41,9 @@ const api: IpcApi = {
 
   getEnvironment: () => ipcRenderer.invoke(IpcChannels.EnvGet),
 
+  openExternal: (url: string) =>
+    ipcRenderer.send(IpcChannels.ShellOpenExternal, url),
+
   planTurn: (input: TurnInput) =>
     ipcRenderer.invoke(IpcChannels.BackendPlanTurn, input),
 
