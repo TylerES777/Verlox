@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, type CSSProperties } from 'react';
 
 // A small, intentionally narrow visual language for AI responses.
 //
@@ -45,15 +45,81 @@ export interface DiagramSchema {
   groups: DiagramGroup[];
 }
 
-// Tailwind class bundles per color. The tints are pulled into
-// arbitrary values so they don't fight the rest of the app's palette
-// — calm, low-saturation, ink-readable on tint.
-const COLOR_CLASS: Record<DiagramColor, string> = {
-  green: 'border-[#B6DCC5] bg-[#E8F4ED] text-[#2D6A45]',
-  blue: 'border-[#C7CFE8] bg-[#EDF0FB] text-[#3D4D8C]',
-  amber: 'border-[#E3C9A0] bg-[#FAEFDA] text-[#7E552A]',
-  red: 'border-[#E8BFBF] bg-[#FAECEC] text-[#8E3838]',
-  neutral: 'border-subtle-border bg-surface-subtle text-ink',
+// Per-color visual: a diagonal soft gradient (light at the top-left,
+// slightly deeper at the bottom-right), an ambient outer glow in the
+// same hue, a faint inner highlight along the top edge for that
+// glassy refraction feel, and an ethereal low-opacity border. The
+// text uses a deeper shade for readable contrast on the tint.
+interface ColorVisual {
+  textClass: string;
+  // Inline style so the multi-stop gradient + layered shadows can be
+  // expressed without a Tailwind arbitrary-value class soup. The text
+  // colour stays in textClass because hover/state variants might pile
+  // on later.
+  style: CSSProperties;
+}
+
+const COLOR_VISUAL: Record<DiagramColor, ColorVisual> = {
+  green: {
+    textClass: 'text-[#1F5A38]',
+    style: {
+      background:
+        'linear-gradient(135deg, #F4FBF6 0%, #E5F3EB 55%, #D7EBDE 100%)',
+      boxShadow: [
+        '0 1px 0 rgba(255,255,255,0.65) inset',
+        '0 0 0 0.5px rgba(120,180,140,0.28)',
+        '0 8px 22px -8px rgba(80,160,110,0.28)',
+      ].join(', '),
+    },
+  },
+  blue: {
+    textClass: 'text-[#36458A]',
+    style: {
+      background:
+        'linear-gradient(135deg, #F5F7FE 0%, #E7ECFA 55%, #DAE0F5 100%)',
+      boxShadow: [
+        '0 1px 0 rgba(255,255,255,0.65) inset',
+        '0 0 0 0.5px rgba(110,130,210,0.25)',
+        '0 8px 22px -8px rgba(90,110,200,0.25)',
+      ].join(', '),
+    },
+  },
+  amber: {
+    textClass: 'text-[#6E4A20]',
+    style: {
+      background:
+        'linear-gradient(135deg, #FEF8EA 0%, #FAEDD2 55%, #F5E0B7 100%)',
+      boxShadow: [
+        '0 1px 0 rgba(255,255,255,0.7) inset',
+        '0 0 0 0.5px rgba(190,150,80,0.28)',
+        '0 8px 22px -8px rgba(200,150,80,0.28)',
+      ].join(', '),
+    },
+  },
+  red: {
+    textClass: 'text-[#7C2F2F]',
+    style: {
+      background:
+        'linear-gradient(135deg, #FCF1F1 0%, #F7DEDE 55%, #F1CACA 100%)',
+      boxShadow: [
+        '0 1px 0 rgba(255,255,255,0.65) inset',
+        '0 0 0 0.5px rgba(200,120,120,0.28)',
+        '0 8px 22px -8px rgba(200,110,110,0.28)',
+      ].join(', '),
+    },
+  },
+  neutral: {
+    textClass: 'text-ink',
+    style: {
+      background:
+        'linear-gradient(135deg, #FBFBFC 0%, #F3F4F6 55%, #ECEDF0 100%)',
+      boxShadow: [
+        '0 1px 0 rgba(255,255,255,0.7) inset',
+        '0 0 0 0.5px rgba(0,0,0,0.08)',
+        '0 8px 22px -8px rgba(60,60,80,0.12)',
+      ].join(', '),
+    },
+  },
 };
 
 export function Diagram({ diagram }: { diagram: DiagramSchema }) {
@@ -137,20 +203,21 @@ function DiagramNodeView({
   node: DiagramNode;
   layout: 'row' | 'column';
 }) {
-  const colorClass = COLOR_CLASS[node.color ?? 'neutral'];
+  const visual = COLOR_VISUAL[node.color ?? 'neutral'];
   // Row nodes flex evenly with a sensible minimum so a single-row
   // group doesn't collapse weird on narrow screens; column nodes go
   // full width so the layout reads as "this is one stage."
   const widthClass = layout === 'row' ? 'flex-1 min-w-[140px]' : 'w-full';
   return (
     <div
-      className={`rounded-xl border-[1px] px-4 py-3 text-center ${colorClass} ${widthClass}`}
+      className={`rounded-2xl px-4 py-3 text-center ${visual.textClass} ${widthClass}`}
+      style={visual.style}
     >
       <div className="text-[13.5px] font-semibold leading-snug">
         {node.label}
       </div>
       {node.sub && (
-        <div className="mt-1 text-[12px] opacity-75 leading-snug">
+        <div className="mt-1 text-[12px] leading-snug opacity-80">
           {node.sub}
         </div>
       )}
