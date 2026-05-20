@@ -28,8 +28,8 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
             key={tab.id}
             className={`group flex shrink-0 items-center gap-1 rounded-xl px-1 transition-colors ${
               active
-                ? 'bg-surface-subtle border border-subtle-border'
-                : 'border border-subtle-border bg-card hover:bg-surface-subtle'
+                ? 'border border-subtle-border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.04)]'
+                : 'hover:bg-surface-subtle'
             }`}
           >
             <button
