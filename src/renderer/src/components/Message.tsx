@@ -131,12 +131,16 @@ export function Message({
           </NotificationBoard>
         ))}
 
-      {/* Verbatim raw-output blocks — one per step that ran. */}
+      {/* Verbatim raw-output blocks — one per step that ran. When the
+          planner asked for a dedicated UI (outputUi), swap the generic
+          block for the structured panel instead. */}
       {showVerbatim && ranSteps.length > 0 && (
         <div className="mt-3 space-y-3">
-          {ranSteps.map((s) => (
-            <OutputBlock key={s.index} step={s} />
-          ))}
+          {plan?.outputUi === 'ping' ? (
+            <PingBoard step={ranSteps[0]} />
+          ) : (
+            ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
+          )}
         </div>
       )}
 
@@ -313,6 +317,266 @@ function FolderGlyph({ className = '', open = false }: { className?: string; ope
       )}
     </svg>
   );
+}
+
+// Live ping panel — replaces the raw monospace block when the planner
+// sets outputUi="ping". The parser handles both Windows ("Reply from X:
+// bytes=32 time<1ms TTL=128") and POSIX ("64 bytes from X: icmp_seq=1
+// ttl=64 time=0.045 ms") output shapes; everything else (unreachable,
+// name lookup errors) falls back to a raw block at the bottom.
+function PingBoard({ step }: { step: MessageStep }) {
+  const { target, events, summary } = parsePingOutput(step.output);
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+  const replyCount = events.filter((e) => e.kind === 'reply').length;
+  const timeoutCount = events.filter((e) => e.kind === 'timeout').length;
+
+  // Accent: red if failed or all-timeouts, green if any replies after
+  // completion, amber while still pinging, neutral otherwise.
+  const accent =
+    failed || (events.length > 0 && replyCount === 0 && !running)
+      ? 'border-l-step-failed'
+      : !running && replyCount > 0
+        ? 'border-l-step-done'
+        : running
+          ? 'border-l-amber'
+          : 'border-l-subtle-border';
+
+  // Target label: prefer what the ping output announced; fall back to
+  // pulling the last token of the command line ("ping -n 4 X" → "X").
+  const headerTarget = target ?? extractPingTarget(step.command) ?? '(unknown)';
+
+  return (
+    <div
+      className={`overflow-hidden rounded-xl border border-subtle-border border-l-[3px] ${accent} bg-surface-subtle`}
+    >
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <StepDot status={step.status} />
+        <span className="min-w-0 flex-1 truncate">ping {headerTarget}</span>
+        {running && (
+          <span className="shrink-0 text-[11px] text-ink-micro">listening…</span>
+        )}
+      </div>
+
+      {events.length === 0 ? (
+        running ? (
+          <p className="px-3.5 py-3 text-[13px] text-ink-label">
+            Waiting for replies…
+          </p>
+        ) : null
+      ) : (
+        <ul className="max-h-[360px] overflow-y-auto divide-y divide-hairline">
+          {events.map((e, i) => (
+            <PingRow key={i} event={e} />
+          ))}
+        </ul>
+      )}
+
+      {/* Summary footer — shown once the run-statistics block parses. */}
+      {summary && (
+        <div className="border-t border-subtle-border bg-card/60 px-3.5 py-2 font-mono text-[12px] text-ink-label">
+          {summary.sent} sent · {summary.received} received ·{' '}
+          <span
+            className={summary.lossPct && summary.lossPct > 0 ? 'text-step-failed' : ''}
+          >
+            {summary.lossPct ?? 0}% loss
+          </span>
+        </div>
+      )}
+
+      {/* Fallback: the run produced no parseable reply lines but did
+          finish (or fail). Show the raw output so the user still sees
+          why — name-lookup errors, target-unreachable, etc. */}
+      {!running && events.length === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card/60 px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+
+      {/* Trailing tally when there's no summary line yet (e.g. user
+          stopped the ping mid-stream, infinite ping cancelled). */}
+      {!running && !summary && (replyCount > 0 || timeoutCount > 0) && (
+        <div className="border-t border-subtle-border bg-card/60 px-3.5 py-2 font-mono text-[12px] text-ink-label">
+          {replyCount} received · {timeoutCount} timed out
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PingRow({ event }: { event: PingEvent }) {
+  if (event.kind === 'timeout') {
+    return (
+      <li className="flex items-center gap-3 px-3.5 py-1.5 font-mono text-[12.5px]">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-step-failed" />
+        <span className="shrink-0 text-ink-micro">
+          {event.seq != null ? `#${event.seq}` : '—'}
+        </span>
+        <span className="min-w-0 flex-1 text-ink-body">Request timed out</span>
+      </li>
+    );
+  }
+  // Reply.
+  const latencyClass =
+    event.time == null
+      ? 'text-ink-body'
+      : event.time < 50
+        ? 'text-step-done'
+        : event.time < 200
+          ? 'text-amber'
+          : 'text-step-failed';
+  return (
+    <li className="flex items-center gap-3 px-3.5 py-1.5 font-mono text-[12.5px]">
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-step-done" />
+      <span className="shrink-0 text-ink-micro">
+        {event.seq != null ? `#${event.seq}` : '—'}
+      </span>
+      <span className={`shrink-0 w-16 ${latencyClass}`}>
+        {event.time != null ? `${event.time} ms` : '— ms'}
+      </span>
+      <span className="shrink-0 text-ink-label">
+        {event.ttl != null ? `TTL ${event.ttl}` : ''}
+      </span>
+    </li>
+  );
+}
+
+// One event from a parsed ping output stream — a reply or a timeout,
+// in the order they appeared.
+type PingEvent =
+  | {
+      kind: 'reply';
+      seq: number | null;
+      time: number | null; // ms
+      ttl: number | null;
+    }
+  | { kind: 'timeout'; seq: number | null };
+
+interface PingParseResult {
+  // Whatever the ping header announced as its target ("Pinging X…",
+  // "PING X (...)"). Null until the first line streams in.
+  target: string | null;
+  events: PingEvent[];
+  summary: {
+    sent: number;
+    received: number;
+    lost: number;
+    lossPct: number | null;
+  } | null;
+}
+
+function parsePingOutput(text: string): PingParseResult {
+  const result: PingParseResult = { target: null, events: [], summary: null };
+  if (text.length === 0) return result;
+
+  let replySeqCounter = 0;
+  let timeoutSeqCounter = 0;
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+
+    // Windows / POSIX header lines — extract target.
+    if (result.target === null) {
+      const win = /^Pinging\s+(\S+)/i.exec(line);
+      if (win) {
+        result.target = win[1];
+        continue;
+      }
+      const posix = /^PING\s+(\S+)/i.exec(line);
+      if (posix) {
+        result.target = posix[1];
+        continue;
+      }
+    }
+
+    // Windows reply: "Reply from X: bytes=N time<1ms TTL=N" / "time=Nms".
+    const winReply =
+      /Reply from\s+\S+:\s*bytes=(\d+)\s*time[=<](\d+)ms\s*TTL=(\d+)/i.exec(line);
+    if (winReply) {
+      replySeqCounter += 1;
+      result.events.push({
+        kind: 'reply',
+        seq: replySeqCounter,
+        time: parseInt(winReply[2], 10),
+        ttl: parseInt(winReply[3], 10),
+      });
+      continue;
+    }
+
+    // POSIX reply: "64 bytes from X: icmp_seq=N ttl=N time=N ms".
+    const posixReply =
+      /(\d+)\s+bytes from .+?icmp_seq=(\d+)\s+ttl=(\d+)\s+time=([\d.]+)\s*ms/i.exec(
+        line,
+      );
+    if (posixReply) {
+      const seq = parseInt(posixReply[2], 10);
+      result.events.push({
+        kind: 'reply',
+        seq: Number.isFinite(seq) ? seq : ++replySeqCounter,
+        time: parseFloat(posixReply[4]),
+        ttl: parseInt(posixReply[3], 10),
+      });
+      replySeqCounter = Math.max(replySeqCounter, seq);
+      continue;
+    }
+
+    // Windows timeout.
+    if (/Request timed out\./i.test(line)) {
+      timeoutSeqCounter += 1;
+      result.events.push({ kind: 'timeout', seq: timeoutSeqCounter });
+      continue;
+    }
+
+    // Windows summary: "Packets: Sent = N, Received = N, Lost = N (P% loss),"
+    const winSummary =
+      /Sent\s*=\s*(\d+).*?Received\s*=\s*(\d+).*?Lost\s*=\s*(\d+)\s*\((\d+)%\s*loss\)/i.exec(
+        line,
+      );
+    if (winSummary) {
+      result.summary = {
+        sent: parseInt(winSummary[1], 10),
+        received: parseInt(winSummary[2], 10),
+        lost: parseInt(winSummary[3], 10),
+        lossPct: parseInt(winSummary[4], 10),
+      };
+      continue;
+    }
+
+    // POSIX summary: "N packets transmitted, N received, P% packet loss, ..."
+    const posixSummary =
+      /(\d+)\s+packets transmitted,\s*(\d+)\s+(?:packets\s+)?received,\s*(?:\+\d+\s+errors,\s*)?(\d+)%\s+packet loss/i.exec(
+        line,
+      );
+    if (posixSummary) {
+      const sent = parseInt(posixSummary[1], 10);
+      const received = parseInt(posixSummary[2], 10);
+      const pct = parseInt(posixSummary[3], 10);
+      result.summary = {
+        sent,
+        received,
+        lost: sent - received,
+        lossPct: pct,
+      };
+      continue;
+    }
+  }
+
+  return result;
+}
+
+// Last whitespace-delimited token of the planned command — for "ping -n
+// 4 google.com" returns "google.com". Best-effort fallback when the
+// output header hasn't streamed in yet (or never does).
+function extractPingTarget(command: string): string | null {
+  const tokens = command.trim().split(/\s+/);
+  for (let i = tokens.length - 1; i >= 0; i -= 1) {
+    const t = tokens[i];
+    if (t.length === 0) continue;
+    if (t.startsWith('-')) continue;
+    return t;
+  }
+  return null;
 }
 
 function FileGlyph({ className = '' }: { className?: string }) {

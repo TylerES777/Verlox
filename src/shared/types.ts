@@ -174,6 +174,11 @@ export interface PlanResponse {
   // Absolute or "~/"-prefixed path to list, or null for the current
   // working directory. Only meaningful when isListCommand is true.
   listTarget: string | null;
+  // Dedicated structured renderer for the planned command's output.
+  // When set, the desktop client parses the step's live output and
+  // renders a purpose-built panel instead of the monospace block.
+  // Currently only "ping" is supported.
+  outputUi: 'ping' | null;
   footgunDetected: false | { reason: string };
 }
 
