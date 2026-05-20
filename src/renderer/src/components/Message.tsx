@@ -156,6 +156,8 @@ export function Message({
             <NetworkBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'listening-ports' ? (
             <ListeningPortsBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'git-branch' ? (
+            <GitBranchBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -1419,6 +1421,172 @@ function EnvGlyph({ className = '' }: { className?: string }) {
       <path d="M10.5 3c1 0 1.5.5 1.5 1.5V6c0 1 .5 1.5 1.5 1.5-1 0-1.5.5-1.5 1.5v1.5c0 1-.5 1.5-1.5 1.5" />
     </svg>
   );
+}
+
+// Git branch panel — replaces the raw monospace block when the
+// planner sets outputUi="git-branch". Parses the tab-separated
+// for-each-ref output: HEAD\tname\thash\tupstream\ttrack\tsubject.
+// Each branch renders as a single row with the current branch
+// highlighted, upstream tracking (↑N ↓M / gone / origin ref), short
+// hash, and latest commit subject.
+function GitBranchBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+  const branches = parseGitBranch(step.output);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <GitGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">git branch</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {running
+            ? 'reading…'
+            : failed
+              ? 'failed'
+              : branches.length > 0
+                ? `${branches.length} branch${branches.length === 1 ? '' : 'es'}`
+                : ''}
+        </span>
+      </div>
+
+      {branches.length > 0 ? (
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-hairline">
+          {branches.map((b) => (
+            <GitBranchRow key={b.name} branch={b} />
+          ))}
+        </ul>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">
+          Reading branches…
+        </p>
+      ) : null}
+
+      {/* Fallback for unparseable / failed output (incl. not-a-repo). */}
+      {!running && branches.length === 0 && step.output.length > 0 && (
+        isGitNotARepoFailure(step.output) ? (
+          <p className="border-t border-subtle-border px-3.5 py-3 text-[13px] text-ink-label">
+            This folder isn&rsquo;t a git repository.
+          </p>
+        ) : (
+          <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+            {step.output}
+          </pre>
+        )
+      )}
+    </div>
+  );
+}
+
+function GitBranchRow({ branch }: { branch: GitBranch }) {
+  return (
+    <li
+      className={`flex items-center gap-3 px-3.5 py-1.5 text-[13px] ${
+        branch.current ? 'bg-step-done-tint' : ''
+      }`}
+    >
+      <span
+        className={`w-3 shrink-0 text-center font-mono text-[12px] ${
+          branch.current ? 'text-step-done' : 'text-ink-hint'
+        }`}
+        aria-hidden="true"
+      >
+        {branch.current ? '★' : ''}
+      </span>
+      <span
+        className={`shrink-0 max-w-[220px] truncate font-mono text-[12.5px] ${
+          branch.current ? 'font-semibold text-ink' : 'text-ink-body'
+        }`}
+        title={branch.name}
+      >
+        {branch.name}
+      </span>
+      {branch.tracking && (
+        <span
+          className={`shrink-0 font-mono text-[11px] ${
+            branch.gone ? 'text-step-failed' : 'text-ink-micro'
+          }`}
+          title={branch.upstream ?? undefined}
+        >
+          {branch.tracking}
+        </span>
+      )}
+      <span
+        className="min-w-0 flex-1 truncate text-[12px] text-ink-label"
+        title={branch.subject}
+      >
+        {branch.subject}
+      </span>
+      <span className="shrink-0 font-mono text-[11px] text-ink-micro">
+        {branch.hash}
+      </span>
+    </li>
+  );
+}
+
+interface GitBranch {
+  current: boolean;
+  name: string;
+  hash: string;
+  upstream: string | null;
+  // Formatted display: "↑1", "↓2", "↑1 ↓2", "gone", or the upstream
+  // ref name itself if the branch is in sync with one. null when no
+  // upstream is set.
+  tracking: string | null;
+  gone: boolean;
+  subject: string;
+}
+
+function parseGitBranch(text: string): GitBranch[] {
+  if (text.trim().length === 0) return [];
+  const branches: GitBranch[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    if (rawLine.length === 0) continue;
+    const parts = rawLine.split('\t');
+    // Six columns: HEAD, name, hash, upstream, track, subject. Subject
+    // may be empty for an orphan ref; the trailing tab still yields
+    // a sixth empty string.
+    if (parts.length < 6) continue;
+    const [head, name, hash, upstream, trackInfo, ...subjectParts] = parts;
+    if (!name || !hash) continue;
+    const current = head === '*';
+    const gone = /\bgone\b/.test(trackInfo);
+
+    let tracking: string | null = null;
+    if (gone) {
+      tracking = 'gone';
+    } else {
+      const aheadMatch = /ahead (\d+)/.exec(trackInfo);
+      const behindMatch = /behind (\d+)/.exec(trackInfo);
+      const pieces: string[] = [];
+      if (aheadMatch) pieces.push(`↑${aheadMatch[1]}`);
+      if (behindMatch) pieces.push(`↓${behindMatch[1]}`);
+      if (pieces.length > 0) {
+        tracking = pieces.join(' ');
+      } else if (upstream && upstream.length > 0) {
+        // No delta — branch is up-to-date with its upstream. Show the
+        // upstream ref so the user knows where it tracks to.
+        tracking = upstream;
+      }
+    }
+
+    branches.push({
+      current,
+      name,
+      hash,
+      upstream: upstream && upstream.length > 0 ? upstream : null,
+      tracking,
+      gone,
+      subject: subjectParts.join('\t'),
+    });
+  }
+  // Current branch first; otherwise alphabetical so the list reads
+  // predictably across repos.
+  branches.sort((a, b) => {
+    if (a.current !== b.current) return a.current ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return branches;
 }
 
 // Git diff panel — replaces the raw monospace block when the planner

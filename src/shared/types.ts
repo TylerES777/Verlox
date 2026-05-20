@@ -187,6 +187,7 @@ export interface PlanResponse {
     | 'env'
     | 'network'
     | 'listening-ports'
+    | 'git-branch'
     | null;
   footgunDetected: false | { reason: string };
 }
