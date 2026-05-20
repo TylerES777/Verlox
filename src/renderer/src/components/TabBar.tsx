@@ -27,18 +27,14 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
           <div
             key={tab.id}
             className={`group flex shrink-0 items-center gap-1 rounded-xl px-1 transition-colors ${
-              active
-                ? 'border border-subtle-border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.04)]'
-                : 'hover:bg-surface-subtle'
+              active ? 'bg-surface-subtle' : 'hover:bg-surface-faint'
             }`}
           >
             <button
               type="button"
               onClick={() => onSelect(tab.id)}
-              className={`max-w-[180px] truncate py-1 pl-2 text-[12.5px] focus:outline-none ${
-                active
-                  ? 'font-medium text-ink'
-                  : 'text-ink-body group-hover:text-ink'
+              className={`max-w-[180px] truncate py-1.5 pl-2 text-[12.5px] focus:outline-none ${
+                active ? 'text-ink' : 'text-ink-label group-hover:text-ink'
               }`}
             >
               {tab.title}
