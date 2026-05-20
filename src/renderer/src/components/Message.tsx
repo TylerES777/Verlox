@@ -1658,6 +1658,16 @@ function PackagesBoard({ step }: { step: MessageStep }) {
   // qualify.
   const headerLabel = parsed ? `${parsed.ecosystem} packages` : 'packages';
 
+  // Graceful misroute fallback: if the planner picked outputUi
+  // "packages" but the command didn't actually produce npm or pip
+  // shape (and the step has settled with some output), drop the
+  // packages chrome entirely and just render the raw output as a
+  // normal step block. Beats lying with a "packages" header over
+  // arbitrary JSON.
+  if (!running && parsed === null && step.output.trim().length > 0) {
+    return <OutputBlock step={step} />;
+  }
+
   return (
     <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
       <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
