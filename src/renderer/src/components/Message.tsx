@@ -1653,13 +1653,16 @@ function PackagesBoard({ step }: { step: MessageStep }) {
   const failed = step.status === 'failed';
   const parsed = parsePackageList(step.output);
   const rows = parsed?.rows ?? [];
-  const ecosystem = parsed?.ecosystem ?? 'packages';
+  // Header label avoids the "packages packages" doubling when the
+  // parser bails — drop the ecosystem prefix if there's nothing to
+  // qualify.
+  const headerLabel = parsed ? `${parsed.ecosystem} packages` : 'packages';
 
   return (
     <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
       <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
         <PackageGlyph className="text-ink-label" />
-        <span className="min-w-0 flex-1 truncate">{ecosystem} packages</span>
+        <span className="min-w-0 flex-1 truncate">{headerLabel}</span>
         <span className="shrink-0 text-[11px] text-ink-micro">
           {running
             ? 'reading…'
