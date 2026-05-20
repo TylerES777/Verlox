@@ -146,6 +146,8 @@ export function Message({
               label={plan.intent}
               command={ranSteps[0].command}
             />
+          ) : plan?.outputUi === 'top-processes' ? (
+            <TopProcessesBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -423,6 +425,194 @@ function PingRow({ event }: { event: PingEvent }) {
         </span>
       )}
     </li>
+  );
+}
+
+// Top processes panel — replaces the raw monospace block when the
+// planner sets outputUi="top-processes". Parses either POSIX `ps -eo
+// pid,rss,comm` (whitespace columns) or PowerShell `ConvertTo-Csv`
+// output (quoted CSV), normalises both to a flat ProcessRow list,
+// sorts by memory, and shows the top 10. Falls back to a raw block
+// when parsing yields nothing.
+function TopProcessesBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const rows = parseProcessOutput(step.output);
+  const total = rows.length;
+  const top = [...rows]
+    .sort((a, b) => b.memBytes - a.memBytes)
+    .slice(0, 10);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <ProcessGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">top processes by memory</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {running
+            ? 'scanning…'
+            : total > 0
+              ? `${top.length} of ${total}`
+              : ''}
+        </span>
+      </div>
+
+      {top.length > 0 ? (
+        <ul className="divide-y divide-hairline">
+          {top.map((p, i) => (
+            <li
+              key={`${p.pid}-${i}`}
+              className="flex items-center gap-3 px-3.5 py-1.5 text-[13.5px] text-ink-body"
+            >
+              <span className="min-w-0 flex-1 truncate">{p.name}</span>
+              <span className="shrink-0 text-[12px] text-ink-label tabular-nums">
+                {formatMemBytes(p.memBytes)}
+              </span>
+              <span className="shrink-0 w-20 text-right font-mono text-[11px] text-ink-micro">
+                PID {p.pid}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">
+          Scanning processes…
+        </p>
+      ) : null}
+
+      {/* Fallback when parsing yields nothing on a settled run — show
+          the raw output so the user can see what went wrong (wrong
+          shell, permission error, garbled output). */}
+      {!running && total === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+interface ProcessRow {
+  pid: number;
+  // Resident / working-set bytes. Normalised from KB on POSIX `ps -eo
+  // rss` and from raw bytes on PowerShell's WorkingSet.
+  memBytes: number;
+  name: string;
+}
+
+function parseProcessOutput(text: string): ProcessRow[] {
+  if (text.trim().length === 0) return [];
+  // Heuristic: PowerShell `ConvertTo-Csv` opens with a quoted header
+  // ("Id","WorkingSet","ProcessName"). Anything else (ps headers,
+  // garbled output) goes through the whitespace-table parser.
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('"')) return parseProcessCsv(text);
+  return parseProcessPs(text);
+}
+
+function parseProcessPs(text: string): ProcessRow[] {
+  const rows: ProcessRow[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    // Skip the header — ps's first row is "PID RSS COMMAND" or similar.
+    if (/^[A-Z]/.test(line)) continue;
+    const tokens = line.split(/\s+/);
+    if (tokens.length < 3) continue;
+    const pid = parseInt(tokens[0], 10);
+    const rssKb = parseInt(tokens[1], 10);
+    if (!Number.isFinite(pid) || !Number.isFinite(rssKb)) continue;
+    const name = tokens.slice(2).join(' ');
+    if (name.length === 0) continue;
+    rows.push({ pid, memBytes: rssKb * 1024, name });
+  }
+  return rows;
+}
+
+function parseProcessCsv(text: string): ProcessRow[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return [];
+  const header = parseCsvLine(lines[0]).map((s) => s.toLowerCase());
+  const idIdx = header.indexOf('id');
+  const wsIdx = header.indexOf('workingset');
+  const nameIdx = header.indexOf('processname');
+  if (idIdx < 0 || wsIdx < 0 || nameIdx < 0) return [];
+  const rows: ProcessRow[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const fields = parseCsvLine(lines[i]);
+    const pid = parseInt(fields[idIdx] ?? '', 10);
+    const ws = parseInt(fields[wsIdx] ?? '', 10);
+    const name = (fields[nameIdx] ?? '').trim();
+    if (!Number.isFinite(pid) || !Number.isFinite(ws) || name.length === 0) {
+      continue;
+    }
+    rows.push({ pid, memBytes: ws, name });
+  }
+  return rows;
+}
+
+// Minimal CSV-line splitter — handles double-quoted fields, escaped
+// double quotes (""), and bare unquoted fields. Doesn't handle
+// multi-line quoted fields, but PowerShell's ConvertTo-Csv never emits
+// those for these simple columns.
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === '"') {
+      i += 1;
+      let value = '';
+      while (i < line.length) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') {
+            value += '"';
+            i += 2;
+          } else {
+            i += 1;
+            break;
+          }
+        } else {
+          value += line[i];
+          i += 1;
+        }
+      }
+      fields.push(value);
+    } else {
+      let value = '';
+      while (i < line.length && line[i] !== ',') {
+        value += line[i];
+        i += 1;
+      }
+      fields.push(value);
+    }
+    if (line[i] === ',') i += 1;
+  }
+  return fields;
+}
+
+function formatMemBytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1) return '<1 MB';
+  if (mb < 1024) return `${Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+function ProcessGlyph({ className = '' }: { className?: string }) {
+  // Three vertical bars of increasing height — an "activity" / monitor
+  // motif, calm to match the other panel glyphs.
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="2.5" y="9.5" width="2.5" height="4" rx="0.5" />
+      <rect x="6.75" y="6.5" width="2.5" height="7" rx="0.5" />
+      <rect x="11" y="3.5" width="2.5" height="10" rx="0.5" />
+    </svg>
   );
 }
 

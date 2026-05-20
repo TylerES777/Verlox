@@ -177,7 +177,7 @@ export interface PlanResponse {
   // Dedicated structured renderer for the planned command's output.
   // When set, the desktop client parses the step's live output and
   // renders a purpose-built panel instead of the monospace block.
-  outputUi: 'ping' | 'git-status' | 'single-value' | null;
+  outputUi: 'ping' | 'git-status' | 'single-value' | 'top-processes' | null;
   footgunDetected: false | { reason: string };
 }
 
