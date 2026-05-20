@@ -32,7 +32,17 @@ export type TurnStatus =
   | 'killed'                  // user pressed stop on a running step
   | 'synthesize-error';       // /api/synthesize errored
 
-export type StatusIndicatorPhase = 'examining' | 'running' | 'reviewing' | null;
+// The indicator shown under the user input while a turn is in
+// motion. A specific `label` describing what the orchestrator is
+// doing right now ("Running ping google.com") plus optional `alts`
+// that the indicator rotates through every ~2s so a long-running
+// step still feels alive. null = nothing to show.
+export interface StatusInfo {
+  label: string;
+  alts: string[];
+}
+
+export type StatusIndicatorState = StatusInfo | null;
 
 // Per-step lifecycle. The 6 visual states map directly to the StepRow's
 // 14px status circle:
@@ -77,7 +87,7 @@ export interface CommandMessage {
   endedAt: number | null;
 
   status: TurnStatus;
-  statusIndicator: StatusIndicatorPhase;
+  statusIndicator: StatusIndicatorState;
 
   // Filled by /api/turn:
   plan: PlanResponse | null;
@@ -162,7 +172,7 @@ type Action =
   | { type: 'LIST_SUCCESS'; id: string; listing: DirListing }
   // LIST_ERROR: the directory couldn't be opened (missing, permission).
   | { type: 'LIST_ERROR'; id: string; message: string }
-  | { type: 'STATUS_INDICATOR'; id: string; phase: StatusIndicatorPhase }
+  | { type: 'STATUS_INDICATOR'; id: string; info: StatusIndicatorState }
   // STEPS_INITIALIZED takes the plan steps and seeds steps[] all queued.
   // Dispatched right after PLAN_RECEIVED, before any step starts.
   | { type: 'STEPS_INITIALIZED'; id: string; steps: PlanStep[] }
@@ -210,7 +220,10 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
     startedAt: Date.now(),
     endedAt: null,
     status: 'translating',
-    statusIndicator: 'examining',
+    statusIndicator: {
+      label: 'Examining your request',
+      alts: ['Thinking it through', 'Planning the steps'],
+    },
     plan: null,
     displayMode: null,
     steps: [],
@@ -242,7 +255,12 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
               status: action.pauseForConfirmation
                 ? 'awaiting-confirmation'
                 : 'executing',
-              statusIndicator: action.pauseForConfirmation ? null : 'running',
+              // Briefly "Setting up" between PLAN_RECEIVED and the first
+              // STEP_START. STEP_START overwrites with a command-specific
+              // label so this only flashes if the orchestrator is slow.
+              statusIndicator: action.pauseForConfirmation
+                ? null
+                : { label: 'Setting up', alts: [] },
             }
           : m,
       );
@@ -250,7 +268,11 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
     case 'PLAN_CONFIRMED':
       return state.map((m) =>
         m.id === action.id
-          ? { ...m, status: 'executing', statusIndicator: 'running' }
+          ? {
+              ...m,
+              status: 'executing',
+              statusIndicator: { label: 'Setting up', alts: [] },
+            }
           : m,
       );
 
@@ -286,18 +308,26 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
       );
 
     case 'STEP_START':
-      return state.map((m) =>
-        m.id === action.id
-          ? {
-              ...m,
-              // Fresh step — clear any stale "stalled" flag from a prior one.
-              stalled: false,
-              steps: m.steps.map((s) =>
-                s.index === action.index ? { ...s, status: 'running' as const } : s,
-              ),
-            }
-          : m,
-      );
+      return state.map((m) => {
+        if (m.id !== action.id) return m;
+        const step = m.steps.find((s) => s.index === action.index);
+        // Show the actual command being run, so the indicator reads
+        // as "Running ping google.com" instead of a generic word.
+        // For long commands (pipelines etc.) we truncate to keep the
+        // line readable.
+        const label = step
+          ? `Running ${formatCommandForIndicator(step.command)}`
+          : 'Running';
+        return {
+          ...m,
+          // Fresh step — clear any stale "stalled" flag from a prior one.
+          stalled: false,
+          statusIndicator: { label, alts: ['Watching output', 'Still working'] },
+          steps: m.steps.map((s) =>
+            s.index === action.index ? { ...s, status: 'running' as const } : s,
+          ),
+        };
+      });
 
     case 'STEP_STALLED':
       return state.map((m) =>
@@ -402,7 +432,7 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
 
     case 'STATUS_INDICATOR':
       return state.map((m) =>
-        m.id === action.id ? { ...m, statusIndicator: action.phase } : m,
+        m.id === action.id ? { ...m, statusIndicator: action.info } : m,
       );
 
     case 'STEP_DONE':
@@ -531,6 +561,17 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
 // genuinely slow-but-working command (a quiet npm install, a big fetch)
 // rarely trips it; and the notice is non-destructive anyway.
 const SILENCE_NOTICE_MS = 30000;
+
+// Format a raw shell command for the status indicator: collapse runs
+// of whitespace into single spaces and truncate to keep one line
+// readable. Long PowerShell pipelines and Get-Process one-liners cap
+// at 48 chars with an ellipsis so the indicator never blows out.
+const INDICATOR_COMMAND_MAX = 48;
+function formatCommandForIndicator(command: string): string {
+  const collapsed = command.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= INDICATOR_COMMAND_MAX) return collapsed;
+  return `${collapsed.slice(0, INDICATOR_COMMAND_MAX - 1).trimEnd()}…`;
+}
 
 // ── Conversation history (Phase 5 Chunk 1: Memory) ────────────────────────
 
@@ -1084,7 +1125,14 @@ export function useCommands(
         return;
       }
 
-      dispatch({ type: 'STATUS_INDICATOR', id, phase: 'reviewing' });
+      dispatch({
+        type: 'STATUS_INDICATOR',
+        id,
+        info: {
+          label: 'Reviewing the output',
+          alts: ['Writing the summary'],
+        },
+      });
       window.api.synthesizeStart({
         messageId: id,
         planId: plan.planId,

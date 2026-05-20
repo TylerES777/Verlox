@@ -94,7 +94,7 @@ export function Message({
           a terminal status is reached. */}
       {statusIndicator !== null && (
         <div className="mt-3">
-          <StatusIndicator phase={statusIndicator} />
+          <StatusIndicator info={statusIndicator} />
         </div>
       )}
 

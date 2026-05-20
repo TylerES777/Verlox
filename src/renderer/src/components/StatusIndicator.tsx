@@ -1,53 +1,38 @@
 import { useEffect, useRef, useState } from 'react';
-import type { StatusIndicatorPhase } from '../hooks/useCommands';
+import type { StatusInfo, StatusIndicatorState } from '../hooks/useCommands';
 
 interface StatusIndicatorProps {
-  phase: StatusIndicatorPhase;
+  info: StatusIndicatorState;
 }
 
-// Each phase has several calm labels that rotate while the phase
-// persists, so the indicator never reads as stuck on a single word
-// when the backend is sitting on one beat (most reply turns only
-// ever pass through 'examining', for instance — without rotation
-// the user just sees "examining…" for the whole wait).
-const PHASE_LABELS: Record<Exclude<StatusIndicatorPhase, null>, string[]> = {
-  examining: ['examining…', 'thinking…', 'composing…'],
-  running: ['running…', 'watching output…'],
-  reviewing: ['reviewing…', 'writing reply…'],
-};
-
 // How long each label is shown before rotating to the next within
-// the same phase. Slow enough to read, fast enough to feel alive.
+// the same StatusInfo. Slow enough to read, fast enough to feel alive.
 const ROTATE_MS = 2000;
 
 // Cross-fade duration when the label swaps. Matches the existing
 // fade-in / fade-out keyframes in tailwind.config.
 const FADE_MS = 200;
 
-// Phase 4 Chunk 6 polish: 200ms cross-fade on label transitions.
+// The status indicator that sits under the user input while a turn
+// is in motion. The orchestrator pushes specific, current labels into
+// `info` ("Running ping google.com"), and the indicator rotates
+// through the optional `alts` every 2s while that info persists so a
+// long step never reads as stuck on one word.
 //
-// Two layers absolutely stacked in a relatively-positioned container.
-// When the label changes — either because the orchestrator pushed a
-// new phase, or because the within-phase rotation timer ticked — the
-// old label runs the fade-out keyframe and the new one fades in.
-// After 200ms the outgoing layer is unmounted.
-//
-// The container reserves a fixed height (h-[20px]) so the page
-// doesn't reflow during the fade. The first label (no previous) just
-// fades in cleanly.
-export function StatusIndicator({ phase }: StatusIndicatorProps) {
-  // The phase the indicator is currently showing. Tracks the prop
-  // but lags behind a fade window when the prop changes.
-  const [shownPhase, setShownPhase] = useState<StatusIndicatorPhase>(phase);
-  // Index within the current phase's label rotation.
+// Two layers absolutely stacked: outgoing fades out, incoming fades
+// in. The container reserves a fixed height (h-[20px]) so the page
+// doesn't reflow during the fade.
+export function StatusIndicator({ info }: StatusIndicatorProps) {
+  // The StatusInfo the indicator is currently animating against —
+  // lags behind the `info` prop by a fade window when it changes.
+  const [shownInfo, setShownInfo] = useState<StatusIndicatorState>(info);
+  // Index within the sequence [shownInfo.label, ...shownInfo.alts].
   const [labelIndex, setLabelIndex] = useState(0);
   // The outgoing label string mid-fade-out, if any.
   const [outgoingLabel, setOutgoingLabel] = useState<string | null>(null);
 
   const fadeOutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Helper used by both the phase-change effect and the rotation
-  // interval — set outgoingLabel for FADE_MS, then clear it.
   function startFadeOut(label: string | null) {
     if (fadeOutTimeoutRef.current !== null) {
       clearTimeout(fadeOutTimeoutRef.current);
@@ -59,36 +44,40 @@ export function StatusIndicator({ phase }: StatusIndicatorProps) {
     }, FADE_MS);
   }
 
-  // React to phase changes from the orchestrator. Resets the
-  // within-phase rotation to the first label of the new phase.
+  // React to changes in the `info` prop pushed by the orchestrator.
+  // When the content differs from what we're showing, fade the
+  // current label out and reset the rotation to the new info's first
+  // label.
   useEffect(() => {
-    if (phase === shownPhase) return;
+    if (sameInfo(shownInfo, info)) return;
     const oldLabel =
-      shownPhase !== null ? PHASE_LABELS[shownPhase][labelIndex] ?? null : null;
+      shownInfo !== null
+        ? sequenceFor(shownInfo)[labelIndex] ?? null
+        : null;
     startFadeOut(oldLabel);
-    setShownPhase(phase);
+    setShownInfo(info);
     setLabelIndex(0);
-    // labelIndex is intentionally read but not in deps — we only want
-    // to capture its current value at the moment the phase changes.
+    // labelIndex is intentionally read but excluded from deps — we
+    // only need its current value at the moment info changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, shownPhase]);
+  }, [info]);
 
-  // Rotate labels within the current phase. The interval restarts
-  // only when the phase changes, so a long-running phase keeps the
-  // same heartbeat across many ticks.
+  // Rotate through the alts while the same StatusInfo persists. The
+  // interval restarts only when shownInfo changes (so a long-lived
+  // info keeps a steady heartbeat).
   useEffect(() => {
-    if (shownPhase === null) return;
-    const labels = PHASE_LABELS[shownPhase];
-    if (labels.length <= 1) return;
+    if (shownInfo === null) return;
+    const sequence = sequenceFor(shownInfo);
+    if (sequence.length <= 1) return;
     const interval = setInterval(() => {
       setLabelIndex((prev) => {
-        const oldLabel = labels[prev];
+        const oldLabel = sequence[prev];
         startFadeOut(oldLabel);
-        return (prev + 1) % labels.length;
+        return (prev + 1) % sequence.length;
       });
     }, ROTATE_MS);
     return () => clearInterval(interval);
-  }, [shownPhase]);
+  }, [shownInfo]);
 
   // Clean up any pending fade timer on unmount.
   useEffect(() => {
@@ -99,11 +88,10 @@ export function StatusIndicator({ phase }: StatusIndicatorProps) {
     };
   }, []);
 
-  // Pure null → null with no outgoing label: render nothing.
-  if (shownPhase === null && outgoingLabel === null) return null;
+  if (shownInfo === null && outgoingLabel === null) return null;
 
   const currentLabel =
-    shownPhase !== null ? PHASE_LABELS[shownPhase][labelIndex] : null;
+    shownInfo !== null ? sequenceFor(shownInfo)[labelIndex] ?? null : null;
 
   return (
     <div className="relative h-[20px]">
@@ -125,4 +113,25 @@ export function StatusIndicator({ phase }: StatusIndicatorProps) {
       )}
     </div>
   );
+}
+
+// The full label sequence the indicator cycles through for a given
+// info: the primary label first, then each alt in order.
+function sequenceFor(info: StatusInfo): string[] {
+  return [info.label, ...info.alts];
+}
+
+// Treat two StatusInfo objects as the same when their label and
+// alts are content-equal. Reducer dispatches create fresh objects
+// even when the content matches, so a deep compare keeps the
+// indicator from re-running its fade on noop updates.
+function sameInfo(a: StatusIndicatorState, b: StatusIndicatorState): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  if (a.label !== b.label) return false;
+  if (a.alts.length !== b.alts.length) return false;
+  for (let i = 0; i < a.alts.length; i += 1) {
+    if (a.alts[i] !== b.alts[i]) return false;
+  }
+  return true;
 }
