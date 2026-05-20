@@ -620,8 +620,15 @@ function parseGitStatus(text: string): GitStatusParseResult {
       continue;
     }
 
-    // Entry: "XY path" — exactly 2 status chars, a space, then the path.
+    // Entry: "XY path" — exactly 2 status chars, then a single space,
+    // then the path. The space at index 2 disqualifies error lines like
+    // "fatal: not a git repository …", and the per-char validation
+    // disqualifies anything else that happens to have a space at col 2.
     if (rawLine.length < 4) continue;
+    if (rawLine[2] !== ' ') continue;
+    if (!isPorcelainStatusChar(rawLine[0]) || !isPorcelainStatusChar(rawLine[1])) {
+      continue;
+    }
     const code = rawLine.slice(0, 2);
     let path = rawLine.slice(3);
     let oldPath: string | null = null;
@@ -642,6 +649,14 @@ function parseGitStatus(text: string): GitStatusParseResult {
     });
   }
   return result;
+}
+
+// Whether a character can appear as one of the two status slots in a
+// porcelain v1 entry. Includes the index/worktree codes plus the
+// special "?" (untracked) and "!" (ignored) markers. Space means
+// "unmodified" in that slot.
+function isPorcelainStatusChar(ch: string): boolean {
+  return ' MADRCUT?!'.includes(ch);
 }
 
 function buildGitStatusMeta(
