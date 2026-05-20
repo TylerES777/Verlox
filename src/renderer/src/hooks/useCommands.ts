@@ -15,7 +15,9 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   appendPrompt,
   readPromptHistory,
+  updatePromptOutcome,
   type PromptHistoryEntry,
+  type PromptHistoryStatus,
 } from './usePromptHistory';
 
 // ── State machine ─────────────────────────────────────────────────────────
@@ -132,6 +134,13 @@ export interface CommandMessage {
   // turn rendered. Null for any other status.
   promptHistory: PromptHistoryEntry[] | null;
 
+  // The id of this turn's entry in the global prompt-history log
+  // (usePromptHistory). Set at INPUT_SUBMITTED; used post-settlement
+  // to write the commands + outcome + status back to the entry so the
+  // Timeline hover card can show context. Empty string when no entry
+  // was created (e.g. localStorage unavailable).
+  historyEntryId: string;
+
   // For *-error states + planning-error / synthesize-error:
   errorMessage: string | null;
 
@@ -151,6 +160,7 @@ type Action =
       id: string;
       userInput: string;
       cwd: string;
+      historyEntryId: string;
     }
   // PLAN_RECEIVED's pauseForConfirmation flag decides the initial status:
   //   false → 'executing' (orchestrator runs steps immediately)
@@ -226,11 +236,17 @@ type Action =
   | { type: 'SYNTHESIZE_ERROR'; id: string; message: string }
   | { type: 'CLEAR_ALL' };
 
-function newMessage(id: string, userInput: string, cwd: string): CommandMessage {
+function newMessage(
+  id: string,
+  userInput: string,
+  cwd: string,
+  historyEntryId: string,
+): CommandMessage {
   return {
     id,
     userInput,
     cwd,
+    historyEntryId,
     startedAt: Date.now(),
     endedAt: null,
     status: 'translating',
@@ -255,7 +271,10 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
 function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
   switch (action.type) {
     case 'INPUT_SUBMITTED':
-      return [...state, newMessage(action.id, action.userInput, action.cwd)];
+      return [
+        ...state,
+        newMessage(action.id, action.userInput, action.cwd, action.historyEntryId),
+      ];
 
     case 'PLAN_RECEIVED':
       return state.map((m) =>
@@ -590,6 +609,106 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
 // rarely trips it; and the notice is non-destructive anyway.
 const SILENCE_NOTICE_MS = 30000;
 
+// Settlement check for the Timeline hover card sync. Anything that's
+// reached a terminal state — successfully done, replied, a system
+// outcome like cd/list/history, an error, a cancel.
+function isSettledTurnStatus(status: TurnStatus): boolean {
+  switch (status) {
+    case 'done':
+    case 'replied':
+    case 'cd-success':
+    case 'cd-error':
+    case 'list-success':
+    case 'list-error':
+    case 'history-shown':
+    case 'planning-error':
+    case 'synthesize-error':
+    case 'killed':
+    case 'cancelled-before-run':
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Build the post-settlement update for a turn's prompt-history entry.
+// Captures the commands that ran, a short conclusion, and a status
+// tag the Timeline can colour by.
+function deriveHistoryUpdate(
+  m: CommandMessage,
+): { commands: string[]; outcome: string | null; status: PromptHistoryStatus } | null {
+  const commands = m.steps
+    .filter((s) => s.status === 'done' || s.status === 'failed' || s.status === 'cancelled')
+    .map((s) => s.command);
+  switch (m.status) {
+    case 'done':
+      return {
+        commands,
+        outcome: m.finalResponse.length > 0 ? m.finalResponse : null,
+        status: 'done',
+      };
+    case 'replied':
+      return {
+        commands: [],
+        outcome: m.finalResponse.length > 0 ? m.finalResponse : m.pendingResponse,
+        status: 'replied',
+      };
+    case 'cd-success':
+      return {
+        commands: [],
+        outcome: m.cdResolvedDisplay ? `Switched to ${m.cdResolvedDisplay}.` : 'Switched folder.',
+        status: 'cd',
+      };
+    case 'cd-error':
+      return {
+        commands: [],
+        outcome: m.errorMessage,
+        status: 'error',
+      };
+    case 'list-success':
+      return {
+        commands: [],
+        outcome: m.listing
+          ? `Listed ${m.listing.entries.length} entries in ${m.listing.path}.`
+          : 'Listed a folder.',
+        status: 'list',
+      };
+    case 'list-error':
+      return {
+        commands: [],
+        outcome: m.errorMessage,
+        status: 'error',
+      };
+    case 'history-shown':
+      return {
+        commands: [],
+        outcome: `Showed ${m.promptHistory?.length ?? 0} past prompts.`,
+        status: 'history',
+      };
+    case 'planning-error':
+    case 'synthesize-error':
+      return {
+        commands,
+        outcome: m.errorMessage,
+        status: 'error',
+      };
+    case 'killed':
+      return {
+        commands,
+        outcome: 'Stopped.',
+        status: 'cancelled',
+      };
+    case 'cancelled-before-run':
+      return {
+        commands: [],
+        outcome: 'Plan discarded.',
+        status: 'cancelled',
+      };
+    default:
+      return null;
+  }
+}
+
 // Format a raw shell command for the status indicator: collapse runs
 // of whitespace into single spaces and truncate to keep one line
 // readable. Long PowerShell pipelines and Get-Process one-liners cap
@@ -871,6 +990,28 @@ export function useCommands(
     };
   }, []);
 
+  // Sync settled turn outcomes back to the prompt-history log so the
+  // Timeline hover card can show commands + conclusion. Each id is
+  // written once — a Set keeps idempotent across re-renders driven
+  // by reveal-smoothing or status-indicator changes after the turn
+  // has already settled.
+  const writtenHistoryRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const m of messages) {
+      if (m.historyEntryId.length === 0) continue;
+      if (writtenHistoryRef.current.has(m.historyEntryId)) continue;
+      if (!isSettledTurnStatus(m.status)) continue;
+      // Wait until reveal-smoothing has caught up so the outcome
+      // captures the FULL prose, not a half-revealed snippet.
+      if (m.finalResponse.length < m.pendingResponse.length) continue;
+      const update = deriveHistoryUpdate(m);
+      if (update !== null) {
+        updatePromptOutcome(m.historyEntryId, update);
+        writtenHistoryRef.current.add(m.historyEntryId);
+      }
+    }
+  }, [messages]);
+
   // ── Step execution helper ──────────────────────────────────────────────
   // Runs one step locally via the existing command-runner IPC. Resolves
   // when the step exits (naturally or via signal). Throws nothing — even
@@ -998,10 +1139,12 @@ export function useCommands(
       const history = messagesRef.current.map(toHistoryEntry);
 
       // Append every prompt to Vorlox's own persistent log, so the
-      // built-in "show me my history" view can list what the user has
-      // asked across sessions. Done before any branching so even
-      // failed turns are remembered.
-      appendPrompt(trimmed);
+      // built-in "show me my history" view and the Timeline sidebar
+      // can list what the user has asked across sessions. Done
+      // before any branching so even failed turns are remembered.
+      // The returned id lets us update this entry with commands +
+      // outcome once the turn settles.
+      const historyEntryId = appendPrompt(trimmed);
 
       const id = crypto.randomUUID();
       dispatch({
@@ -1011,6 +1154,7 @@ export function useCommands(
         // Empty string for folderless turns — the field is stored for
         // history but isn't rendered prominently.
         cwd: cwd?.display ?? '',
+        historyEntryId,
       });
       setForceScrollVersion((v) => v + 1);
 
