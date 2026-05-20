@@ -225,22 +225,34 @@ export function Message({
 
       {/* Stop / pause affordance. Shown while a command is running
           (stop icon — kills the process), while the synthesise stream
-          is connecting, and while the response is streaming in
-          (pause icon — cancels the AI's generation and freezes the
-          prose at the current visible position). */}
-      {(status === 'executing' ||
-        status === 'synthesizing' ||
-        status === 'streaming') && (
-        <button
-          type="button"
-          onClick={() => onStop(message.id)}
-          aria-label={status === 'executing' ? 'Stop' : 'Pause'}
-          title={status === 'executing' ? 'Stop' : 'Pause'}
-          className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-        >
-          {status === 'executing' ? <StopGlyph /> : <PauseGlyph />}
-        </button>
-      )}
+          is connecting, while the response is streaming in, AND while
+          reveal-smoothing is still typing visible text after the
+          stream settled (pause icon — freezes the prose at the
+          current visible position). */}
+      {(() => {
+        const isExecuting = status === 'executing';
+        const isStreamingIn =
+          status === 'synthesizing' || status === 'streaming';
+        // After the stream completes, status flips to done/replied
+        // but reveal-smoothing keeps walking finalResponse one char
+        // at a time toward pendingResponse — visible "typing". The
+        // pause button should stay through this window.
+        const isRevealing =
+          (status === 'done' || status === 'replied') &&
+          message.finalResponse.length < message.pendingResponse.length;
+        if (!(isExecuting || isStreamingIn || isRevealing)) return null;
+        return (
+          <button
+            type="button"
+            onClick={() => onStop(message.id)}
+            aria-label={isExecuting ? 'Stop' : 'Pause'}
+            title={isExecuting ? 'Stop' : 'Pause'}
+            className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+          >
+            {isExecuting ? <StopGlyph /> : <PauseGlyph />}
+          </button>
+        );
+      })()}
 
       {/* Eye panel — the live backend view. Always starts closed. Each
           block is a raw command + its real output, accented green when

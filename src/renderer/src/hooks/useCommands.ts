@@ -234,6 +234,13 @@ type Action =
   // the last step in verbatim mode (no synthesize call).
   | { type: 'TURN_DONE'; id: string }
   | { type: 'SYNTHESIZE_ERROR'; id: string; message: string }
+  // FREEZE_REVEAL: snap pendingResponse to whatever finalResponse
+  // currently shows. The synthesise stream is already done (status is
+  // 'done' or 'replied') but reveal-smoothing is still typing the
+  // prose in character-by-character. Used by the public stopCommand
+  // when the user pauses during reveal. Keeps the turn's settled
+  // status — it's not a kill, just a "stop animating in more text."
+  | { type: 'FREEZE_REVEAL'; id: string }
   | { type: 'CLEAR_ALL' };
 
 function newMessage(
@@ -571,6 +578,11 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
               endedAt: Date.now(),
             }
           : m,
+      );
+
+    case 'FREEZE_REVEAL':
+      return state.map((m) =>
+        m.id === action.id ? { ...m, pendingResponse: m.finalResponse } : m,
       );
 
     case 'CLEAR_ALL':
@@ -1369,15 +1381,22 @@ export function useCommands(
   );
 
   // Public stop / pause. Cancels whatever is currently in motion for
-  // this turn:
-  //   - executing      → kill the running step (existing behaviour;
-  //                      step exit handler will dispatch KILLED).
+  // this turn. Precedence:
+  //   - executing            → kill the running step (existing
+  //                            behaviour; step exit handler will
+  //                            dispatch KILLED).
   //   - synthesizing /
-  //     streaming      → cancel the synthesize SSE stream AND
-  //                      dispatch KILLED so the message flips out of
-  //                      the in-progress state and reveal-smoothing
-  //                      stops at the current visible position.
-  //   - other states   → no-op (nothing to stop).
+  //     streaming            → cancel the synthesize SSE stream AND
+  //                            dispatch KILLED so the message flips
+  //                            out of the in-progress state and
+  //                            reveal-smoothing stops at the current
+  //                            visible position.
+  //   - done / replied with
+  //     active reveal        → freeze reveal-smoothing at the current
+  //                            position. The turn is already settled
+  //                            (status doesn't change) — we just stop
+  //                            animating more text in.
+  //   - other states         → no-op (nothing to stop).
   const stopCommand = useCallback(
     (messageId: string) => {
       const stepId = activeStepIdsRef.current.get(messageId);
@@ -1390,6 +1409,13 @@ export function useCommands(
       if (message.status === 'synthesizing' || message.status === 'streaming') {
         window.api.synthesizeCancel(messageId);
         dispatch({ type: 'KILLED', id: messageId });
+        return;
+      }
+      if (
+        (message.status === 'done' || message.status === 'replied') &&
+        message.finalResponse.length < message.pendingResponse.length
+      ) {
+        dispatch({ type: 'FREEZE_REVEAL', id: messageId });
       }
     },
     [dispatch],
