@@ -60,7 +60,7 @@ export function Timeline({ onSelect }: TimelineProps) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center pb-4 pl-10 pr-5 pt-5">
-        <h2 className="text-[14px] font-semibold text-ink">Timeline</h2>
+        <h2 className="text-[15px] font-semibold text-ink">Timeline</h2>
       </div>
       {entries.length === 0 ? (
         <p className="px-5 py-2 text-[12.5px] leading-relaxed text-ink-label">
@@ -132,7 +132,7 @@ function TimelineGroup({
           aria-hidden="true"
         />
         <h3
-          className={`text-[13px] font-semibold ${
+          className={`text-[15px] font-semibold ${
             group.isToday ? 'text-ink' : 'text-ink-label'
           }`}
         >
@@ -176,10 +176,18 @@ function TimelineEntry({
     onHoverEntry(entry, el.getBoundingClientRect());
   }
   return (
-    <li className="relative">
+    <li className="group/entry relative">
+      {/* Two dots stacked: the default status dot, and a vibrant
+          pink "active" dot that fades in on hover. The default fades
+          out simultaneously so the swap reads as one smooth change. */}
       <span
-        className={`absolute left-[24px] top-[13px] h-2 w-2 -translate-x-1/2 rounded-full ${dot.extraClass}`}
+        className={`pointer-events-none absolute left-[24px] top-[15px] h-2 w-2 -translate-x-1/2 rounded-full transition-opacity duration-150 group-hover/entry:opacity-0 ${dot.extraClass}`}
         style={dot.style}
+        aria-hidden="true"
+      />
+      <span
+        className="pointer-events-none absolute left-[24px] top-[15px] h-2.5 w-2.5 -translate-x-1/2 rounded-full opacity-0 transition-opacity duration-150 group-hover/entry:opacity-100"
+        style={PINK_DOT_STYLE}
         aria-hidden="true"
       />
       <button
@@ -190,15 +198,27 @@ function TimelineEntry({
         onMouseLeave={onLeaveEntry}
         onFocus={handleEnter}
         onBlur={onLeaveEntry}
-        className={`w-full rounded-md py-2 pl-10 pr-3 text-left text-[12.5px] leading-snug transition-colors hover:bg-surface-subtle focus:outline-none ${
+        className={`w-full rounded-lg py-2.5 pl-10 pr-3 text-left text-[14.5px] leading-snug transition-colors hover:bg-surface-subtle focus:outline-none ${
           faded ? 'text-ink-label hover:text-ink' : 'text-ink-body hover:text-ink'
         }`}
       >
-        <span className="line-clamp-3 break-words">{entry.text}</span>
+        <span className="break-words">{entry.text}</span>
       </button>
     </li>
   );
 }
+
+// Vibrant pink dot used on the hovered / active entry — matches the
+// accent dot in the reference mockup. Replaces the muted status dot
+// while the row is being interacted with so the focused row pops.
+const PINK_DOT_STYLE: CSSProperties = {
+  background: 'linear-gradient(135deg, #F472B6 0%, #DB2777 100%)',
+  boxShadow: [
+    'inset 0 1px 0 rgba(255,255,255,0.45)',
+    '0 0 0 0.5px rgba(220,90,180,0.4)',
+    '0 0 12px rgba(236,72,153,0.6)',
+  ].join(', '),
+};
 
 // Hover card rendered via portal so the sidebar's overflow-hidden
 // doesn't clip it. Position is fixed against the hovered entry's

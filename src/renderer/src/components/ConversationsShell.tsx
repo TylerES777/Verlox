@@ -103,12 +103,12 @@ export function ConversationsShell() {
       {/* Timeline sidebar — always visible. Fixed-width column on the
           left; no collapse affordance because the app's empty-state
           felt off without it. */}
-      {/* Sidebar widened to 320px so each entry has room for longer
-          text without aggressive truncation, AND so the rail absorbs
+      {/* Sidebar widened to 360px so longer prompts fit on one or two
+          lines without aggressive wrapping, AND so the rail absorbs
           more of the empty space that otherwise sits between it and
           the centred conversation card. */}
       <aside
-        className="w-[320px] shrink-0 border-r border-hairline"
+        className="w-[360px] shrink-0 border-r border-hairline"
         aria-label="Prompt timeline"
       >
         <Timeline onSelect={handleTimelineSelect} />
