@@ -202,18 +202,56 @@ export type TurnResultWire = TurnSuccessWire | BackendErrorWire;
 
 export type DiagramColor = 'green' | 'blue' | 'amber' | 'red' | 'neutral';
 
+// One visual treatment per group (one-kind-per-group keeps the look
+// consistent inside a group). The kind drives the per-node renderer
+// in Diagram.tsx — different padding, scale, glyphs, accents.
+export type DiagramGroupKind =
+  // Plain card with label + optional sub. The default.
+  | 'default'
+  // Big stat — primary value huge, sub label below, optional body note.
+  // Use for "1 hour learning" / "$N revenue" style cards.
+  | 'stat'
+  // Numbered cards — auto-indexed 01 / 02 / 03 over the label. Use for
+  // sequences of small actions.
+  | 'numbered'
+  // Full-width callout with a coloured left border. label can be a
+  // multi-sentence sentence-cased block (longer than usual node labels).
+  // The group's pretitle renders INSIDE the callout, not above.
+  | 'callout'
+  // Dot-on-track timeline. Each node = small tag above a colored dot,
+  // then label + sub underneath. A horizontal line connects the dots.
+  | 'milestone';
+
 export interface DiagramNode {
+  // Small tracked-uppercase text above the label. Used by 'default'
+  // for badges (e.g. "✓ YES + NO REVENUE YET") and by 'milestone' for
+  // a marker above the dot ("No 1–2"). Ignored by 'stat' / 'numbered'
+  // / 'callout'. null when absent.
+  tag: string | null;
+  // Primary text. Backend returns null for absent values (JSON Schema
+  // struggles with undefined). Renderer treats null and absent the same.
   label: string;
-  // Backend returns null for absent values (JSON Schema struggles with
-  // undefined). Renderer treats null and absent the same.
+  // Secondary text under the label.
   sub: string | null;
+  // Tertiary text under sub. Used by 'stat' as the small note beneath
+  // the label and sub. null for other kinds.
+  body: string | null;
   color: DiagramColor | null;
 }
 
 export interface DiagramGroup {
+  // Small tracked-uppercase line above the group (e.g.
+  // "EVERY DAY — 2 HOURS MINIMUM"). Acts as a section header in a
+  // way that's calmer than a full title. For 'callout' kinds it's
+  // rendered INSIDE the callout box instead of above the group.
+  pretitle: string | null;
   title: string | null;
   subtitle: string | null;
+  // Layout direction for the nodes. Ignored by 'callout' (always
+  // column-stacking single block) and 'milestone' (always a row).
   layout: 'row' | 'column';
+  // The visual treatment for this group's nodes. null → 'default'.
+  kind: DiagramGroupKind | null;
   nodes: DiagramNode[];
   arrows: boolean | null;
   caption: string | null;
