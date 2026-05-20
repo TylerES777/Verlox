@@ -154,6 +154,8 @@ export function Message({
             <GitDiffBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'env' ? (
             <EnvBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'network' ? (
+            <NetworkBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -747,6 +749,213 @@ function looksLikePathList(
     }
   }
   return { isList: false, segments: [] as never[] };
+}
+
+// Network panel — replaces the raw monospace block when the planner
+// sets outputUi="network". Parses the JSON emitted by Windows
+// PowerShell's `Get-NetIPConfiguration | ConvertTo-Json` into a card
+// per interface (alias, status, IPv4 addresses, gateway, DNS). POSIX
+// shells aren't supported for this UI yet; the planner is told to
+// fall back to verbatim output for those.
+function NetworkBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const interfaces = parseNetworkOutput(step.output);
+  const total = interfaces.length;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <NetworkGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">network interfaces</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {running
+            ? 'reading…'
+            : total > 0
+              ? `${total} interface${total === 1 ? '' : 's'}`
+              : ''}
+        </span>
+      </div>
+
+      {total > 0 ? (
+        <div className="max-h-[480px] overflow-y-auto">
+          {interfaces.map((iface, i) => (
+            <NetworkInterfaceCard
+              key={`${iface.name}-${i}`}
+              iface={iface}
+              isLast={i === total - 1}
+            />
+          ))}
+        </div>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">
+          Reading interfaces…
+        </p>
+      ) : null}
+
+      {/* Fallback for unparseable / failed output (POSIX shells, errors). */}
+      {!running && total === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function NetworkInterfaceCard({
+  iface,
+  isLast,
+}: {
+  iface: NetworkInterface;
+  isLast: boolean;
+}) {
+  const statusColor =
+    iface.status === 'Up' || iface.status === 'Connected'
+      ? 'text-step-done'
+      : iface.status
+        ? 'text-ink-hint'
+        : '';
+  return (
+    <section className={isLast ? '' : 'border-b border-hairline'}>
+      <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-1">
+        <span className="min-w-0 flex-1 truncate text-[13.5px] text-ink">
+          {iface.name}
+        </span>
+        {iface.status && (
+          <span
+            className={`shrink-0 text-[11px] uppercase tracking-[0.06em] ${statusColor}`}
+          >
+            {iface.status.toLowerCase()}
+          </span>
+        )}
+      </div>
+      <dl className="px-3.5 pb-2.5 font-mono text-[12.5px]">
+        {iface.ipv4.length > 0 && (
+          <NetworkRow label="IPv4" value={iface.ipv4.join(', ')} />
+        )}
+        {iface.gateway && (
+          <NetworkRow label="Gateway" value={iface.gateway} />
+        )}
+        {iface.dns.length > 0 && (
+          <NetworkRow label="DNS" value={iface.dns.join(', ')} />
+        )}
+        {iface.ipv4.length === 0 && !iface.gateway && iface.dns.length === 0 && (
+          <p className="py-0.5 text-[12px] text-ink-micro">No addresses.</p>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+function NetworkRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start gap-3 py-0.5">
+      <dt className="w-16 shrink-0 pt-0.5 text-[10.5px] uppercase tracking-[0.06em] text-ink-label">
+        {label}
+      </dt>
+      <dd className="min-w-0 flex-1 text-ink">{value}</dd>
+    </div>
+  );
+}
+
+interface NetworkInterface {
+  name: string;
+  status: string | null;
+  // Each entry formatted as "address/prefixLength".
+  ipv4: string[];
+  gateway: string | null;
+  dns: string[];
+}
+
+// Get-NetIPConfiguration emits objects with these (relevant) fields.
+// PowerShell's ConvertTo-Json folds single-element arrays into bare
+// objects, so almost every field below may be either an object or an
+// array — we treat both shapes uniformly through normaliseAsArray.
+type NetIpConfig = {
+  InterfaceAlias?: string;
+  InterfaceDescription?: string;
+  NetAdapter?: { Status?: string } | null;
+  IPv4Address?: NetIpAddress | NetIpAddress[] | null;
+  IPv4DefaultGateway?: NetGateway | NetGateway[] | null;
+  DNSServer?: NetDnsServer | NetDnsServer[] | null;
+};
+type NetIpAddress = { IPAddress?: string; PrefixLength?: number };
+type NetGateway = { NextHop?: string };
+type NetDnsServer = {
+  AddressFamily?: number;
+  ServerAddresses?: string | string[];
+};
+
+function parseNetworkOutput(text: string): NetworkInterface[] {
+  if (text.trim().length === 0) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const items = normaliseAsArray<NetIpConfig>(parsed);
+  const out: NetworkInterface[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const name = (item.InterfaceAlias ?? item.InterfaceDescription ?? '').trim();
+    if (name.length === 0) continue;
+
+    const ipv4 = normaliseAsArray<NetIpAddress>(item.IPv4Address)
+      .filter((a) => typeof a?.IPAddress === 'string')
+      .map((a) => `${a.IPAddress}/${a.PrefixLength ?? '?'}`);
+
+    const gateway =
+      normaliseAsArray<NetGateway>(item.IPv4DefaultGateway).find(
+        (g) => typeof g?.NextHop === 'string',
+      )?.NextHop ?? null;
+
+    // DNSServer entries are per address-family; we want IPv4 (2) when
+    // present, falling back to whatever's there.
+    const dnsEntries = normaliseAsArray<NetDnsServer>(item.DNSServer);
+    const ipv4Dns = dnsEntries.filter((d) => d?.AddressFamily === 2);
+    const dnsSource = ipv4Dns.length > 0 ? ipv4Dns : dnsEntries;
+    const dns: string[] = [];
+    for (const d of dnsSource) {
+      const addrs = normaliseAsArray<string>(d?.ServerAddresses);
+      for (const a of addrs) if (typeof a === 'string' && a.length > 0) dns.push(a);
+    }
+
+    const status = item.NetAdapter?.Status ?? null;
+    out.push({ name, status: status ?? null, ipv4, gateway, dns });
+  }
+  return out;
+}
+
+// PowerShell `ConvertTo-Json` collapses single-element arrays into the
+// bare element — so a field that's "array of foo" might land as either
+// foo[] or one foo. Normalise both to a real array so callers don't
+// have to guess.
+function normaliseAsArray<T>(value: unknown): T[] {
+  if (value === null || value === undefined) return [];
+  return Array.isArray(value) ? (value as T[]) : [value as T];
+}
+
+function NetworkGlyph({ className = '' }: { className?: string }) {
+  // Three arcs + a base dot — a wifi / signal motif, consistent with
+  // the other panel glyphs (folder, ping, env, …).
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M1.5 6.5a9.5 9.5 0 0 1 13 0" />
+      <path d="M4 9a6 6 0 0 1 8 0" />
+      <path d="M6.5 11.5a2.5 2.5 0 0 1 3 0" />
+      <circle cx="8" cy="13.5" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
 }
 
 // Env panel — replaces the raw monospace block when the planner sets

@@ -185,6 +185,7 @@ export interface PlanResponse {
     | 'git-log'
     | 'git-diff'
     | 'env'
+    | 'network'
     | null;
   footgunDetected: false | { reason: string };
 }
