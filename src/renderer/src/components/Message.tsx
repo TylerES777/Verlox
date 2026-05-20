@@ -165,6 +165,8 @@ export function Message({
             <GitBranchBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'disk-usage' ? (
             <DiskUsageBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'packages' ? (
+            <PackagesBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -1575,6 +1577,159 @@ function EnvGlyph({ className = '' }: { className?: string }) {
     >
       <path d="M5.5 3c-1 0-1.5.5-1.5 1.5V6c0 1-.5 1.5-1.5 1.5 1 0 1.5.5 1.5 1.5v1.5c0 1 .5 1.5 1.5 1.5" />
       <path d="M10.5 3c1 0 1.5.5 1.5 1.5V6c0 1 .5 1.5 1.5 1.5-1 0-1.5.5-1.5 1.5v1.5c0 1-.5 1.5-1.5 1.5" />
+    </svg>
+  );
+}
+
+// Packages panel — replaces the raw monospace block when the planner
+// sets outputUi="packages". Parses either npm's `npm ls --depth=0
+// --json` shape ({ dependencies: { name: { version } } }) or pip's
+// `pip list --format=json` shape ([{ name, version }]) into a flat
+// row list. Anything else (yarn / pipx / gem / cargo / brew) falls
+// through to the raw block — those ecosystems keep outputUi null.
+function PackagesBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+  const parsed = parsePackageList(step.output);
+  const rows = parsed?.rows ?? [];
+  const ecosystem = parsed?.ecosystem ?? 'packages';
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <PackageGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">{ecosystem} packages</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {running
+            ? 'reading…'
+            : failed
+              ? 'failed'
+              : rows.length > 0
+                ? `${rows.length} ${rows.length === 1 ? 'package' : 'packages'}`
+                : ''}
+        </span>
+      </div>
+
+      {rows.length > 0 ? (
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-hairline">
+          {rows.map((r, i) => (
+            <li
+              key={`${r.name}-${i}`}
+              className="flex items-center gap-3 px-3.5 py-1.5 font-mono text-[12.5px]"
+            >
+              <span
+                className="min-w-0 flex-1 truncate text-ink-body"
+                title={r.name}
+              >
+                {r.name}
+              </span>
+              <span className="shrink-0 text-[11px] text-ink-micro tabular-nums">
+                {r.version || '—'}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">
+          Reading packages…
+        </p>
+      ) : null}
+
+      {/* Fallback for unparseable / failed output. */}
+      {!running && rows.length === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+interface PackageRow {
+  name: string;
+  version: string;
+}
+
+interface ParsedPackageList {
+  ecosystem: 'npm' | 'pip';
+  rows: PackageRow[];
+}
+
+function parsePackageList(text: string): ParsedPackageList | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  // Both supported shapes are JSON. Bail if it doesn't look like one
+  // up front so a broken `npm ls` (e.g. workspace warnings before the
+  // JSON) doesn't accidentally parse partial data.
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (Array.isArray(parsed)) {
+    // pip list --format=json
+    const rows: PackageRow[] = [];
+    for (const item of parsed) {
+      if (
+        item != null &&
+        typeof item === 'object' &&
+        typeof (item as { name?: unknown }).name === 'string' &&
+        typeof (item as { version?: unknown }).version === 'string'
+      ) {
+        rows.push({
+          name: (item as { name: string }).name,
+          version: (item as { version: string }).version,
+        });
+      }
+    }
+    if (rows.length === 0) return null;
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return { ecosystem: 'pip', rows };
+  }
+  if (
+    parsed != null &&
+    typeof parsed === 'object' &&
+    'dependencies' in parsed &&
+    typeof (parsed as { dependencies?: unknown }).dependencies === 'object'
+  ) {
+    // npm ls --depth=0 --json
+    const deps = (parsed as { dependencies: Record<string, unknown> }).dependencies;
+    const rows: PackageRow[] = [];
+    for (const [name, info] of Object.entries(deps)) {
+      const version =
+        info != null &&
+        typeof info === 'object' &&
+        typeof (info as { version?: unknown }).version === 'string'
+          ? (info as { version: string }).version
+          : '';
+      rows.push({ name, version });
+    }
+    if (rows.length === 0) return null;
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return { ecosystem: 'npm', rows };
+  }
+  return null;
+}
+
+function PackageGlyph({ className = '' }: { className?: string }) {
+  // A small parcel / box motif — three flap lines on top of a square,
+  // matches the calm weight of the other panel glyphs.
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2.5" y="5" width="11" height="8.5" rx="1" />
+      <path d="M2.5 8h11" />
+      <path d="M8 5v8.5" />
     </svg>
   );
 }

@@ -202,6 +202,7 @@ export interface PlanResponse {
     | 'listening-ports'
     | 'git-branch'
     | 'disk-usage'
+    | 'packages'
     | null;
   footgunDetected: false | { reason: string };
 }
