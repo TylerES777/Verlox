@@ -3,7 +3,6 @@ import type { DiagramSchema, DirListing } from '@shared/types';
 import type { CommandMessage, MessageStep, StepStatus } from '../hooks/useCommands';
 import type { PromptHistoryEntry } from '../hooks/usePromptHistory';
 import { StatusIndicator } from './StatusIndicator';
-import { DetailsPanel } from './DetailsPanel';
 import { Diagram } from './Diagram';
 import { PlanCard } from './PlanCard';
 import { CopyButton } from './CopyButton';
@@ -59,16 +58,6 @@ export function Message({
   const ranSteps = steps.filter(
     (s) => s.status !== 'queued' && s.status !== 'skipped',
   );
-
-  // The eye panel — the live backend view — is offered for summary
-  // turns: their prose hides what ran, so the panel is the way in. It's
-  // never offered for verbatim turns (their output blocks already show
-  // everything) or for turns that never reached execution.
-  const showEyePanel =
-    displayMode === 'summary' &&
-    steps.length > 0 &&
-    status !== 'awaiting-confirmation' &&
-    status !== 'cancelled-before-run';
 
   // Verbatim turns render their output blocks inline — the user asked to
   // SEE the raw output, so it isn't tucked behind the eye.
@@ -267,22 +256,6 @@ export function Message({
         </button>
       )}
 
-      {/* Eye panel — the live backend view. Always starts closed. Each
-          block is a raw command + its real output, accented green when
-          the step finished and red when it failed. */}
-      {showEyePanel && (
-        <DetailsPanel>
-          {ranSteps.length > 0 ? (
-            <div className="space-y-3">
-              {ranSteps.map((s) => (
-                <OutputBlock key={s.index} step={s} />
-              ))}
-            </div>
-          ) : (
-            <p className="text-[12px] text-ink-micro">Nothing has run yet.</p>
-          )}
-        </DetailsPanel>
-      )}
     </article>
   );
 }
@@ -311,6 +284,17 @@ function ResponseSection({
   // it so the fade-in animation re-runs. Initial render (animTick=0)
   // skips the animation so messages don't all fade in on first paint.
   const [animTick, setAnimTick] = useState(0);
+  // Eye toggle (the "see what ran" backend view) — opens a list of
+  // raw command + output blocks below the response. Always starts
+  // closed; only renders when the AI has finished generating AND
+  // the turn actually ran shell commands worth showing.
+  const [eyeOpen, setEyeOpen] = useState(false);
+
+  // Steps that produced something worth inspecting (queued / skipped
+  // steps have nothing to show).
+  const ranSteps = message.steps.filter(
+    (s) => s.status !== 'queued' && s.status !== 'skipped',
+  );
 
   // Show the toggle as soon as prose is on screen — including during
   // streaming — so the affordance doesn't pop in late. It stays
@@ -381,15 +365,22 @@ function ResponseSection({
         )}
       </div>
       {(() => {
-        // Pause sits in the same row as the diagram toggle whenever
-        // prose is actively coming in — either the synthesise stream
-        // is still flowing (status='streaming') or the stream is done
-        // but reveal-smoothing is still typing the prose visibly.
+        // Pause sits in the same row as the diagram + eye toggles
+        // while prose is actively coming in — either the synthesise
+        // stream is still flowing or reveal-smoothing is still typing.
         const isRevealing =
           (status === 'done' || status === 'replied') &&
           finalResponse.length < pendingResponse.length;
         const showPause = status === 'streaming' || isRevealing;
-        if (!showButton && !showPause) return null;
+        // Eye toggle: only after the AI has finished generating, and
+        // only when the turn actually ran shell commands worth
+        // inspecting. Sits beside the diagram pill.
+        const showEye =
+          message.displayMode === 'summary' &&
+          ranSteps.length > 0 &&
+          isSettled &&
+          proseFullyRendered;
+        if (!showButton && !showPause && !showEye) return null;
         return (
           <div className="mt-2 flex items-center gap-2">
             {showPause && (
@@ -421,12 +412,47 @@ function ResponseSection({
                       : 'Show as diagram'}
               </button>
             )}
+            {showEye && (
+              <button
+                type="button"
+                onClick={() => setEyeOpen((v) => !v)}
+                aria-label={eyeOpen ? 'Hide commands' : 'Show commands'}
+                title={eyeOpen ? 'Hide commands' : 'Show commands'}
+                aria-pressed={eyeOpen}
+                className={`flex h-7 w-7 items-center justify-center rounded-full border border-subtle-border bg-card transition-colors hover:border-ink-hint focus:outline-none ${
+                  eyeOpen ? 'text-ink' : 'text-ink-label hover:text-ink'
+                }`}
+              >
+                <EyeGlyph off={!eyeOpen} />
+              </button>
+            )}
             {error && (
               <span className="text-[11px] text-step-failed">{error}</span>
             )}
           </div>
         );
       })()}
+
+      {/* Eye-panel content — collapsible list of raw command + output
+          blocks for this turn. Sits below the toggle row; expands /
+          collapses smoothly via the grid 1fr/0fr trick. */}
+      {message.displayMode === 'summary' && ranSteps.length > 0 && (
+        <div
+          className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+            eyeOpen && isSettled && proseFullyRendered
+              ? 'grid-rows-[1fr]'
+              : 'grid-rows-[0fr]'
+          }`}
+        >
+          <div className="overflow-hidden">
+            <div className="space-y-3 pt-3">
+              {ranSteps.map((s) => (
+                <OutputBlock key={s.index} step={s} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -3338,6 +3364,27 @@ function PauseGlyph() {
     >
       <rect x="2" y="1.5" width="2.6" height="9" rx="0.8" />
       <rect x="7.4" y="1.5" width="2.6" height="9" rx="0.8" />
+    </svg>
+  );
+}
+
+// Eye glyph for the "show commands" toggle next to the diagram pill.
+// `off` draws a slash through it — the backend detail is hidden.
+function EyeGlyph({ off }: { off?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M1 8s2.6-4.5 7-4.5S15 8 15 8s-2.6 4.5-7 4.5S1 8 1 8z" />
+      <circle cx="8" cy="8" r="2" />
+      {off && <line x1="2.5" y1="13.5" x2="13.5" y2="2.5" />}
     </svg>
   );
 }
