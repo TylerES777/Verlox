@@ -10,16 +10,14 @@ function detectPlatform(): Platform {
 
 function detectShell(platform: Platform): Shell {
   if (platform === 'win32') {
-    // COMSPEC points at the user's command interpreter — usually cmd.exe.
-    // PowerShell users typically still have COMSPEC=cmd.exe; detecting
-    // PowerShell from env vars is unreliable, so default to powershell on
-    // modern Windows (it's the recommended modern shell and matches
-    // Microsoft's terminal default since Windows 11).
-    const comspec = process.env.COMSPEC?.toLowerCase() ?? '';
-    if (comspec.endsWith('powershell.exe') || comspec.endsWith('pwsh.exe')) {
-      return 'powershell';
-    }
-    if (comspec.endsWith('cmd.exe')) return 'cmd';
+    // Always PowerShell on Windows. COMSPEC almost universally points
+    // at cmd.exe (Windows's documented default) even for PowerShell
+    // users, so trusting it as a "what shell is the user on?" signal
+    // gives the wrong answer constantly — and falling back to cmd is
+    // worse than useless on Windows 11, where deprecated builtins
+    // (wmic, etc.) fail outright. PowerShell ships with every modern
+    // Windows install and can run the same external binaries cmd
+    // does, so it's a strict superset for planning purposes.
     return 'powershell';
   }
 
