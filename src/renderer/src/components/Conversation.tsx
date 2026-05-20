@@ -61,7 +61,7 @@ export function Conversation({
           card is on large monitors. Generous top padding keeps the
           first turn off the header edge so it never reads as jammed
           into the corner. */}
-      <div className="mx-auto max-w-reading px-6 pb-6 pt-10">
+      <div className="mx-auto max-w-reading px-4 pb-6 pt-10">
         {messages.map((m) => (
           <Message
             key={m.id}

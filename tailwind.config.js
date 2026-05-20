@@ -72,18 +72,16 @@ export default {
       },
       maxWidth: {
         // Inner reading column for prose + structured panels. Sized
-        // to match modern conversational-AI apps (Claude, ChatGPT) so
-        // paragraphs feel substantial instead of clipped narrow. The
-        // panels (file listings, diff blocks, ping rows) sit comfortable
-        // at this width without crowding.
-        reading: '800px',
+        // to match (and slightly exceed) modern conversational-AI
+        // apps so paragraphs read substantial instead of clipped.
+        // Lines at ~900px are at the upper edge of comfortable reading
+        // length — fine for prose, generous for structured panels.
+        reading: '900px',
         'auth-form': '360px',
-        // Conversation card cap. Hugs the reading column with a small
-        // chrome margin so the empty card area doesn't dominate the
-        // composition. Wider main panes still center the card on the
-        // gray canvas — the canvas margin reads as document spacing,
-        // the card chrome doesn't read as wasted whitespace.
-        app: '860px',
+        // Conversation column cap. Hugs the reading width with a small
+        // chrome margin. With the white card chrome removed, this is
+        // just the outer max for the conversation content area.
+        app: '960px',
       },
       keyframes: {
         // Slow opacity flicker for the running-step status indicator. Calmer
