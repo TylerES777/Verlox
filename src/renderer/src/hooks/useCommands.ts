@@ -1089,15 +1089,17 @@ export function useCommands(
 
       // 2c. built-in prompt history — Vorlox reads its own log from
       //     localStorage and renders the entries directly. No shell
-      //     command runs. Drop the current prompt (just appended) so
-      //     the user doesn't see "show me history" at the top of its
-      //     own history.
+      //     command runs. The head entry is the prompt we just
+      //     appended for this very turn; drop only that one so the
+      //     "show me history" request doesn't appear inside its own
+      //     output. Prior identical prompts (if the user has asked
+      //     for history before) remain visible.
       if (plan.isHistoryCommand) {
         const limit = plan.historyLimit ?? 50;
         const all = readPromptHistory();
-        const entries = all
-          .filter((e) => e.text !== trimmed)
-          .slice(0, Math.max(1, limit));
+        const withoutHead =
+          all.length > 0 && all[0].text === trimmed ? all.slice(1) : all;
+        const entries = withoutHead.slice(0, Math.max(1, limit));
         dispatch({ type: 'HISTORY_SHOWN', id, entries });
         return;
       }
