@@ -30,11 +30,12 @@ body,
 
 body {
   margin: 0;
-  /* Soft premium gradient behind the floating app card — a cool light
-     top settling into a faint warmth at the bottom. Whisper-subtle: felt
-     as depth, not seen as colour. ConversationsShell no longer paints a
-     flat canvas over it, so this shows through around the card. */
-  background: linear-gradient(165deg, #eef0f4 0%, #f0f0f2 55%, #f5f2f0 100%);
+  /* Flat white surface — the conversation card chrome was removed so
+     the whole app reads as one continuous canvas, with the Timeline
+     sidebar separated by a single hairline border. Subtle in-app cards
+     (file listings, ping panels, etc.) carry their own faint tints to
+     stand out against this white base. */
+  background: #FFFFFF;
   color: var(--color-ink);
   font-family:
     'Inter',

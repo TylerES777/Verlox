@@ -11,11 +11,13 @@ interface TabBarProps {
   onNew: () => void;
 }
 
-// The conversation tab strip. Sits in the gray canvas above the white
-// card; the active tab is white so it reads as continuous with the card
-// below. Each tab is an independent conversation (own history, own
-// folder). Closing the last tab clears it rather than leaving an empty
-// app — ConversationsShell handles that.
+// The conversation tab strip. Sits at the top of the (now flat-white)
+// app surface. The active tab gets a subtle gray fill so it stands
+// apart from the white background — the old "white tab on gray canvas"
+// trick stopped working once the card chrome was removed. Each tab is
+// an independent conversation (own history, own folder). Closing the
+// last tab clears it rather than leaving an empty app —
+// ConversationsShell handles that.
 export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps) {
   return (
     <div className="flex shrink-0 items-center gap-1 overflow-x-auto">
@@ -26,8 +28,8 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
             key={tab.id}
             className={`group flex shrink-0 items-center gap-1 rounded-xl px-1 transition-colors ${
               active
-                ? 'bg-card shadow-[0_1px_2px_rgba(0,0,0,0.04)]'
-                : 'hover:bg-surface-subtle'
+                ? 'bg-surface-subtle'
+                : 'hover:bg-surface-faint'
             }`}
           >
             <button
