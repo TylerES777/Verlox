@@ -1,7 +1,11 @@
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import type { WebContents } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
-import type { CommandExitEvent, CommandOutputEvent } from '@shared/types';
+import type {
+  CommandExitEvent,
+  CommandOutputEvent,
+  Shell,
+} from '@shared/types';
 
 const running = new Map<string, ChildProcess>();
 
@@ -37,11 +41,40 @@ function stripAnsi(text: string): string {
 // the process exited naturally between request and reaping).
 const killRequested = new Set<string>();
 
-function shellFor(): string | true {
-  if (process.platform === 'win32') {
-    return process.env.COMSPEC || 'cmd.exe';
+// Pick the shell binary + arguments for a command, based on the user's
+// actual shell. Spawning the right binary directly is the only way
+// PowerShell cmdlets (Get-*, ConvertTo-Csv, etc.) and shell-specific
+// syntax work — invoking through cmd.exe would never resolve a
+// PowerShell-only cmdlet, and the spawn `shell: 'powershell.exe'`
+// shortcut doesn't pass the right flags.
+//
+// The planner already targets commands at the user's shell, so we just
+// need to invoke the matching binary here.
+interface ShellInvocation {
+  bin: string;
+  args: string[];
+}
+
+function invocationFor(shell: Shell, command: string): ShellInvocation {
+  switch (shell) {
+    case 'powershell':
+      // -NoProfile avoids loading the user's profile (faster + more
+      // predictable). -Command takes the command as a single string.
+      return { bin: 'powershell.exe', args: ['-NoProfile', '-Command', command] };
+    case 'cmd':
+      // /d skips AutoRun, /s + /c is the canonical "run this and exit"
+      // pair that preserves quoting per cmd's documented behaviour.
+      return {
+        bin: process.env.COMSPEC || 'cmd.exe',
+        args: ['/d', '/s', '/c', command],
+      };
+    case 'bash':
+      return { bin: '/bin/bash', args: ['-c', command] };
+    case 'zsh':
+      return { bin: '/bin/zsh', args: ['-c', command] };
+    case 'fish':
+      return { bin: '/usr/bin/fish', args: ['-c', command] };
   }
-  return '/bin/sh';
 }
 
 function killProcess(child: ChildProcess): void {
@@ -64,6 +97,7 @@ export function startCommand(
   id: string,
   command: string,
   cwd: string,
+  shell: Shell,
 ): void {
   if (running.has(id)) return;
 
@@ -73,8 +107,8 @@ export function startCommand(
   // so a `cd` inside a command does not affect Vorlox's tracked cwd; the
   // AI layer handles `cd` as a special case that updates the conversation's
   // cwd via setCwd().
-  const child = spawn(command, {
-    shell: shellFor(),
+  const { bin, args } = invocationFor(shell, command);
+  const child = spawn(bin, args, {
     cwd,
     env: process.env,
     windowsHide: true,

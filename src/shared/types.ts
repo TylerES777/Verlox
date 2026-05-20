@@ -13,6 +13,12 @@ export interface CommandStartPayload {
   // conversation it passes the user's home directory (the invisible
   // default), so the main process never has to guess.
   cwd: string;
+  // The user's actual shell, threaded through so the runner can pick
+  // the right shell binary (PowerShell vs cmd on Windows; bash vs
+  // zsh vs fish on POSIX). Without this, every Windows turn lands in
+  // cmd.exe and any PowerShell cmdlet (Get-*, ConvertTo-Csv, etc.)
+  // fails on launch.
+  shell: Shell;
 }
 
 export interface CommandOutputEvent {

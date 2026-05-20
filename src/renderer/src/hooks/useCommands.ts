@@ -8,6 +8,7 @@ import type {
   PlanDisplayMode,
   PlanResponse,
   PlanStep,
+  Shell,
   TurnHistoryEntry,
 } from '@shared/types';
 import { useAuth } from '../contexts/AuthContext';
@@ -861,6 +862,9 @@ export function useCommands(
       // by submitInput (the conversation's cwd, or home if folderless)
       // and threaded through so every step of the turn runs consistently.
       stepCwd: string,
+      // The user's shell, threaded through to startCommand so the main
+      // process can invoke the right shell binary for this command.
+      stepShell: Shell,
     ): Promise<ExecutionLogEntry> => {
       return new Promise<ExecutionLogEntry>((resolve) => {
         const stepId = `${messageId}::${stepIndex}`;
@@ -931,7 +935,15 @@ export function useCommands(
 
         activeStepIdsRef.current.set(messageId, stepId);
         dispatch({ type: 'STEP_START', id: messageId, index: stepIndex });
-        window.api.startCommand({ id: stepId, command: step.command, cwd: stepCwd });
+        window.api.startCommand({
+          id: stepId,
+          command: step.command,
+          cwd: stepCwd,
+          // The user's actual shell rides along so the main process can
+          // pick the right shell binary — without this, PowerShell
+          // cmdlets get invoked through cmd.exe and fail.
+          shell: stepShell,
+        });
         armSilence(); // start the silence clock for this step
       });
     },
@@ -1089,7 +1101,13 @@ export function useCommands(
       let killed = false;
 
       for (let i = 0; i < plan.steps.length; i += 1) {
-        const entry = await runStep(id, i, plan.steps[i], effectiveCwd);
+        const entry = await runStep(
+          id,
+          i,
+          plan.steps[i],
+          effectiveCwd,
+          environment.shell,
+        );
         executionLog.push(entry);
         if (entry.signal != null) {
           killed = true;

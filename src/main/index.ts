@@ -84,7 +84,13 @@ ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
 ipcMain.handle(IpcChannels.DirList, (_e, path: string) => listDirectory(path));
 
 ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
-  startCommand(event.sender, payload.id, payload.command, payload.cwd);
+  startCommand(
+    event.sender,
+    payload.id,
+    payload.command,
+    payload.cwd,
+    payload.shell,
+  );
 });
 
 ipcMain.on(IpcChannels.CommandStop, (_event, id: string) => {
