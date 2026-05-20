@@ -256,26 +256,39 @@ function ResponseSection({
   message: CommandMessage;
   responseIsConversation: boolean;
 }) {
-  const { finalResponse, userInput, status } = message;
+  const { finalResponse, pendingResponse, userInput, status } = message;
   const [viewMode, setViewMode] = useState<'prose' | 'diagram'>('prose');
   const [diagram, setDiagram] = useState<DiagramSchema | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Each successful toggle bumps this — the rendered view is keyed on
+  // it so the fade-in animation re-runs. Initial render (animTick=0)
+  // skips the animation so messages don't all fade in on first paint.
+  const [animTick, setAnimTick] = useState(0);
 
-  // Only offer the toggle once the prose is settled — done (summary)
-  // or replied (advise / question / decline). 'streaming' would race;
-  // 'synthesize-error' has incomplete prose.
-  const canToggle = status === 'replied' || status === 'done';
+  // Show the toggle as soon as prose is on screen — including during
+  // streaming — so the affordance doesn't pop in late. It stays
+  // DISABLED until the prose is genuinely settled: status is terminal
+  // AND reveal-smoothing has caught pendingResponse. Letting a click
+  // through before then produces a diagram from half-text — that's
+  // the "Nothing to Visualise Yet" state the user saw.
+  const showButton =
+    status === 'streaming' || status === 'done' || status === 'replied';
+  const proseFullyRendered = finalResponse.length >= pendingResponse.length;
+  const isSettled = status === 'done' || status === 'replied';
+  const canClick = isSettled && proseFullyRendered && !loading;
 
   async function handleToggle() {
-    if (loading) return;
+    if (!canClick) return;
     if (viewMode === 'diagram') {
       setViewMode('prose');
+      setAnimTick((t) => t + 1);
       return;
     }
     // Switch to diagram view. Use cached result if we already fetched.
     if (diagram) {
       setViewMode('diagram');
+      setAnimTick((t) => t + 1);
       return;
     }
     setLoading(true);
@@ -291,43 +304,53 @@ function ResponseSection({
       }
       setDiagram(result.data);
       setViewMode('diagram');
+      setAnimTick((t) => t + 1);
     } finally {
       setLoading(false);
     }
   }
 
   const showingDiagram = viewMode === 'diagram' && diagram !== null;
+  // Re-key on viewMode + animTick so the wrapper remounts on every
+  // toggle and the fade-in keyframe runs. animTick > 0 skips the
+  // animation on the very first render of this section.
+  const viewKey = `${showingDiagram ? 'diagram' : 'prose'}:${animTick}`;
+  const fadeClass = animTick > 0 ? 'animate-fade-in' : '';
 
   return (
     <>
-      {showingDiagram ? (
-        <div className="mt-3 rounded-2xl border border-subtle-border bg-card/60 p-5">
-          <Diagram diagram={diagram} />
-        </div>
-      ) : responseIsConversation ? (
-        <div className="mt-3">
-          <ProseResponse text={finalResponse} />
-        </div>
-      ) : (
-        <NotificationBoard className="mt-3">
-          <ProseResponse text={finalResponse} />
-        </NotificationBoard>
-      )}
-      {canToggle && (
+      <div key={viewKey} className={fadeClass}>
+        {showingDiagram ? (
+          <div className="mt-3 rounded-2xl border border-subtle-border bg-card/60 p-5">
+            <Diagram diagram={diagram} />
+          </div>
+        ) : responseIsConversation ? (
+          <div className="mt-3">
+            <ProseResponse text={finalResponse} />
+          </div>
+        ) : (
+          <NotificationBoard className="mt-3">
+            <ProseResponse text={finalResponse} />
+          </NotificationBoard>
+        )}
+      </div>
+      {showButton && (
         <div className="mt-2 flex items-center gap-2">
           <button
             type="button"
             onClick={handleToggle}
-            disabled={loading}
+            disabled={!canClick}
             aria-pressed={showingDiagram}
-            className="inline-flex items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-label transition-colors hover:border-ink-hint hover:text-ink focus:outline-none disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-label transition-colors hover:border-ink-hint hover:text-ink focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-subtle-border disabled:hover:text-ink-label"
           >
             <DiagramToggleGlyph showingDiagram={showingDiagram} />
             {loading
               ? 'Generating…'
-              : showingDiagram
-                ? 'Show as text'
-                : 'Show as diagram'}
+              : !canClick
+                ? 'Show as diagram'
+                : showingDiagram
+                  ? 'Show as text'
+                  : 'Show as diagram'}
           </button>
           {error && (
             <span className="text-[11px] text-step-failed">{error}</span>

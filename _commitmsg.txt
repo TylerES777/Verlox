@@ -1,0 +1,14 @@
+﻿Freeze diagram toggle until prose is fully revealed; fade between views
+
+The button was enabling at status=done even though reveal-smoothing
+was still streaming characters into finalResponse - clicking in that
+window asked the backend to diagram a half-empty prose, producing the
+empty Nothing-to-Visualise-Yet callout. The toggle now stays disabled
+until status is terminal AND finalResponse has caught up to
+pendingResponse.
+
+View switches now fade-in via the existing 200ms keyframe instead of
+snapping. The animation is keyed on a tick that bumps per toggle so
+the very first render does not fade in along with reveal-smoothing.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
