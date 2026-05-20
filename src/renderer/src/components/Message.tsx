@@ -185,20 +185,35 @@ export function Message({
         </div>
       )}
 
-      {/* list-success — Vorlox's built-in folder browser. No shell ran;
-          the contents come from the directory API directly. */}
+      {/* list-success — Vorlox's built-in folder browser. A short
+          conversational lead-in above the panel so it reads as the
+          AI answering, not just a panel materialising. */}
       {status === 'list-success' && listing && (
-        <div className="mt-3">
-          <FileListingBoard listing={listing} />
-        </div>
+        <>
+          <div className="mt-3">
+            <ProseResponse
+              text={pickListReply(listing.path, listing.entries.length, message.id)}
+            />
+          </div>
+          <div className="mt-3">
+            <FileListingBoard listing={listing} />
+          </div>
+        </>
       )}
 
       {/* history-shown — Vorlox's own prompt history from localStorage.
-          Not the user's shell history. */}
+          Same lead-in treatment. */}
       {status === 'history-shown' && promptHistory && (
-        <div className="mt-3">
-          <PromptHistoryBoard entries={promptHistory} />
-        </div>
+        <>
+          <div className="mt-3">
+            <ProseResponse
+              text={pickHistoryReply(promptHistory.length, message.id)}
+            />
+          </div>
+          <div className="mt-3">
+            <PromptHistoryBoard entries={promptHistory} />
+          </div>
+        </>
       )}
 
       {/* cd-error / list-error / planning-error — a notification, error tone. */}
@@ -483,6 +498,52 @@ const CD_REPLY_VARIANTS: readonly string[] = [
 function pickCdReply(displayPath: string, messageId: string): string {
   const idx = stableHash(messageId) % CD_REPLY_VARIANTS.length;
   return CD_REPLY_VARIANTS[idx].replace('<path>', displayPath);
+}
+
+// Conversational lead-ins for the built-in folder listing. The panel
+// underneath shows the actual entries; this is the warm "AI replied"
+// line above it.
+const LIST_REPLY_VARIANTS: readonly string[] = [
+  "Here's what's in `<path>` — <count>.",
+  "Looked into `<path>`. <countCap>. Anything stand out?",
+  "`<path>` has <count>. What are you looking for?",
+];
+
+function pickListReply(
+  displayPath: string,
+  count: number,
+  messageId: string,
+): string {
+  const countText =
+    count === 0
+      ? 'nothing here'
+      : count === 1
+        ? '1 entry'
+        : `${count} entries`;
+  const countCap = countText.charAt(0).toUpperCase() + countText.slice(1);
+  const idx = stableHash(messageId) % LIST_REPLY_VARIANTS.length;
+  return LIST_REPLY_VARIANTS[idx]
+    .replace('<path>', displayPath)
+    .replace('<count>', countText)
+    .replace('<countCap>', countCap);
+}
+
+// Conversational lead-ins for the built-in prompt-history view.
+const HISTORY_REPLY_VARIANTS: readonly string[] = [
+  "Here's what you've asked recently — <count>. Anything to run again?",
+  "Pulled your last <count>. Want to repeat one?",
+  "Your recent <count> — click any of them to drop the prompt back into the input.",
+];
+
+function pickHistoryReply(count: number, messageId: string): string {
+  const countText =
+    count === 0
+      ? 'no prompts yet'
+      : count === 1
+        ? '1 prompt'
+        : `${count} prompts`;
+  const idx = stableHash(messageId) % HISTORY_REPLY_VARIANTS.length;
+  return HISTORY_REPLY_VARIANTS[idx].replace('<count>', countText);
 }
 
 // FNV-1a-ish stable hash on a string. We just need a deterministic
