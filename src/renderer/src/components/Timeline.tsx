@@ -121,14 +121,14 @@ function TimelineGroup({
   onLeaveEntry: () => void;
   isFirst: boolean;
 }) {
+  const headingDot = headingDotStyle(group.isToday);
   return (
-    <div className={isFirst ? '' : 'mt-7'}>
-      <div className="relative flex items-center pl-7">
-        {/* Group-heading dot — slightly larger than entry dots. */}
+    <div className={isFirst ? '' : 'mt-8'}>
+      <div className="relative flex items-center pl-8">
+        {/* Group-heading dot — sits centred on the rail. */}
         <span
-          className={`absolute left-[20px] h-2 w-2 -translate-x-1/2 rounded-full ${
-            group.isToday ? 'bg-ink-label' : 'bg-ink-hint'
-          }`}
+          className="absolute left-[24px] h-2.5 w-2.5 -translate-x-1/2 rounded-full"
+          style={headingDot}
           aria-hidden="true"
         />
         <h3
@@ -139,7 +139,7 @@ function TimelineGroup({
           {group.heading}
         </h3>
       </div>
-      <ul className="mt-3 space-y-2">
+      <ul className="mt-3.5 space-y-2.5">
         {group.entries.map((entry, i) => (
           <TimelineEntry
             key={entry.id || `${entry.timestamp}-${i}`}
@@ -169,7 +169,7 @@ function TimelineEntry({
   faded: boolean;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const dotColor = statusDotColor(entry.status, faded);
+  const dot = entryDotStyle(entry.status, faded);
   function handleEnter() {
     const el = buttonRef.current;
     if (!el) return;
@@ -178,7 +178,8 @@ function TimelineEntry({
   return (
     <li className="relative">
       <span
-        className={`absolute left-[20px] top-[10px] h-1.5 w-1.5 -translate-x-1/2 rounded-full ${dotColor}`}
+        className={`absolute left-[24px] top-[11px] h-2 w-2 -translate-x-1/2 rounded-full ${dot.extraClass}`}
+        style={dot.style}
         aria-hidden="true"
       />
       <button
@@ -189,7 +190,7 @@ function TimelineEntry({
         onMouseLeave={onLeaveEntry}
         onFocus={handleEnter}
         onBlur={onLeaveEntry}
-        className={`w-full rounded-md py-1.5 pl-7 pr-2 text-left text-[12.5px] leading-snug transition-colors hover:bg-surface-subtle focus:outline-none ${
+        className={`w-full rounded-md py-1.5 pl-8 pr-2 text-left text-[12.5px] leading-snug transition-colors hover:bg-surface-subtle focus:outline-none ${
           faded ? 'text-ink-label hover:text-ink' : 'text-ink-body hover:text-ink'
         }`}
       >
@@ -323,11 +324,105 @@ function startOfDay(date: Date): Date {
   return out;
 }
 
-function statusDotColor(status: PromptHistoryStatus, faded: boolean): string {
-  if (status === 'error') return 'bg-step-failed';
-  if (status === 'cancelled') return 'bg-ink-hint';
-  if (status === 'pending') return 'bg-amber animate-flicker';
-  return faded ? 'bg-ink-micro' : 'bg-ink-hint';
+// Per-status visual for the timeline entry dot. Each dot carries a
+// soft diagonal gradient + a coloured outer glow + a faint inner
+// highlight along the top edge — matches the diagram cards' glassy
+// treatment, just shrunk to a 8px circle. Inline style because the
+// multi-stop gradient and layered shadows don't fit cleanly into
+// Tailwind arbitrary values.
+function entryDotStyle(
+  status: PromptHistoryStatus,
+  faded: boolean,
+): { extraClass: string; style: CSSProperties } {
+  if (status === 'error') {
+    return {
+      extraClass: '',
+      style: {
+        background: 'linear-gradient(135deg, #F47B7D 0%, #C84147 100%)',
+        boxShadow: [
+          'inset 0 1px 0 rgba(255,255,255,0.35)',
+          '0 0 0 0.5px rgba(200,90,90,0.4)',
+          '0 0 8px rgba(220,90,90,0.55)',
+        ].join(', '),
+      },
+    };
+  }
+  if (status === 'cancelled') {
+    return {
+      extraClass: '',
+      style: {
+        background: 'linear-gradient(135deg, #C2C6CC 0%, #7E828A 100%)',
+        boxShadow: [
+          'inset 0 1px 0 rgba(255,255,255,0.35)',
+          '0 0 0 0.5px rgba(120,120,130,0.3)',
+          '0 0 6px rgba(140,140,150,0.3)',
+        ].join(', '),
+      },
+    };
+  }
+  if (status === 'pending') {
+    return {
+      extraClass: 'animate-flicker',
+      style: {
+        background: 'linear-gradient(135deg, #FCC97A 0%, #D8923B 100%)',
+        boxShadow: [
+          'inset 0 1px 0 rgba(255,255,255,0.45)',
+          '0 0 0 0.5px rgba(200,150,80,0.4)',
+          '0 0 10px rgba(230,170,70,0.6)',
+        ].join(', '),
+      },
+    };
+  }
+  // Default — done / replied / cd / list / history. Two tones based
+  // on whether the group is today (ink-leaning) or older (muted).
+  if (faded) {
+    return {
+      extraClass: '',
+      style: {
+        background: 'linear-gradient(135deg, #CFD3D9 0%, #969AA4 100%)',
+        boxShadow: [
+          'inset 0 1px 0 rgba(255,255,255,0.4)',
+          '0 0 0 0.5px rgba(150,155,165,0.3)',
+          '0 0 6px rgba(150,155,170,0.25)',
+        ].join(', '),
+      },
+    };
+  }
+  return {
+    extraClass: '',
+    style: {
+      background: 'linear-gradient(135deg, #9AA0AE 0%, #5B6075 100%)',
+      boxShadow: [
+        'inset 0 1px 0 rgba(255,255,255,0.45)',
+        '0 0 0 0.5px rgba(80,90,110,0.35)',
+        '0 0 8px rgba(80,95,120,0.4)',
+      ].join(', '),
+    },
+  };
+}
+
+// Group-heading dot — slightly more weight than entries. Today gets
+// the deepest gradient + strongest glow so it carries the most
+// presence; older days fade.
+function headingDotStyle(isToday: boolean): CSSProperties {
+  if (isToday) {
+    return {
+      background: 'linear-gradient(135deg, #6F7587 0%, #2A2F40 100%)',
+      boxShadow: [
+        'inset 0 1px 0 rgba(255,255,255,0.4)',
+        '0 0 0 0.5px rgba(60,70,90,0.4)',
+        '0 0 10px rgba(60,75,100,0.45)',
+      ].join(', '),
+    };
+  }
+  return {
+    background: 'linear-gradient(135deg, #B5B9C1 0%, #7B7F8A 100%)',
+    boxShadow: [
+      'inset 0 1px 0 rgba(255,255,255,0.35)',
+      '0 0 0 0.5px rgba(120,130,145,0.3)',
+      '0 0 8px rgba(120,130,145,0.3)',
+    ].join(', '),
+  };
 }
 
 function formatStatusLabel(status: PromptHistoryStatus): string {

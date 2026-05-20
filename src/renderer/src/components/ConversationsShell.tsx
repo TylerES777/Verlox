@@ -155,7 +155,13 @@ export function ConversationsShell() {
           <SidebarGlyph open={timelineOpen} />
         </button>
 
-        <div className="mx-auto flex w-full max-w-app flex-1 flex-col min-h-0">
+        {/* Left-anchored (no mx-auto) so the conversation card sits
+            right next to the Timeline sidebar instead of floating in
+            the middle of the window with a huge gap on its left.
+            max-w-app still caps the column on ultra-wide screens; the
+            extra room falls to the right of the card as natural
+            breathing space. */}
+        <div className="flex w-full max-w-app flex-1 flex-col min-h-0">
           {/* Tab strip + the global running-commands pill on the right. */}
           <div className="flex items-center gap-3 pb-3">
             <div className="min-w-0 flex-1">
