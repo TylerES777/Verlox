@@ -71,18 +71,19 @@ export default {
         popover: '0 4px 16px rgba(0,0,0,0.08)',
       },
       maxWidth: {
-        // Inner reading column for prose + structured panels. Bumped
-        // from the editorial 580px to 700px so panels (file listings,
-        // diff blocks, ping rows) read substantial rather than crammed
-        // into a narrow strip.
-        reading: '700px',
+        // Inner reading column for prose + structured panels. Sized
+        // to match modern conversational-AI apps (Claude, ChatGPT) so
+        // paragraphs feel substantial instead of clipped narrow. The
+        // panels (file listings, diff blocks, ping rows) sit comfortable
+        // at this width without crowding.
+        reading: '800px',
         'auth-form': '360px',
         // Conversation card cap. Hugs the reading column with a small
         // chrome margin so the empty card area doesn't dominate the
         // composition. Wider main panes still center the card on the
         // gray canvas — the canvas margin reads as document spacing,
         // the card chrome doesn't read as wasted whitespace.
-        app: '760px',
+        app: '860px',
       },
       keyframes: {
         // Slow opacity flicker for the running-step status indicator. Calmer
