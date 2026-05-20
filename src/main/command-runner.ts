@@ -59,14 +59,30 @@ function invocationFor(shell: Shell, command: string): ShellInvocation {
   switch (shell) {
     case 'powershell':
       // -NoProfile avoids loading the user's profile (faster + more
-      // predictable). -Command takes the command as a single string.
-      return { bin: 'powershell.exe', args: ['-NoProfile', '-Command', command] };
+      // predictable). Force PowerShell's console output encoding to
+      // UTF-8 before the user command runs — without this, non-ASCII
+      // text from cmdlets (Spanish, French, German, CJK, etc.) comes
+      // back in the system codepage (cp1252 / etc.) and our stdout
+      // UTF-8 decoder produces mojibake (`Conexi�n` for `Conexión`).
+      // Setting [Console]::OutputEncoding inside the spawned session
+      // is per-session — doesn't affect the user's interactive shell.
+      return {
+        bin: 'powershell.exe',
+        args: [
+          '-NoProfile',
+          '-Command',
+          `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`,
+        ],
+      };
     case 'cmd':
       // /d skips AutoRun, /s + /c is the canonical "run this and exit"
       // pair that preserves quoting per cmd's documented behaviour.
+      // `chcp 65001 > nul && ` flips the spawned shell's active code
+      // page to UTF-8 (suppressing the "Active code page: 65001"
+      // banner) so non-ASCII output decodes correctly downstream.
       return {
         bin: process.env.COMSPEC || 'cmd.exe',
-        args: ['/d', '/s', '/c', command],
+        args: ['/d', '/s', '/c', `chcp 65001 > nul && ${command}`],
       };
     case 'bash':
       return { bin: '/bin/bash', args: ['-c', command] };
