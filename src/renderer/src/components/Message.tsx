@@ -123,11 +123,14 @@ export function Message({
       {/* AI response. A reply (advice / question / decline) is
           conversation — bare prose. A run summary is a notification —
           boxed. Once the prose has fully streamed in, a small toggle
-          lets the user view it as a diagram instead. */}
+          lets the user view it as a diagram instead. ResponseSection
+          also hosts the pause button when prose is still in flight,
+          so it sits next to the diagram toggle. */}
       {finalResponse.length > 0 && (
         <ResponseSection
           message={message}
           responseIsConversation={responseIsConversation}
+          onStop={onStop}
         />
       )}
 
@@ -223,36 +226,24 @@ export function Message({
         </p>
       )}
 
-      {/* Stop / pause affordance. Shown while a command is running
-          (stop icon — kills the process), while the synthesise stream
-          is connecting, while the response is streaming in, AND while
-          reveal-smoothing is still typing visible text after the
-          stream settled (pause icon — freezes the prose at the
-          current visible position). */}
-      {(() => {
-        const isExecuting = status === 'executing';
-        const isStreamingIn =
-          status === 'synthesizing' || status === 'streaming';
-        // After the stream completes, status flips to done/replied
-        // but reveal-smoothing keeps walking finalResponse one char
-        // at a time toward pendingResponse — visible "typing". The
-        // pause button should stay through this window.
-        const isRevealing =
-          (status === 'done' || status === 'replied') &&
-          message.finalResponse.length < message.pendingResponse.length;
-        if (!(isExecuting || isStreamingIn || isRevealing)) return null;
-        return (
-          <button
-            type="button"
-            onClick={() => onStop(message.id)}
-            aria-label={isExecuting ? 'Stop' : 'Pause'}
-            title={isExecuting ? 'Stop' : 'Pause'}
-            className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-          >
-            {isExecuting ? <StopGlyph /> : <PauseGlyph />}
-          </button>
-        );
-      })()}
+      {/* Stop / pause affordance for the pre-prose phases:
+            - executing      → kill the running command
+            - synthesizing   → cancel the AI before any prose arrives
+          Once prose starts arriving (streaming) or the AI has settled
+          but reveal-smoothing is still typing, the pause moves INTO
+          ResponseSection so it sits next to the "Show as diagram"
+          toggle, not below it. */}
+      {(status === 'executing' || status === 'synthesizing') && (
+        <button
+          type="button"
+          onClick={() => onStop(message.id)}
+          aria-label={status === 'executing' ? 'Stop' : 'Pause'}
+          title={status === 'executing' ? 'Stop' : 'Pause'}
+          className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+        >
+          {status === 'executing' ? <StopGlyph /> : <PauseGlyph />}
+        </button>
+      )}
 
       {/* Eye panel — the live backend view. Always starts closed. Each
           block is a raw command + its real output, accented green when
@@ -283,9 +274,11 @@ export function Message({
 function ResponseSection({
   message,
   responseIsConversation,
+  onStop,
 }: {
   message: CommandMessage;
   responseIsConversation: boolean;
+  onStop: (id: string) => void;
 }) {
   const { finalResponse, pendingResponse, userInput, status } = message;
   const [viewMode, setViewMode] = useState<'prose' | 'diagram'>('prose');
@@ -365,29 +358,53 @@ function ResponseSection({
           </NotificationBoard>
         )}
       </div>
-      {showButton && (
-        <div className="mt-2 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleToggle}
-            disabled={!canClick}
-            aria-pressed={showingDiagram}
-            className="inline-flex items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-label transition-colors hover:border-ink-hint hover:text-ink focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-subtle-border disabled:hover:text-ink-label"
-          >
-            <DiagramToggleGlyph showingDiagram={showingDiagram} />
-            {loading
-              ? 'Generating…'
-              : !canClick
-                ? 'Show as diagram'
-                : showingDiagram
-                  ? 'Show as text'
-                  : 'Show as diagram'}
-          </button>
-          {error && (
-            <span className="text-[11px] text-step-failed">{error}</span>
-          )}
-        </div>
-      )}
+      {(() => {
+        // Pause sits in the same row as the diagram toggle whenever
+        // prose is actively coming in — either the synthesise stream
+        // is still flowing (status='streaming') or the stream is done
+        // but reveal-smoothing is still typing the prose visibly.
+        const isRevealing =
+          (status === 'done' || status === 'replied') &&
+          finalResponse.length < pendingResponse.length;
+        const showPause = status === 'streaming' || isRevealing;
+        if (!showButton && !showPause) return null;
+        return (
+          <div className="mt-2 flex items-center gap-2">
+            {showPause && (
+              <button
+                type="button"
+                onClick={() => onStop(message.id)}
+                aria-label="Pause"
+                title="Pause"
+                className="flex h-7 w-7 items-center justify-center rounded-full border border-subtle-border bg-card text-ink-hint transition-colors hover:border-ink-hint hover:text-ink focus:outline-none"
+              >
+                <PauseGlyph />
+              </button>
+            )}
+            {showButton && (
+              <button
+                type="button"
+                onClick={handleToggle}
+                disabled={!canClick}
+                aria-pressed={showingDiagram}
+                className="inline-flex items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-label transition-colors hover:border-ink-hint hover:text-ink focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-subtle-border disabled:hover:text-ink-label"
+              >
+                <DiagramToggleGlyph showingDiagram={showingDiagram} />
+                {loading
+                  ? 'Generating…'
+                  : !canClick
+                    ? 'Show as diagram'
+                    : showingDiagram
+                      ? 'Show as text'
+                      : 'Show as diagram'}
+              </button>
+            )}
+            {error && (
+              <span className="text-[11px] text-step-failed">{error}</span>
+            )}
+          </div>
+        );
+      })()}
     </>
   );
 }
