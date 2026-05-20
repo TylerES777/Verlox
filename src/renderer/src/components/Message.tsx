@@ -171,11 +171,16 @@ export function Message({
         </div>
       )}
 
-      {/* cd-success — a notification. */}
+      {/* cd-success — conversational reply, not a status notification.
+          Same prose treatment as a 'replied' turn so it reads as the
+          AI answering the user. Variant rotates per message id so the
+          response doesn't feel canned. */}
       {status === 'cd-success' && message.cdResolvedDisplay && (
-        <NotificationBoard className="mt-3">
-          <BoardText>Switched to {message.cdResolvedDisplay}.</BoardText>
-        </NotificationBoard>
+        <div className="mt-3">
+          <ProseResponse
+            text={pickCdReply(message.cdResolvedDisplay, message.id)}
+          />
+        </div>
       )}
 
       {/* list-success — Vorlox's built-in folder browser. No shell ran;
@@ -461,6 +466,33 @@ function DiagramToggleGlyph({ showingDiagram }: { showingDiagram: boolean }) {
       <rect x="1.5" y="9" width="13" height="4" rx="1" />
     </svg>
   );
+}
+
+// Conversational variants for a cd success. The path is interpolated
+// into a code chip (backticks) and the variant cycles by message id
+// so the same response twice in a row doesn't feel scripted.
+const CD_REPLY_VARIANTS: readonly string[] = [
+  "Done — we're in `<path>` now. What would you like to do here?",
+  "Switched to `<path>`. What's next?",
+  "OK, working in `<path>` now. Let me know what to do.",
+  "We're in `<path>`. What now?",
+];
+
+function pickCdReply(displayPath: string, messageId: string): string {
+  const idx = stableHash(messageId) % CD_REPLY_VARIANTS.length;
+  return CD_REPLY_VARIANTS[idx].replace('<path>', displayPath);
+}
+
+// FNV-1a-ish stable hash on a string. We just need a deterministic
+// integer to seed variant selection — no cryptographic property
+// required.
+function stableHash(input: string): number {
+  let h = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    h = (h << 5) - h + input.charCodeAt(i);
+    h |= 0;
+  }
+  return Math.abs(h);
 }
 
 // Notification board — the contained surface for a status report (run
