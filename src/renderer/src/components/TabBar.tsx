@@ -11,47 +11,55 @@ interface TabBarProps {
   onNew: () => void;
 }
 
-// The conversation tab strip. Sits at the top of the (now flat-white)
-// app surface. The active tab gets a subtle gray fill so it stands
-// apart from the white background — the old "white tab on gray canvas"
-// trick stopped working once the card chrome was removed. Each tab is
-// an independent conversation (own history, own folder). Closing the
-// last tab clears it rather than leaving an empty app —
-// ConversationsShell handles that.
+// The conversation tab strip. A rounded gray segmented-control holds
+// all open tabs; the active one is white so it reads as belonging to
+// the white app surface below the strip. The new-tab button sits
+// outside the segmented control, like the new-tab affordance in
+// Chrome. Each tab is an independent conversation (own history, own
+// folder). Closing the last tab clears it rather than leaving an
+// empty app — ConversationsShell handles that.
 export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps) {
   return (
-    <div className="flex shrink-0 items-center gap-1 overflow-x-auto">
-      {tabs.map((tab) => {
-        const active = tab.id === activeId;
-        return (
-          <div
-            key={tab.id}
-            className={`group flex shrink-0 items-center gap-1 rounded-xl px-1 transition-colors ${
-              active ? 'bg-surface-subtle' : 'hover:bg-surface-faint'
-            }`}
-          >
-            <button
-              type="button"
-              onClick={() => onSelect(tab.id)}
-              className={`max-w-[180px] truncate py-1.5 pl-2 text-[12.5px] focus:outline-none ${
-                active ? 'text-ink' : 'text-ink-label group-hover:text-ink'
+    <div className="flex shrink-0 items-center gap-2 overflow-x-auto">
+      {/* Segmented-control container — gray pill holding all tabs. */}
+      <div className="flex items-center gap-1 rounded-xl bg-surface-subtle p-1">
+        {tabs.map((tab) => {
+          const active = tab.id === activeId;
+          return (
+            <div
+              key={tab.id}
+              className={`group flex shrink-0 items-center gap-1 rounded-lg px-1 transition-colors ${
+                active
+                  ? 'bg-card shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
+                  : 'hover:bg-card/60'
               }`}
             >
-              {tab.title}
-            </button>
-            <button
-              type="button"
-              onClick={() => onClose(tab.id)}
-              aria-label="Close conversation"
-              className={`flex h-4 w-4 items-center justify-center rounded text-ink-micro transition-opacity hover:text-ink focus:outline-none ${
-                active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-              }`}
-            >
-              <CloseGlyph />
-            </button>
-          </div>
-        );
-      })}
+              <button
+                type="button"
+                onClick={() => onSelect(tab.id)}
+                className={`max-w-[180px] truncate py-1 pl-2 text-[12.5px] focus:outline-none ${
+                  active
+                    ? 'font-medium text-ink'
+                    : 'text-ink-label group-hover:text-ink'
+                }`}
+              >
+                {tab.title}
+              </button>
+              <button
+                type="button"
+                onClick={() => onClose(tab.id)}
+                aria-label="Close conversation"
+                className={`flex h-4 w-4 items-center justify-center rounded text-ink-micro transition-opacity hover:text-ink focus:outline-none ${
+                  active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                }`}
+              >
+                <CloseGlyph />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {/* New-tab button — outside the segmented control. */}
       <button
         type="button"
         onClick={onNew}
