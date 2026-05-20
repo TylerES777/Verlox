@@ -158,6 +158,8 @@ export function Message({
             <ListeningPortsBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'git-branch' ? (
             <GitBranchBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'disk-usage' ? (
+            <DiskUsageBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -1419,6 +1421,194 @@ function EnvGlyph({ className = '' }: { className?: string }) {
     >
       <path d="M5.5 3c-1 0-1.5.5-1.5 1.5V6c0 1-.5 1.5-1.5 1.5 1 0 1.5.5 1.5 1.5v1.5c0 1 .5 1.5 1.5 1.5" />
       <path d="M10.5 3c1 0 1.5.5 1.5 1.5V6c0 1 .5 1.5 1.5 1.5-1 0-1.5.5-1.5 1.5v1.5c0 1-.5 1.5-1.5 1.5" />
+    </svg>
+  );
+}
+
+// Disk usage panel — replaces the raw monospace block when the
+// planner sets outputUi="disk-usage". Parses either the POSIX `df -P
+// -k` whitespace columns or the PowerShell `Get-PSDrive | Convert
+// -ToCsv` shape into a flat row list, then renders each drive / mount
+// with a fill bar coloured by use percentage and the used / total in
+// human-readable units.
+function DiskUsageBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+  const rows = parseDiskUsage(step.output);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <DiskGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">disk usage</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {running
+            ? 'scanning…'
+            : failed
+              ? 'failed'
+              : rows.length > 0
+                ? `${rows.length} ${rows.length === 1 ? 'volume' : 'volumes'}`
+                : ''}
+        </span>
+      </div>
+
+      {rows.length > 0 ? (
+        <ul className="divide-y divide-hairline">
+          {rows.map((r, i) => (
+            <DiskUsageRow key={`${r.name}-${i}`} row={r} />
+          ))}
+        </ul>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">Scanning…</p>
+      ) : null}
+
+      {/* Fallback when parsing yields nothing on a settled run. */}
+      {!running && rows.length === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function DiskUsageRow({ row }: { row: DiskRow }) {
+  // Use percentage: 0–100, capped. Drives the bar fill width and the
+  // colour tier so the worst offenders pop visually.
+  const pct =
+    row.totalBytes > 0
+      ? Math.min(100, Math.max(0, (row.usedBytes / row.totalBytes) * 100))
+      : 0;
+  const barTone =
+    pct >= 90 ? 'bg-step-failed' : pct >= 70 ? 'bg-amber' : 'bg-step-done';
+  return (
+    <li className="flex items-center gap-3 px-3.5 py-2 text-[13px]">
+      <span
+        className="w-24 shrink-0 truncate font-mono text-[12.5px] font-semibold text-ink"
+        title={row.name}
+      >
+        {row.name}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-card">
+          <div
+            className={`h-full ${barTone} transition-all`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+      <span className="w-10 shrink-0 text-right font-mono text-[11.5px] text-ink-label tabular-nums">
+        {Math.round(pct)}%
+      </span>
+      <span className="w-32 shrink-0 text-right font-mono text-[11px] text-ink-micro tabular-nums">
+        {formatDiskBytes(row.usedBytes)} / {formatDiskBytes(row.totalBytes)}
+      </span>
+    </li>
+  );
+}
+
+interface DiskRow {
+  name: string;
+  usedBytes: number;
+  totalBytes: number;
+}
+
+function parseDiskUsage(text: string): DiskRow[] {
+  if (text.trim().length === 0) return [];
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('"')) return parseDiskUsageCsv(text);
+  return parseDiskUsageDf(text);
+}
+
+// POSIX `df -P -k` output. First line is a header; each subsequent
+// line is: filesystem  1024-blocks  used  available  capacity%  mount.
+// We display by mount point and derive total/used from blocks * 1024.
+function parseDiskUsageDf(text: string): DiskRow[] {
+  const lines = text.split(/\r?\n/);
+  const rows: DiskRow[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (line.length === 0) continue;
+    // Skip the header. `-P` guarantees the first column header is
+    // "Filesystem".
+    if (i === 0 && /^Filesystem/i.test(line)) continue;
+    const tokens = line.split(/\s+/);
+    if (tokens.length < 6) continue;
+    const blocks = parseInt(tokens[1], 10);
+    const used = parseInt(tokens[2], 10);
+    if (!Number.isFinite(blocks) || !Number.isFinite(used)) continue;
+    // Tokens[5..] joined recovers mount points with spaces.
+    const mount = tokens.slice(5).join(' ');
+    rows.push({
+      name: mount,
+      usedBytes: used * 1024,
+      totalBytes: blocks * 1024,
+    });
+  }
+  return rows;
+}
+
+// Windows PowerShell `Get-PSDrive | ConvertTo-Csv` shape: Name, Used,
+// Free (both in bytes). Total = Used + Free. Drive letters appear
+// without colons; we add ":" for display so it reads as a path.
+function parseDiskUsageCsv(text: string): DiskRow[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return [];
+  const header = parseCsvLine(lines[0]).map((s) => s.toLowerCase());
+  const nameIdx = header.indexOf('name');
+  const usedIdx = header.indexOf('used');
+  const freeIdx = header.indexOf('free');
+  if (nameIdx < 0 || usedIdx < 0 || freeIdx < 0) return [];
+  const rows: DiskRow[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const fields = parseCsvLine(lines[i]);
+    const name = (fields[nameIdx] ?? '').trim();
+    const used = parseInt(fields[usedIdx] ?? '', 10);
+    const free = parseInt(fields[freeIdx] ?? '', 10);
+    if (name.length === 0) continue;
+    if (!Number.isFinite(used) || !Number.isFinite(free)) continue;
+    const total = used + free;
+    if (total <= 0) continue;
+    rows.push({
+      name: name.length === 1 ? `${name}:` : name,
+      usedBytes: used,
+      totalBytes: total,
+    });
+  }
+  return rows;
+}
+
+function formatDiskBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(0)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(0)} MB`;
+  const gb = mb / 1024;
+  if (gb < 1024) return `${gb.toFixed(1)} GB`;
+  return `${(gb / 1024).toFixed(2)} TB`;
+}
+
+function DiskGlyph({ className = '' }: { className?: string }) {
+  // Three stacked horizontal disks — a simple "storage" motif that
+  // doesn't compete with the cleaner glyphs on the other panels.
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <ellipse cx="8" cy="4" rx="5" ry="1.5" />
+      <path d="M3 4v3.5c0 .8 2.2 1.5 5 1.5s5-.7 5-1.5V4" />
+      <path d="M3 8v3.5c0 .8 2.2 1.5 5 1.5s5-.7 5-1.5V8" />
     </svg>
   );
 }
