@@ -184,6 +184,7 @@ export interface PlanResponse {
     | 'top-processes'
     | 'git-log'
     | 'git-diff'
+    | 'env'
     | null;
   footgunDetected: false | { reason: string };
 }

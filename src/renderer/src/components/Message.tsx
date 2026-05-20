@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { DirListing } from '@shared/types';
 import type { CommandMessage, MessageStep, StepStatus } from '../hooks/useCommands';
 import { StatusIndicator } from './StatusIndicator';
@@ -152,6 +152,8 @@ export function Message({
             <GitLogBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'git-diff' ? (
             <GitDiffBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'env' ? (
+            <EnvBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -675,6 +677,168 @@ function SingleValueBoard({
         {label}
       </p>
     </div>
+  );
+}
+
+// Env panel — replaces the raw monospace block when the planner sets
+// outputUi="env". Parses POSIX `env` / cmd `set` (key=value lines) or
+// PowerShell `Get-ChildItem env: | ConvertTo-Csv` (Name,Value CSV)
+// into a flat key/value list, sorted alphabetically, with a filter
+// box for big environments. Unparseable output falls through to a
+// raw block.
+function EnvBoard({ step }: { step: MessageStep }) {
+  const [filter, setFilter] = useState('');
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+  const entries = parseEnvOutput(step.output);
+
+  const needle = filter.trim().toLowerCase();
+  const visible =
+    needle.length === 0
+      ? entries
+      : entries.filter(
+          (e) =>
+            e.name.toLowerCase().includes(needle) ||
+            e.value.toLowerCase().includes(needle),
+        );
+
+  const headerMeta = running
+    ? 'reading…'
+    : failed
+      ? 'failed'
+      : entries.length > 0
+        ? visible.length === entries.length
+          ? `${entries.length} vars`
+          : `${visible.length} of ${entries.length}`
+        : '';
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <EnvGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">env</span>
+        {headerMeta && (
+          <span className="shrink-0 text-[11px] text-ink-micro">
+            {headerMeta}
+          </span>
+        )}
+      </div>
+
+      {entries.length > 0 && (
+        <div className="border-b border-subtle-border px-3.5 py-2">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter…"
+            className="w-full bg-transparent font-mono text-[12.5px] text-ink placeholder:text-ink-hint focus:outline-none"
+          />
+        </div>
+      )}
+
+      {visible.length > 0 ? (
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-hairline">
+          {visible.map((e) => (
+            <li
+              key={e.name}
+              className="flex items-start gap-3 px-3.5 py-1.5 font-mono text-[12.5px]"
+            >
+              <span className="w-44 shrink-0 truncate text-ink" title={e.name}>
+                {e.name}
+              </span>
+              <span
+                className="min-w-0 flex-1 truncate text-ink-label"
+                title={e.value}
+              >
+                {e.value || <span className="text-ink-micro">(empty)</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : entries.length > 0 ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">No matches.</p>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">
+          Reading environment…
+        </p>
+      ) : null}
+
+      {/* Fallback for unparseable / failed output. */}
+      {!running && entries.length === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+interface EnvEntry {
+  name: string;
+  value: string;
+}
+
+function parseEnvOutput(text: string): EnvEntry[] {
+  if (text.length === 0) return [];
+  // PowerShell ConvertTo-Csv emits a quoted header row first.
+  if (text.trimStart().startsWith('"')) return parseEnvCsv(text);
+  return parseEnvLines(text);
+}
+
+function parseEnvLines(text: string): EnvEntry[] {
+  const entries: EnvEntry[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (line.length === 0) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const name = line.slice(0, eq);
+    // Skip continuation lines and noise: env var names are alpha/under
+    // followed by alnum/under. PowerShell-style names use the same set.
+    if (!/^[A-Za-z_][A-Za-z0-9_().]*$/.test(name)) continue;
+    entries.push({ name, value: line.slice(eq + 1) });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries;
+}
+
+function parseEnvCsv(text: string): EnvEntry[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return [];
+  const header = parseCsvLine(lines[0]).map((s) => s.toLowerCase());
+  const nameIdx = header.indexOf('name');
+  const valueIdx = header.indexOf('value');
+  if (nameIdx < 0 || valueIdx < 0) return [];
+  const entries: EnvEntry[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const fields = parseCsvLine(lines[i]);
+    const name = (fields[nameIdx] ?? '').trim();
+    if (name.length === 0) continue;
+    entries.push({ name, value: fields[valueIdx] ?? '' });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries;
+}
+
+function EnvGlyph({ className = '' }: { className?: string }) {
+  // Two opposing curly-brace strokes — a key/value motif, calm with
+  // the other panel glyphs.
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5.5 3c-1 0-1.5.5-1.5 1.5V6c0 1-.5 1.5-1.5 1.5 1 0 1.5.5 1.5 1.5v1.5c0 1 .5 1.5 1.5 1.5" />
+      <path d="M10.5 3c1 0 1.5.5 1.5 1.5V6c0 1 .5 1.5 1.5 1.5-1 0-1.5.5-1.5 1.5v1.5c0 1-.5 1.5-1.5 1.5" />
+    </svg>
   );
 }
 
