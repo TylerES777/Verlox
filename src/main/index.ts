@@ -4,6 +4,7 @@ import { IpcChannels } from '@shared/ipc-channels';
 import type {
   AuthCredentials,
   CommandStartPayload,
+  DiagramRequest,
   SynthesizeEvent,
   SynthesizeRequest,
   TurnInput,
@@ -109,6 +110,10 @@ ipcMain.handle(IpcChannels.EnvGet, () => getEnvironment());
 
 ipcMain.handle(IpcChannels.BackendPlanTurn, (_e, input: TurnInput) =>
   backend.planTurn(input),
+);
+
+ipcMain.handle(IpcChannels.BackendGenerateDiagram, (_e, request: DiagramRequest) =>
+  backend.generateDiagram(request),
 );
 
 // One AbortController per in-flight synthesize stream, keyed by message id.

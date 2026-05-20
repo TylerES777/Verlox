@@ -23,6 +23,7 @@ export const IpcChannels = {
   BackendSynthesizeStart: 'backend:synthesize:start',
   BackendSynthesizeCancel: 'backend:synthesize:cancel',
   BackendSynthesizeEvent: 'backend:synthesize:event',
+  BackendGenerateDiagram: 'backend:generate-diagram',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

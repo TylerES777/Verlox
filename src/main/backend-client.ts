@@ -4,6 +4,9 @@ import type {
   AuthResult,
   AuthUser,
   BackendErrorCode,
+  DiagramRequest,
+  DiagramResultWire,
+  DiagramSchema,
   ExecutionLogEntry,
   PlanResponse,
   TurnInput,
@@ -186,6 +189,32 @@ export async function planTurn(input: TurnInput): Promise<TurnResultWire> {
   if (result.status === 200) {
     const data = result.json as PlanResponse | null;
     if (!data || typeof data !== 'object') return { ok: false, code: 'server' };
+    return { ok: true, data };
+  }
+  if (result.status === 401) {
+    clearToken();
+    return { ok: false, code: 'unauthorized' };
+  }
+  if (result.status === 429) return { ok: false, code: 'rate_limit' };
+  return { ok: false, code: 'server' };
+}
+
+// --- AI: /api/diagram (synchronous JSON) -----------------------------------
+
+export async function generateDiagram(
+  request: DiagramRequest,
+): Promise<DiagramResultWire> {
+  let result: PostResult;
+  try {
+    result = await postJson('/api/diagram', request, { auth: true });
+  } catch {
+    return { ok: false, code: 'network' };
+  }
+  if (result.status === 200) {
+    const data = result.json as DiagramSchema | null;
+    if (!data || typeof data !== 'object' || !Array.isArray(data.groups)) {
+      return { ok: false, code: 'server' };
+    }
     return { ok: true, data };
   }
   if (result.status === 401) {

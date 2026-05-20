@@ -4,6 +4,7 @@ import type {
   CommandExitEvent,
   CommandOutputEvent,
   CommandStartPayload,
+  DiagramRequest,
   IpcApi,
   SynthesizeEvent,
   SynthesizeRequest,
@@ -55,6 +56,9 @@ const api: IpcApi = {
     return () =>
       ipcRenderer.removeListener(IpcChannels.BackendSynthesizeEvent, listener);
   },
+
+  generateDiagram: (request: DiagramRequest) =>
+    ipcRenderer.invoke(IpcChannels.BackendGenerateDiagram, request),
 };
 
 contextBridge.exposeInMainWorld('api', api);

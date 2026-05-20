@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from 'react';
-import type { DirListing } from '@shared/types';
+import type { DiagramSchema, DirListing } from '@shared/types';
 import type { CommandMessage, MessageStep, StepStatus } from '../hooks/useCommands';
 import { StatusIndicator } from './StatusIndicator';
 import { DetailsPanel } from './DetailsPanel';
+import { Diagram } from './Diagram';
 import { PlanCard } from './PlanCard';
 import { CopyButton } from './CopyButton';
 
@@ -119,17 +120,14 @@ export function Message({
 
       {/* AI response. A reply (advice / question / decline) is
           conversation — bare prose. A run summary is a notification —
-          boxed. */}
-      {finalResponse.length > 0 &&
-        (responseIsConversation ? (
-          <div className="mt-3">
-            <ProseResponse text={finalResponse} />
-          </div>
-        ) : (
-          <NotificationBoard className="mt-3">
-            <ProseResponse text={finalResponse} />
-          </NotificationBoard>
-        ))}
+          boxed. Once the prose has fully streamed in, a small toggle
+          lets the user view it as a diagram instead. */}
+      {finalResponse.length > 0 && (
+        <ResponseSection
+          message={message}
+          responseIsConversation={responseIsConversation}
+        />
+      )}
 
       {/* Verbatim raw-output blocks — one per step that ran. When the
           planner asked for a dedicated UI (outputUi), swap the generic
@@ -242,6 +240,155 @@ export function Message({
         </DetailsPanel>
       )}
     </article>
+  );
+}
+
+// Renders the AI's prose response with a toggle that re-shapes it as
+// a visual diagram. The diagram is fetched lazily on first toggle and
+// cached on this component's state, so flipping back and forth is
+// instant after the first round trip. While the prose is still
+// streaming, the toggle stays hidden — a half-streamed answer would
+// produce a misleading diagram.
+function ResponseSection({
+  message,
+  responseIsConversation,
+}: {
+  message: CommandMessage;
+  responseIsConversation: boolean;
+}) {
+  const { finalResponse, userInput, status } = message;
+  const [viewMode, setViewMode] = useState<'prose' | 'diagram'>('prose');
+  const [diagram, setDiagram] = useState<DiagramSchema | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Only offer the toggle once the prose is settled — done (summary)
+  // or replied (advise / question / decline). 'streaming' would race;
+  // 'synthesize-error' has incomplete prose.
+  const canToggle = status === 'replied' || status === 'done';
+
+  async function handleToggle() {
+    if (loading) return;
+    if (viewMode === 'diagram') {
+      setViewMode('prose');
+      return;
+    }
+    // Switch to diagram view. Use cached result if we already fetched.
+    if (diagram) {
+      setViewMode('diagram');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await window.api.generateDiagram({
+        userInput,
+        proseResponse: finalResponse,
+      });
+      if (!result.ok) {
+        setError(diagramErrorMessage(result.code));
+        return;
+      }
+      setDiagram(result.data);
+      setViewMode('diagram');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const showingDiagram = viewMode === 'diagram' && diagram !== null;
+
+  return (
+    <>
+      {showingDiagram ? (
+        <div className="mt-3 rounded-2xl border border-subtle-border bg-card/60 p-5">
+          <Diagram diagram={diagram} />
+        </div>
+      ) : responseIsConversation ? (
+        <div className="mt-3">
+          <ProseResponse text={finalResponse} />
+        </div>
+      ) : (
+        <NotificationBoard className="mt-3">
+          <ProseResponse text={finalResponse} />
+        </NotificationBoard>
+      )}
+      {canToggle && (
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleToggle}
+            disabled={loading}
+            aria-pressed={showingDiagram}
+            className="inline-flex items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-label transition-colors hover:border-ink-hint hover:text-ink focus:outline-none disabled:opacity-50"
+          >
+            <DiagramToggleGlyph showingDiagram={showingDiagram} />
+            {loading
+              ? 'Generating…'
+              : showingDiagram
+                ? 'Show as text'
+                : 'Show as diagram'}
+          </button>
+          {error && (
+            <span className="text-[11px] text-step-failed">{error}</span>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function diagramErrorMessage(
+  code: 'unauthorized' | 'network' | 'rate_limit' | 'server',
+): string {
+  switch (code) {
+    case 'unauthorized':
+      return 'Session expired. Sign in again.';
+    case 'rate_limit':
+      return 'Rate-limited. Try again in a moment.';
+    case 'network':
+      return "Couldn't reach the service.";
+    case 'server':
+      return "Couldn't generate the diagram.";
+  }
+}
+
+function DiagramToggleGlyph({ showingDiagram }: { showingDiagram: boolean }) {
+  // Two glyphs: when prose is visible, a "boxes" icon hinting at the
+  // shape we'd switch to. When the diagram is visible, three horizontal
+  // text lines hinting at switching back.
+  if (showingDiagram) {
+    return (
+      <svg
+        viewBox="0 0 16 16"
+        className="h-3 w-3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        aria-hidden="true"
+      >
+        <line x1="2.5" y1="4" x2="12.5" y2="4" />
+        <line x1="2.5" y1="8" x2="13.5" y2="8" />
+        <line x1="2.5" y1="12" x2="10.5" y2="12" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className="h-3 w-3"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="1.5" y="3" width="5" height="4" rx="1" />
+      <rect x="9.5" y="3" width="5" height="4" rx="1" />
+      <rect x="1.5" y="9" width="13" height="4" rx="1" />
+    </svg>
   );
 }
 

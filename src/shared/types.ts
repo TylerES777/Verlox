@@ -198,6 +198,45 @@ export interface TurnSuccessWire {
 
 export type TurnResultWire = TurnSuccessWire | BackendErrorWire;
 
+// /api/diagram — visual diagram generation ---------------------------------
+
+export type DiagramColor = 'green' | 'blue' | 'amber' | 'red' | 'neutral';
+
+export interface DiagramNode {
+  label: string;
+  // Backend returns null for absent values (JSON Schema struggles with
+  // undefined). Renderer treats null and absent the same.
+  sub: string | null;
+  color: DiagramColor | null;
+}
+
+export interface DiagramGroup {
+  title: string | null;
+  subtitle: string | null;
+  layout: 'row' | 'column';
+  nodes: DiagramNode[];
+  arrows: boolean | null;
+  caption: string | null;
+}
+
+export interface DiagramSchema {
+  groups: DiagramGroup[];
+}
+
+export interface DiagramRequest {
+  // The user's original prompt (the message intent / question).
+  userInput: string;
+  // The AI's full prose answer that should be re-shaped into a diagram.
+  proseResponse: string;
+}
+
+export interface DiagramSuccessWire {
+  ok: true;
+  data: DiagramSchema;
+}
+
+export type DiagramResultWire = DiagramSuccessWire | BackendErrorWire;
+
 // /api/synthesize — response prose stream ------------------------------------
 
 export interface ExecutionLogEntry {
@@ -271,6 +310,11 @@ export interface IpcApi {
   synthesizeStart: (request: SynthesizeRequest) => void;
   synthesizeCancel: (messageId: string) => void;
   onSynthesizeEvent: (cb: (event: SynthesizeEvent) => void) => Unsubscribe;
+
+  // Convert a prose answer into a visual Diagram schema. Synchronous —
+  // the toggle is per-response and the result is cached on the message
+  // after the first call, so streaming isn't needed.
+  generateDiagram: (request: DiagramRequest) => Promise<DiagramResultWire>;
 }
 
 declare global {

@@ -1,10 +1,16 @@
 import { Fragment, type CSSProperties } from 'react';
+import type {
+  DiagramColor,
+  DiagramGroup,
+  DiagramNode,
+  DiagramSchema,
+} from '@shared/types';
 
 // A small, intentionally narrow visual language for AI responses.
 //
-// The AI returns a Diagram conforming to the schema below; this file
-// turns it into the kind of calm box-and-flow layout that's easier to
-// read than a wall of prose for users who think visually.
+// The AI returns a DiagramSchema (defined in shared/types) and this
+// file turns it into the kind of calm box-and-flow layout that's
+// easier to read than a wall of prose for users who think visually.
 //
 // Scope (v1):
 //   • Groups stack vertically, with optional title + subtitle and an
@@ -18,32 +24,10 @@ import { Fragment, type CSSProperties } from 'react';
 //   • No nesting, no auto-routed edges, no curved arrows. To express
 //     a second tier under one title, the AI emits two consecutive
 //     groups — the second with no title, so they read as one block.
-
-export type DiagramColor = 'green' | 'blue' | 'amber' | 'red' | 'neutral';
-
-export interface DiagramNode {
-  label: string;
-  // Smaller secondary line under the label. Optional.
-  sub?: string;
-  // Defaults to 'neutral' when omitted.
-  color?: DiagramColor;
-}
-
-export interface DiagramGroup {
-  title?: string;
-  subtitle?: string;
-  layout: 'row' | 'column';
-  nodes: DiagramNode[];
-  // When true and layout='row', renders a → between each pair of
-  // consecutive nodes. Used to express a flow (Learn → Build → Share).
-  arrows?: boolean;
-  // Small note rendered centred underneath the group.
-  caption?: string;
-}
-
-export interface DiagramSchema {
-  groups: DiagramGroup[];
-}
+//
+// Nullable fields (sub, color, title, subtitle, arrows, caption) come
+// in as `null` from the backend; the renderer falls back to neutral
+// styling / absence when null.
 
 // Per-color visual: a diagonal soft gradient (light at the top-left,
 // slightly deeper at the bottom-right), an ambient outer glow in the
@@ -227,7 +211,8 @@ function DiagramNodeView({
 
 // Reference diagram used by the preview affordance. Recreates the
 // example screenshot so the visual language can be tuned before the
-// backend toggle is wired.
+// backend toggle is wired. Explicit nulls match the wire shape the
+// backend will emit.
 export const SAMPLE_DIAGRAM: DiagramSchema = {
   groups: [
     {
@@ -237,14 +222,17 @@ export const SAMPLE_DIAGRAM: DiagramSchema = {
       arrows: true,
       caption: 'Always with a real business problem behind it',
       nodes: [
-        { label: 'Learn', color: 'green' },
-        { label: 'Build', color: 'blue' },
-        { label: 'Share', color: 'red' },
+        { label: 'Learn', sub: null, color: 'green' },
+        { label: 'Build', sub: null, color: 'blue' },
+        { label: 'Share', sub: null, color: 'red' },
       ],
     },
     {
       title: 'Every day — 2 hours minimum',
+      subtitle: null,
       layout: 'row',
+      arrows: null,
+      caption: null,
       nodes: [
         {
           label: '1 hour learning',
@@ -260,13 +248,12 @@ export const SAMPLE_DIAGRAM: DiagramSchema = {
     },
     {
       title: 'Every week — 3 actions, no exceptions',
+      subtitle: null,
       layout: 'row',
+      arrows: null,
+      caption: null,
       nodes: [
-        {
-          label: 'Publish 1 post',
-          sub: 'AI + business insight',
-          color: 'red',
-        },
+        { label: 'Publish 1 post', sub: 'AI + business insight', color: 'red' },
         {
           label: 'Reach out to 1 biz',
           sub: 'Offer value, not a pitch',
@@ -281,17 +268,25 @@ export const SAMPLE_DIAGRAM: DiagramSchema = {
     },
     {
       title: 'Every month — check the inputs, not the results',
+      subtitle: null,
       layout: 'column',
+      arrows: null,
+      caption: null,
       nodes: [
         {
           label: 'Did I put in the hours, reach out, publish, and build?',
+          sub: null,
           color: 'green',
         },
       ],
     },
     {
       // No title → reads as a continuation of the previous group.
+      title: null,
+      subtitle: null,
       layout: 'row',
+      arrows: null,
+      caption: null,
       nodes: [
         {
           label: 'Yes + no revenue?',
