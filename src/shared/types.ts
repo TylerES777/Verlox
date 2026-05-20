@@ -186,6 +186,7 @@ export interface PlanResponse {
     | 'git-diff'
     | 'env'
     | 'network'
+    | 'listening-ports'
     | null;
   footgunDetected: false | { reason: string };
 }

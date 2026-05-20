@@ -156,6 +156,8 @@ export function Message({
             <EnvBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'network' ? (
             <NetworkBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'listening-ports' ? (
+            <ListeningPortsBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -749,6 +751,135 @@ function looksLikePathList(
     }
   }
   return { isList: false, segments: [] as never[] };
+}
+
+// Listening ports panel — replaces the raw monospace block when the
+// planner sets outputUi="listening-ports". Parses the CSV emitted by
+// the Windows PowerShell pipeline (LocalAddress, LocalPort, ProcessId,
+// ProcessName) into a flat row list, sorts by port, and renders a
+// table. Non-Windows shells fall back to the raw block.
+function ListeningPortsBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const rows = parseListeningPorts(step.output);
+  const total = rows.length;
+  const sorted = [...rows].sort((a, b) => a.port - b.port);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <PortGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">listening ports</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {running
+            ? 'scanning…'
+            : total > 0
+              ? `${total} listening`
+              : ''}
+        </span>
+      </div>
+
+      {sorted.length > 0 ? (
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-hairline">
+          {sorted.map((p, i) => (
+            <li
+              key={`${p.port}-${p.address}-${i}`}
+              className="flex items-center gap-3 px-3.5 py-1.5 font-mono text-[12.5px]"
+            >
+              <span className="w-14 shrink-0 text-ink">{p.port}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-body">
+                {p.processName || (
+                  <span className="text-ink-micro">(unknown)</span>
+                )}
+              </span>
+              <span className="shrink-0 text-[11px] text-ink-micro">
+                PID {p.pid}
+              </span>
+              <span className="w-24 shrink-0 truncate text-right text-[11px] text-ink-label">
+                {formatBindAddress(p.address)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">
+          Scanning ports…
+        </p>
+      ) : null}
+
+      {/* Fallback for non-Windows / failed runs. */}
+      {!running && total === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+interface ListeningPortRow {
+  port: number;
+  address: string;
+  pid: number;
+  processName: string;
+}
+
+function parseListeningPorts(text: string): ListeningPortRow[] {
+  if (text.trim().length === 0) return [];
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return [];
+  // The pipeline always opens with a quoted header row.
+  if (!lines[0].startsWith('"')) return [];
+  const header = parseCsvLine(lines[0]).map((s) => s.toLowerCase());
+  const addrIdx = header.indexOf('localaddress');
+  const portIdx = header.indexOf('localport');
+  const pidIdx = header.indexOf('processid');
+  const nameIdx = header.indexOf('processname');
+  if (addrIdx < 0 || portIdx < 0 || pidIdx < 0) return [];
+  const rows: ListeningPortRow[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const fields = parseCsvLine(lines[i]);
+    const port = parseInt(fields[portIdx] ?? '', 10);
+    const pid = parseInt(fields[pidIdx] ?? '', 10);
+    if (!Number.isFinite(port) || !Number.isFinite(pid)) continue;
+    const address = (fields[addrIdx] ?? '').trim();
+    const processName = (nameIdx >= 0 ? fields[nameIdx] ?? '' : '').trim();
+    rows.push({ port, address, pid, processName });
+  }
+  return rows;
+}
+
+// Convert a raw bind address into something readable: the wildcard
+// addresses (0.0.0.0, ::, *) become "all" so the row reads as a
+// purpose rather than a string of zeros.
+function formatBindAddress(addr: string): string {
+  if (addr === '0.0.0.0' || addr === '::' || addr === '*') return 'all';
+  return addr;
+}
+
+function PortGlyph({ className = '' }: { className?: string }) {
+  // A small "plug" / outlet motif — two dots over a base bar, calm
+  // enough to fit the other glyphs.
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="4.5" y="3" width="7" height="6" rx="1" />
+      <line x1="6.5" y1="3" x2="6.5" y2="1.5" />
+      <line x1="9.5" y1="3" x2="9.5" y2="1.5" />
+      <line x1="8" y1="9" x2="8" y2="12" />
+      <path d="M5 12.5h6" />
+    </svg>
+  );
 }
 
 // Network panel — replaces the raw monospace block when the planner
