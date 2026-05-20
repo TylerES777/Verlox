@@ -71,14 +71,18 @@ export default {
         popover: '0 4px 16px rgba(0,0,0,0.08)',
       },
       maxWidth: {
-        reading: '580px',
+        // Inner reading column for prose + structured panels. Bumped
+        // from the editorial 580px to 700px so panels (file listings,
+        // diff blocks, ping rows) read substantial rather than crammed
+        // into a narrow strip.
+        reading: '700px',
         'auth-form': '360px',
-        // Conversation screen card cap. 580px reading column lives inside,
-        // surrounded by enough white card to feel like a document.
-        // Auth screens are full-bleed white (no card) — the only content
-        // is a 360px form and any card around it reads as hollow or, when
-        // shrunk to fit, as a tall mobile strip on desktop.
-        app: '1200px',
+        // Conversation card cap. Hugs the reading column with a small
+        // chrome margin so the empty card area doesn't dominate the
+        // composition. Wider main panes still center the card on the
+        // gray canvas — the canvas margin reads as document spacing,
+        // the card chrome doesn't read as wasted whitespace.
+        app: '760px',
       },
       keyframes: {
         // Slow opacity flicker for the running-step status indicator. Calmer
