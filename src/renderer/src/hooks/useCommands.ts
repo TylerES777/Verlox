@@ -1088,7 +1088,13 @@ export function useCommands(
           if (id !== stepId) return;
           output += data;
           dispatch({ type: 'STEP_OUTPUT', id: messageId, index: stepIndex, data });
-          armSilence(); // output means it's alive — restart the clock
+          // First output is the "this command is alive" signal: clear
+          // the silence backstop permanently. After this, going quiet
+          // is normal (dev servers, watchers, idle processes) and
+          // shouldn't trigger the "may be waiting for input" notice.
+          // Re-arming would fire the warning on every long-running
+          // server that ever printed a startup banner.
+          clearSilence();
         });
         const offExit = window.api.onCommandExit(({ id, code, signal }) => {
           if (id !== stepId) return;

@@ -36,34 +36,40 @@ export function RunningProcesses({
   for (const tab of tabs) tabsById.set(tab.id, tab);
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between pb-4 pl-10 pr-5 pt-5">
-        <h2 className="text-[15px] font-semibold text-ink">Running</h2>
-        {processes.length > 0 && (
-          <span className="text-[11px] text-ink-micro">
-            {processes.length} {processes.length === 1 ? 'process' : 'processes'}
-          </span>
+    <div className="flex h-full flex-col p-5">
+      {/* Whole section sits inside a rounded board with a soft tint
+          so it reads as a distinct pane below the Timeline, not a
+          loose list of items. */}
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-subtle-border bg-surface-subtle">
+        <div className="flex shrink-0 items-center justify-between border-b border-hairline px-4 py-3">
+          <h2 className="text-[14px] font-semibold text-ink">Running</h2>
+          {processes.length > 0 && (
+            <span className="text-[11px] text-ink-micro">
+              {processes.length}{' '}
+              {processes.length === 1 ? 'process' : 'processes'}
+            </span>
+          )}
+        </div>
+
+        {processes.length === 0 ? (
+          <p className="px-4 py-4 text-[12.5px] leading-relaxed text-ink-label">
+            Nothing running. Long-lived commands (dev servers, watchers) appear
+            here as you start them.
+          </p>
+        ) : (
+          <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+            {processes.map((p) => (
+              <ProcessRow
+                key={p.stepId}
+                process={p}
+                tabTitle={tabsById.get(p.conversationId)?.title ?? 'Conversation'}
+                onJump={onJump}
+                onAskWhy={onAskWhy}
+              />
+            ))}
+          </ul>
         )}
       </div>
-
-      {processes.length === 0 ? (
-        <p className="px-5 text-[12.5px] leading-relaxed text-ink-label">
-          Nothing running. Long-lived commands (dev servers, watchers) appear
-          here as you start them.
-        </p>
-      ) : (
-        <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-8 pl-5 pr-5">
-          {processes.map((p) => (
-            <ProcessRow
-              key={p.stepId}
-              process={p}
-              tabTitle={tabsById.get(p.conversationId)?.title ?? 'Conversation'}
-              onJump={onJump}
-              onAskWhy={onAskWhy}
-            />
-          ))}
-        </ul>
-      )}
     </div>
   );
 }
