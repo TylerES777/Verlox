@@ -735,13 +735,32 @@ function GitDiffBoard({ step }: { step: MessageStep }) {
         <p className="px-3.5 py-3 text-[13px] text-ink-label">Reading diff…</p>
       ) : null}
 
-      {/* Fallback for unparseable / failed output. */}
+      {/* Fallback for unparseable / failed output. The common "you ran
+          git outside a repo" failure gets a single calm line instead of
+          git's wall-of-usage dump. */}
       {!running && files.length === 0 && !empty && step.output.length > 0 && (
-        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
-          {step.output}
-        </pre>
+        isGitNotARepoFailure(step.output) ? (
+          <p className="border-t border-subtle-border px-3.5 py-3 text-[13px] text-ink-label">
+            This folder isn&rsquo;t a git repository.
+          </p>
+        ) : (
+          <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+            {step.output}
+          </pre>
+        )
       )}
     </div>
+  );
+}
+
+// Two common signatures for "git ran outside a repo": the direct
+// "Not a git repository" warning/fatal, and the --no-index usage that
+// git falls into when there's no work tree (which then rejects
+// --staged / refs and dumps a long usage banner).
+function isGitNotARepoFailure(text: string): boolean {
+  return (
+    /not a git repository/i.test(text) ||
+    /usage: git diff --no-index/i.test(text)
   );
 }
 
@@ -1003,11 +1022,18 @@ function GitLogBoard({ step }: { step: MessageStep }) {
         <p className="px-3.5 py-3 text-[13px] text-ink-label">Reading log…</p>
       ) : null}
 
-      {/* Fallback for unparseable / failed output. */}
+      {/* Fallback for unparseable / failed output. Not-a-repo failures
+          collapse to a single calm line. */}
       {!running && commits.length === 0 && step.output.length > 0 && (
-        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
-          {step.output}
-        </pre>
+        isGitNotARepoFailure(step.output) ? (
+          <p className="border-t border-subtle-border px-3.5 py-3 text-[13px] text-ink-label">
+            This folder isn&rsquo;t a git repository.
+          </p>
+        ) : (
+          <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+            {step.output}
+          </pre>
+        )
       )}
     </div>
   );
@@ -1118,13 +1144,19 @@ function GitStatusBoard({ step }: { step: MessageStep }) {
         <p className="px-3.5 py-3 text-[13px] text-ink-label">Reading repo…</p>
       ) : null}
 
-      {/* Fallback: command failed or produced unparseable output (e.g.
-          "fatal: not a git repository"). Show the raw text so the user
-          knows what happened. */}
+      {/* Fallback: command failed or produced unparseable output. The
+          "not a git repository" case collapses to a single calm line;
+          anything else still shows the raw text. */}
       {!running && totalEntries === 0 && !isClean && step.output.length > 0 && (
-        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
-          {step.output}
-        </pre>
+        isGitNotARepoFailure(step.output) ? (
+          <p className="border-t border-subtle-border px-3.5 py-3 text-[13px] text-ink-label">
+            This folder isn&rsquo;t a git repository.
+          </p>
+        ) : (
+          <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+            {step.output}
+          </pre>
+        )
       )}
     </div>
   );
