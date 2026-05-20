@@ -148,6 +148,8 @@ export function Message({
             />
           ) : plan?.outputUi === 'top-processes' ? (
             <TopProcessesBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'git-log' ? (
+            <GitLogBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -672,6 +674,104 @@ function SingleValueBoard({
       </p>
     </div>
   );
+}
+
+// Git log panel — replaces the raw monospace block when the planner
+// sets outputUi="git-log". Parses the rigid format string
+// `--pretty=format:"%H%n%an%n%ar%n%s"` (each commit emits exactly four
+// lines: hash, author, relative date, subject) and renders one card
+// per commit. Falls back to a raw block when the run fails (e.g.
+// outside a repo) or parsing yields nothing.
+function GitLogBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+  const commits = parseGitLog(step.output);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <GitGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">git log</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {running
+            ? 'reading…'
+            : failed
+              ? 'failed'
+              : commits.length > 0
+                ? `${commits.length} commit${commits.length === 1 ? '' : 's'}`
+                : ''}
+        </span>
+      </div>
+
+      {commits.length > 0 ? (
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-hairline">
+          {commits.map((c) => (
+            <li
+              key={c.hash}
+              className="flex items-start gap-3 px-3.5 py-2"
+            >
+              <span className="mt-0.5 shrink-0 font-mono text-[11.5px] text-ink-label">
+                {c.hash.slice(0, 7)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13.5px] text-ink-body">
+                  {c.subject}
+                </div>
+                <div className="mt-0.5 text-[11px] text-ink-micro">
+                  {c.author} · {c.age}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">Reading log…</p>
+      ) : null}
+
+      {/* Fallback for unparseable / failed output. */}
+      {!running && commits.length === 0 && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+interface GitLogCommit {
+  hash: string;
+  author: string;
+  age: string;
+  subject: string;
+}
+
+function parseGitLog(text: string): GitLogCommit[] {
+  if (text.length === 0) return [];
+  const lines = text.split(/\r?\n/);
+  // Trim trailing empty lines so we don't try to build a partial commit
+  // from them.
+  while (lines.length > 0 && lines[lines.length - 1].length === 0) {
+    lines.pop();
+  }
+  const commits: GitLogCommit[] = [];
+  // Process complete 4-line groups only. An incomplete trailing group
+  // gets ignored — git emits whole commits or none.
+  for (let i = 0; i + 4 <= lines.length; i += 4) {
+    const hash = lines[i];
+    // Cheapest sanity check: a SHA is 7–40 hex chars. If the head of
+    // the group isn't one, the output isn't our format — bail so the
+    // fallback raw block can render whatever git actually said.
+    if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
+      return [];
+    }
+    commits.push({
+      hash,
+      author: lines[i + 1],
+      age: lines[i + 2],
+      subject: lines[i + 3],
+    });
+  }
+  return commits;
 }
 
 // Live git-status panel — replaces the raw monospace block when the
