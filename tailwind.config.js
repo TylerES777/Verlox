@@ -71,17 +71,16 @@ export default {
         popover: '0 4px 16px rgba(0,0,0,0.08)',
       },
       maxWidth: {
-        // Inner reading column for prose + structured panels. Sized
-        // to match (and slightly exceed) modern conversational-AI
-        // apps so paragraphs read substantial instead of clipped.
-        // Lines at ~900px are at the upper edge of comfortable reading
-        // length — fine for prose, generous for structured panels.
-        reading: '900px',
+        // Inner reading column. Generous so paragraphs occupy most of
+        // the available width on standard 1080p+ windows, matching the
+        // visual feel of Claude / ChatGPT chat panels. The conversation
+        // is still horizontally centred — extra space falls equally on
+        // either side as natural margins.
+        reading: '1100px',
         'auth-form': '360px',
         // Conversation column cap. Hugs the reading width with a small
-        // chrome margin. With the white card chrome removed, this is
-        // just the outer max for the conversation content area.
-        app: '960px',
+        // chrome margin.
+        app: '1160px',
       },
       keyframes: {
         // Slow opacity flicker for the running-step status indicator. Calmer
