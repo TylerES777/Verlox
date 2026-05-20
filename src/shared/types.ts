@@ -183,6 +183,7 @@ export interface PlanResponse {
     | 'single-value'
     | 'top-processes'
     | 'git-log'
+    | 'git-diff'
     | null;
   footgunDetected: false | { reason: string };
 }

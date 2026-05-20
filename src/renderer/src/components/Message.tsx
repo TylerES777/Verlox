@@ -150,6 +150,8 @@ export function Message({
             <TopProcessesBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'git-log' ? (
             <GitLogBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'git-diff' ? (
+            <GitDiffBoard step={ranSteps[0]} />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -674,6 +676,279 @@ function SingleValueBoard({
       </p>
     </div>
   );
+}
+
+// Git diff panel — replaces the raw monospace block when the planner
+// sets outputUi="git-diff". Parses the unified diff format into per-
+// file sections with colored +/− lines. Empty diff shows "No changes."
+// Outside-a-repo / unparseable output falls through to a raw block.
+function GitDiffBoard({ step }: { step: MessageStep }) {
+  const running = step.status === 'running';
+  const failed = step.status === 'failed';
+  const files = parseGitDiff(step.output);
+  const empty = !running && !failed && files.length === 0 && step.output.trim().length === 0;
+
+  // Tally totals so the header meta can show a +/− summary across the
+  // whole diff.
+  let totalAdded = 0;
+  let totalRemoved = 0;
+  for (const f of files) {
+    for (const h of f.hunks) {
+      for (const l of h.lines) {
+        if (l.kind === 'add') totalAdded += 1;
+        else if (l.kind === 'remove') totalRemoved += 1;
+      }
+    }
+  }
+
+  const headerMeta = running
+    ? 'reading…'
+    : failed
+      ? 'failed'
+      : files.length > 0
+        ? `${files.length} file${files.length === 1 ? '' : 's'} · +${totalAdded} −${totalRemoved}`
+        : '';
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <GitGlyph className="text-ink-label" />
+        <span className="min-w-0 flex-1 truncate">git diff</span>
+        {headerMeta && (
+          <span className="shrink-0 text-[11px] text-ink-micro">{headerMeta}</span>
+        )}
+      </div>
+
+      {empty ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">No changes.</p>
+      ) : files.length > 0 ? (
+        <div className="max-h-[480px] overflow-y-auto">
+          {files.map((file, i) => (
+            <DiffFileSection
+              key={`${file.newPath}-${i}`}
+              file={file}
+              isLast={i === files.length - 1}
+            />
+          ))}
+        </div>
+      ) : running ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">Reading diff…</p>
+      ) : null}
+
+      {/* Fallback for unparseable / failed output. */}
+      {!running && files.length === 0 && !empty && step.output.length > 0 && (
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap border-t border-subtle-border bg-card px-3 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function DiffFileSection({ file, isLast }: { file: DiffFile; isLast: boolean }) {
+  let added = 0;
+  let removed = 0;
+  for (const h of file.hunks) {
+    for (const l of h.lines) {
+      if (l.kind === 'add') added += 1;
+      else if (l.kind === 'remove') removed += 1;
+    }
+  }
+  return (
+    <section className={isLast ? '' : 'border-b border-hairline'}>
+      <div className="flex items-center gap-2 border-b border-hairline bg-card px-3.5 py-2 font-mono text-[12.5px]">
+        <FileGlyph className="text-ink-hint" />
+        <span className="min-w-0 flex-1 truncate text-ink">
+          {file.renamed && file.oldPath !== file.newPath ? (
+            <>
+              <span className="text-ink-label">{file.oldPath}</span>
+              <span className="px-1 text-ink-micro">→</span>
+              {file.newPath}
+            </>
+          ) : (
+            file.newPath
+          )}
+        </span>
+        {file.newFile && (
+          <span className="shrink-0 text-[10px] uppercase tracking-[0.08em] text-step-done">
+            new
+          </span>
+        )}
+        {file.deletedFile && (
+          <span className="shrink-0 text-[10px] uppercase tracking-[0.08em] text-step-failed">
+            deleted
+          </span>
+        )}
+        <span className="shrink-0 text-[11px]">
+          <span className="text-step-done">+{added}</span>{' '}
+          <span className="text-step-failed">−{removed}</span>
+        </span>
+      </div>
+      {file.binary ? (
+        <p className="px-3.5 py-2 text-[13px] text-ink-label">
+          Binary file changed.
+        </p>
+      ) : (
+        file.hunks.map((hunk, hi) => (
+          <div key={hi}>
+            <div className="border-b border-hairline bg-card/50 px-3.5 py-1 font-mono text-[11px] text-ink-micro">
+              {hunk.header}
+            </div>
+            {hunk.lines.map((line, li) => (
+              <DiffLineRow key={li} line={line} />
+            ))}
+          </div>
+        ))
+      )}
+    </section>
+  );
+}
+
+function DiffLineRow({ line }: { line: DiffLine }) {
+  const bg =
+    line.kind === 'add'
+      ? 'bg-step-done-tint'
+      : line.kind === 'remove'
+        ? 'bg-step-failed-tint'
+        : '';
+  const prefixColor =
+    line.kind === 'add'
+      ? 'text-step-done'
+      : line.kind === 'remove'
+        ? 'text-step-failed'
+        : 'text-ink-hint';
+  const textColor = line.kind === 'context' ? 'text-ink-label' : 'text-ink';
+  const prefixChar = line.kind === 'add' ? '+' : line.kind === 'remove' ? '−' : ' ';
+  return (
+    <div
+      className={`flex items-start font-mono text-[12px] leading-snug ${bg}`}
+    >
+      <span
+        className={`select-none px-3.5 py-0.5 ${prefixColor}`}
+        aria-hidden="true"
+      >
+        {prefixChar}
+      </span>
+      <span className={`min-w-0 flex-1 whitespace-pre-wrap break-all py-0.5 pr-3.5 ${textColor}`}>
+        {line.text}
+      </span>
+    </div>
+  );
+}
+
+interface DiffFile {
+  oldPath: string;
+  newPath: string;
+  binary: boolean;
+  newFile: boolean;
+  deletedFile: boolean;
+  renamed: boolean;
+  hunks: DiffHunk[];
+}
+
+interface DiffHunk {
+  // The raw "@@ -a,b +c,d @@" line (often with a function-name hint
+  // following). Shown verbatim above each hunk's lines.
+  header: string;
+  lines: DiffLine[];
+}
+
+interface DiffLine {
+  kind: 'add' | 'remove' | 'context';
+  text: string;
+}
+
+function parseGitDiff(text: string): DiffFile[] {
+  if (text.length === 0) return [];
+  const files: DiffFile[] = [];
+  let currentFile: DiffFile | null = null;
+  let currentHunk: DiffHunk | null = null;
+
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    // Each file diff starts with "diff --git a/X b/Y".
+    if (line.startsWith('diff --git ')) {
+      currentFile = {
+        oldPath: '',
+        newPath: '',
+        binary: false,
+        newFile: false,
+        deletedFile: false,
+        renamed: false,
+        hunks: [],
+      };
+      currentHunk = null;
+      files.push(currentFile);
+      // Try to pull a path from "diff --git a/X b/Y" — we'll refine
+      // below from the --- / +++ lines if they appear.
+      const m = /^diff --git\s+a\/(.+?)\s+b\/(.+)$/.exec(line);
+      if (m) {
+        currentFile.oldPath = m[1];
+        currentFile.newPath = m[2];
+      }
+      continue;
+    }
+    if (currentFile === null) continue;
+    if (line.startsWith('new file mode')) {
+      currentFile.newFile = true;
+      continue;
+    }
+    if (line.startsWith('deleted file mode')) {
+      currentFile.deletedFile = true;
+      continue;
+    }
+    if (line.startsWith('rename from ')) {
+      currentFile.renamed = true;
+      currentFile.oldPath = line.slice('rename from '.length);
+      continue;
+    }
+    if (line.startsWith('rename to ')) {
+      currentFile.renamed = true;
+      currentFile.newPath = line.slice('rename to '.length);
+      continue;
+    }
+    if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) {
+      currentFile.binary = true;
+      continue;
+    }
+    if (line.startsWith('--- ')) {
+      const path = line.slice(4);
+      if (path !== '/dev/null') {
+        currentFile.oldPath = path.startsWith('a/') ? path.slice(2) : path;
+      }
+      continue;
+    }
+    if (line.startsWith('+++ ')) {
+      const path = line.slice(4);
+      if (path !== '/dev/null') {
+        currentFile.newPath = path.startsWith('b/') ? path.slice(2) : path;
+      }
+      continue;
+    }
+    if (line.startsWith('@@')) {
+      currentHunk = { header: line, lines: [] };
+      currentFile.hunks.push(currentHunk);
+      continue;
+    }
+    if (line.startsWith('index ') || line.startsWith('similarity index')) {
+      continue;
+    }
+    // Diff body lines belong to the current hunk.
+    if (currentHunk === null) continue;
+    if (line.startsWith('+')) {
+      currentHunk.lines.push({ kind: 'add', text: line.slice(1) });
+    } else if (line.startsWith('-')) {
+      currentHunk.lines.push({ kind: 'remove', text: line.slice(1) });
+    } else if (line.startsWith(' ')) {
+      currentHunk.lines.push({ kind: 'context', text: line.slice(1) });
+    } else if (line.startsWith('\\')) {
+      // "\ No newline at end of file" — skip; the renderer would show
+      // it as noise.
+      continue;
+    }
+    // Anything else (blank trailing lines, etc.) just gets ignored.
+  }
+  return files;
 }
 
 // Git log panel — replaces the raw monospace block when the planner
