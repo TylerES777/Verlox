@@ -668,6 +668,34 @@ function SingleValueBoard({
     );
   }
 
+  // Path-list values (PATH, PSModulePath, LD_LIBRARY_PATH, …) render
+  // badly as one big centered string — wrapping makes the segments
+  // unreadable. Detect this shape and render one segment per row.
+  const pathList = looksLikePathList(value);
+  if (pathList.isList) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-hairline">
+          {pathList.segments.map((seg, i) => (
+            <li
+              key={i}
+              className="truncate px-4 py-1.5 font-mono text-[12.5px] text-ink-body"
+              title={seg}
+            >
+              {seg}
+            </li>
+          ))}
+        </ul>
+        <p className="border-t border-subtle-border py-2 text-center text-[11px] uppercase tracking-[0.06em] text-ink-micro">
+          {label}
+          <span className="ml-2 text-ink-hint normal-case tracking-normal">
+            ({pathList.segments.length} entries)
+          </span>
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-subtle-border bg-surface-subtle px-5 py-6 text-center">
       <p className="whitespace-pre-wrap break-words font-mono text-[16px] leading-relaxed text-ink">
@@ -678,6 +706,47 @@ function SingleValueBoard({
       </p>
     </div>
   );
+}
+
+// Recognise a value that's really a list of paths joined by ';'
+// (Windows-style) or ':' (POSIX-style). Returns the split segments so
+// the caller can render each on its own row instead of forcing them
+// into one centered string. Deliberately conservative — a casual long
+// value (a date with colons, a URL) shouldn't trip this.
+function looksLikePathList(
+  value: string,
+): { isList: true; segments: string[] } | { isList: false; segments: never[] } {
+  // Windows PATH: split on ';'. Each segment typically contains '\' or
+  // a drive letter prefix.
+  if (value.includes(';')) {
+    const segments = value
+      .split(';')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (segments.length >= 3) {
+      const pathish = segments.filter((s) => /[\\/]/.test(s)).length;
+      if (pathish >= Math.max(2, Math.floor(segments.length / 2))) {
+        return { isList: true, segments };
+      }
+    }
+  }
+  // POSIX PATH: split on ':'. Guard against Windows drive letters in
+  // the value ("C:\…") and against time-looking values ("12:34:56").
+  if (value.includes(':') && !/[A-Z]:\\/.test(value)) {
+    const segments = value
+      .split(':')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (segments.length >= 3) {
+      const looksLikePath = segments.filter(
+        (s) => s.startsWith('/') || s.startsWith('~'),
+      ).length;
+      if (looksLikePath >= Math.max(2, Math.floor(segments.length / 2))) {
+        return { isList: true, segments };
+      }
+    }
+  }
+  return { isList: false, segments: [] as never[] };
 }
 
 // Env panel — replaces the raw monospace block when the planner sets
