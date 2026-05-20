@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { DirListing } from '@shared/types';
 import type { CommandMessage, MessageStep, StepStatus } from '../hooks/useCommands';
 import { StatusIndicator } from './StatusIndicator';
 import { DetailsPanel } from './DetailsPanel';
@@ -47,6 +48,7 @@ export function Message({
     steps,
     displayMode,
     plan,
+    listing,
   } = message;
 
   // Steps that have actually run (or are running) — queued and skipped
@@ -145,12 +147,23 @@ export function Message({
         </NotificationBoard>
       )}
 
-      {/* cd-error / planning-error — a notification, error tone. */}
-      {(status === 'cd-error' || status === 'planning-error') && errorMessage && (
-        <NotificationBoard variant="error" className="mt-3">
-          <BoardText>{errorMessage}</BoardText>
-        </NotificationBoard>
+      {/* list-success — Vorlox's built-in folder browser. No shell ran;
+          the contents come from the directory API directly. */}
+      {status === 'list-success' && listing && (
+        <div className="mt-3">
+          <FileListingBoard listing={listing} />
+        </div>
       )}
+
+      {/* cd-error / list-error / planning-error — a notification, error tone. */}
+      {(status === 'cd-error' ||
+        status === 'list-error' ||
+        status === 'planning-error') &&
+        errorMessage && (
+          <NotificationBoard variant="error" className="mt-3">
+            <BoardText>{errorMessage}</BoardText>
+          </NotificationBoard>
+        )}
 
       {/* synthesize-error — the partial summary stays boxed above; the
           error itself follows in its own error-tone board. */}
@@ -235,6 +248,88 @@ function NotificationBoard({
 function BoardText({ children }: { children: ReactNode }) {
   return (
     <p className="text-[14px] leading-relaxed text-ink-body">{children}</p>
+  );
+}
+
+// Built-in folder browser — what the user sees when they ask "list the
+// files." No shell command ran; this is Vorlox's own directory view.
+// Folder header → resolved path + count. Rows → icon + name, folders
+// first. A huge folder caps at max-height and becomes a scroll box.
+function FileListingBoard({ listing }: { listing: DirListing }) {
+  const total = listing.entries.length;
+  const folderCount = listing.entries.filter((e) => e.isDirectory).length;
+  const fileCount = total - folderCount;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+      <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+        <FolderGlyph open />
+        <span className="min-w-0 flex-1 truncate">{listing.path}</span>
+        <span className="shrink-0 text-[11px] text-ink-micro">
+          {total === 0
+            ? 'empty'
+            : `${folderCount} folder${folderCount === 1 ? '' : 's'}, ${fileCount} file${fileCount === 1 ? '' : 's'}`}
+        </span>
+      </div>
+      {total === 0 ? (
+        <p className="px-3.5 py-3 text-[13px] text-ink-label">Empty folder.</p>
+      ) : (
+        <ul className="max-h-[360px] overflow-y-auto divide-y divide-hairline">
+          {listing.entries.map((e) => (
+            <li
+              key={e.path}
+              className="flex items-center gap-2 px-3.5 py-1.5 text-[13.5px] text-ink-body"
+            >
+              {e.isDirectory ? (
+                <FolderGlyph className="text-ink-label" />
+              ) : (
+                <FileGlyph className="text-ink-hint" />
+              )}
+              <span className="min-w-0 flex-1 truncate">{e.name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function FolderGlyph({ className = '', open = false }: { className?: string; open?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {open ? (
+        <path d="M2 5.5V4a1 1 0 0 1 1-1h3.4l1.5 1.5H13a1 1 0 0 1 1 1V6H3l-1 6.5A.5.5 0 0 0 2.5 13h10.4a1 1 0 0 0 1-.85L14.7 7H4.1a1 1 0 0 0-1 .85L2 13.5" />
+      ) : (
+        <path d="M2 4.5A1 1 0 0 1 3 3.5h3.4l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z" />
+      )}
+    </svg>
+  );
+}
+
+function FileGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={`h-3.5 w-3.5 shrink-0 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 2.5h5.5L13 6v7a.5.5 0 0 1-.5.5h-8.5A.5.5 0 0 1 3.5 13V3a.5.5 0 0 1 .5-.5z" />
+      <path d="M9.5 2.5V6H13" />
+    </svg>
   );
 }
 

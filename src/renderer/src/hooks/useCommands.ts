@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BackendErrorCode,
   CwdInfo,
+  DirListing,
   EnvironmentInfo,
   ExecutionLogEntry,
   PlanDisplayMode,
@@ -20,6 +21,8 @@ export type TurnStatus =
                               //   clarifying question, advice, or a decline
   | 'cd-success'              // cd handled
   | 'cd-error'                // cd path invalid
+  | 'list-success'            // built-in file listing rendered
+  | 'list-error'              // built-in file listing failed
   | 'awaiting-confirmation'   // Plan Mode: Plan Card visible, awaiting Run/Cancel
   | 'cancelled-before-run'    // user clicked Cancel on the Plan Card
   | 'executing'               // running steps locally via window.api.startCommand
@@ -104,6 +107,10 @@ export interface CommandMessage {
   // For cd-success render:
   cdResolvedDisplay: string | null;
 
+  // For list-success render: the resolved DirListing (path + entries).
+  // Null for any other status.
+  listing: DirListing | null;
+
   // For *-error states + planning-error / synthesize-error:
   errorMessage: string | null;
 
@@ -149,6 +156,12 @@ type Action =
   | { type: 'REPLIED'; id: string; text: string }
   | { type: 'CD_SUCCESS'; id: string; displayPath: string }
   | { type: 'CD_ERROR'; id: string; message: string }
+  // LIST_SUCCESS: a built-in file listing resolved cleanly. The listing
+  // carries the resolved absolute path, entries, and a possible error
+  // (entries empty in that case — but we only LIST_SUCCESS if no error).
+  | { type: 'LIST_SUCCESS'; id: string; listing: DirListing }
+  // LIST_ERROR: the directory couldn't be opened (missing, permission).
+  | { type: 'LIST_ERROR'; id: string; message: string }
   | { type: 'STATUS_INDICATOR'; id: string; phase: StatusIndicatorPhase }
   // STEPS_INITIALIZED takes the plan steps and seeds steps[] all queued.
   // Dispatched right after PLAN_RECEIVED, before any step starts.
@@ -205,6 +218,7 @@ function newMessage(id: string, userInput: string, cwd: string): CommandMessage 
     pendingResponse: '',
     finalResponse: '',
     cdResolvedDisplay: null,
+    listing: null,
     errorMessage: null,
     stalled: false,
   };
@@ -353,6 +367,32 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
           ? {
               ...m,
               status: 'cd-error',
+              statusIndicator: null,
+              errorMessage: action.message,
+              endedAt: Date.now(),
+            }
+          : m,
+      );
+
+    case 'LIST_SUCCESS':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: 'list-success',
+              statusIndicator: null,
+              listing: action.listing,
+              endedAt: Date.now(),
+            }
+          : m,
+      );
+
+    case 'LIST_ERROR':
+      return state.map((m) =>
+        m.id === action.id
+          ? {
+              ...m,
+              status: 'list-error',
               statusIndicator: null,
               errorMessage: action.message,
               endedAt: Date.now(),
@@ -517,7 +557,25 @@ function toHistoryEntry(m: CommandMessage): TurnHistoryEntry {
     case 'cd-success':
       outcome = `Changed working directory to ${m.cdResolvedDisplay ?? '(unknown)'}.`;
       break;
+    case 'list-success':
+      if (m.listing) {
+        const folders = m.listing.entries.filter((e) => e.isDirectory);
+        const files = m.listing.entries.filter((e) => !e.isDirectory);
+        outcome =
+          `Listed ${m.listing.entries.length} entries in ${m.listing.path} ` +
+          `(${folders.length} folders, ${files.length} files): ` +
+          m.listing.entries
+            .slice(0, 30)
+            .map((e) => (e.isDirectory ? `${e.name}/` : e.name))
+            .join(', ') +
+          (m.listing.entries.length > 30 ? ', …' : '') +
+          '.';
+      } else {
+        outcome = 'Listed a folder.';
+      }
+      break;
     case 'cd-error':
+    case 'list-error':
     case 'planning-error':
       outcome = m.errorMessage ?? 'Something went wrong.';
       break;
@@ -921,6 +979,22 @@ export function useCommands(
             message: "Couldn't find that folder. Could you double-check the path?",
           });
         }
+        return;
+      }
+
+      // 2b. built-in list — Vorlox renders the folder contents directly
+      //     via the directory API; no shell command runs. listTarget is
+      //     null for "the current folder," or an absolute / "~/"-prefixed
+      //     path. window.api.listDir handles tilde expansion and
+      //     resolves to an absolute path on the listing it returns.
+      if (plan.isListCommand) {
+        const target = plan.listTarget ?? effectiveCwd;
+        const listing = await window.api.listDir(target);
+        if (listing.error) {
+          dispatch({ type: 'LIST_ERROR', id, message: listing.error });
+          return;
+        }
+        dispatch({ type: 'LIST_SUCCESS', id, listing });
         return;
       }
 

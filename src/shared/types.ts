@@ -167,6 +167,13 @@ export interface PlanResponse {
   displayMode: PlanDisplayMode;
   isCdCommand: boolean;
   cdTarget: string | null;
+  // Built-in file-listing intent. When true, Vorlox renders the folder
+  // contents using its own directory API — no shell command runs. steps
+  // is empty in this case (like a cd turn).
+  isListCommand: boolean;
+  // Absolute or "~/"-prefixed path to list, or null for the current
+  // working directory. Only meaningful when isListCommand is true.
+  listTarget: string | null;
   footgunDetected: false | { reason: string };
 }
 
