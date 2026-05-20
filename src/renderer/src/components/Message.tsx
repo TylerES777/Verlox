@@ -140,6 +140,12 @@ export function Message({
             <PingBoard step={ranSteps[0]} />
           ) : plan?.outputUi === 'git-status' ? (
             <GitStatusBoard step={ranSteps[0]} />
+          ) : plan?.outputUi === 'single-value' ? (
+            <SingleValueBoard
+              step={ranSteps[0]}
+              label={plan.intent}
+              command={ranSteps[0].command}
+            />
           ) : (
             ranSteps.map((s) => <OutputBlock key={s.index} step={s} />)
           )}
@@ -417,6 +423,64 @@ function PingRow({ event }: { event: PingEvent }) {
         </span>
       )}
     </li>
+  );
+}
+
+// Single-value panel — replaces the raw monospace block when the
+// planner sets outputUi="single-value". The value is the trimmed
+// command output, displayed prominently with the intent as a small
+// label underneath. For multi-line output (rare in single-value
+// territory, but uptime / `env $VAR` can produce it) lines stack
+// naturally. Empty / failed runs fall through to a small raw view.
+function SingleValueBoard({
+  step,
+  label,
+  command,
+}: {
+  step: MessageStep;
+  label: string;
+  command: string;
+}) {
+  const running = step.status === 'running';
+  const value = step.output.trim();
+  const failed = step.status === 'failed';
+  const empty = value.length === 0;
+
+  if (running) {
+    return (
+      <div className="rounded-xl border border-subtle-border bg-surface-subtle px-5 py-6 text-center">
+        <p className="text-[13px] text-ink-label">Checking…</p>
+      </div>
+    );
+  }
+
+  if (failed || empty) {
+    // Fallback — show whatever did come back (stderr or '(no output)')
+    // in a compact raw block so the user can see what happened.
+    return (
+      <div className="overflow-hidden rounded-xl border border-subtle-border bg-surface-subtle">
+        <div className="flex items-center gap-2 border-b border-subtle-border px-3.5 py-2 font-mono text-[12.5px] text-ink">
+          <span className="min-w-0 flex-1 truncate text-ink-label">{command}</span>
+          <span className="shrink-0 text-[11px] text-ink-micro">
+            {failed ? 'failed' : 'no output'}
+          </span>
+        </div>
+        <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap px-3.5 py-2 font-mono text-[12.5px] leading-relaxed text-ink-body">
+          {step.output || '(no output)'}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-subtle-border bg-surface-subtle px-5 py-6 text-center">
+      <p className="whitespace-pre-wrap break-words font-mono text-[16px] leading-relaxed text-ink">
+        {value}
+      </p>
+      <p className="mt-3 text-[11px] uppercase tracking-[0.06em] text-ink-micro">
+        {label}
+      </p>
+    </div>
   );
 }
 
