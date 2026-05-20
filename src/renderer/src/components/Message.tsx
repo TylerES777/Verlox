@@ -2156,45 +2156,200 @@ function StepDot({ status }: { status: StepStatus }) {
   return <span className={`${base} border border-ink-hint opacity-60`} />;
 }
 
-// The AI's prose response, with backtick-delimited technical tokens
-// (file names, paths, commands) rendered as distinct inline code chips
-// instead of literal `backtick` text. Keeps the prose clean — the token
-// stands apart on its own tinted chip, no dash-crutch needed.
+// The AI's prose response, with minimal markdown rendered properly
+// instead of leaking as literal characters. We deliberately keep the
+// surface narrow — what we actually see the model produce:
+//   - `code` spans → inline tinted chips
+//   - **bold**     → semibold ink
+//   - "## heading" lines → small headings
+//   - "- item" / "* item" lines → bullet lists
+//   - "1. item" lines → ordered lists
+// Everything else is rendered as paragraphs with line breaks preserved.
 //
-// Only CLOSED backtick pairs become chips. A dangling backtick — which
-// happens mid reveal-smoothing, before the closer streams in — stays as
-// plain text until its partner arrives, then snaps to a chip.
+// Streaming friendly: only CLOSED pairs (back-ticks, **double-stars**)
+// become formatted. A dangling opener stays as literal text until its
+// partner streams in, then snaps to the styled form on the next render.
 function ProseResponse({ text }: { text: string }) {
-  const segments: { code: boolean; text: string }[] = [];
-  const re = /`([^`]+)`/g;
+  const blocks = parseProseBlocks(text);
+  return (
+    <div className="text-[15px] leading-[1.65] text-[#3A3A3A] space-y-3">
+      {blocks.map((block, i) => (
+        <ProseBlock key={i} block={block} />
+      ))}
+    </div>
+  );
+}
+
+type ProseBlockNode =
+  | { kind: 'paragraph'; text: string }
+  | { kind: 'heading'; level: 1 | 2 | 3; text: string }
+  | { kind: 'bullets'; items: string[] }
+  | { kind: 'ordered'; items: string[] };
+
+function parseProseBlocks(text: string): ProseBlockNode[] {
+  const lines = text.split(/\r?\n/);
+  const blocks: ProseBlockNode[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // Blank line → block separator.
+    if (line.trim().length === 0) {
+      i += 1;
+      continue;
+    }
+    // ATX heading (#, ##, ###).
+    const headingMatch = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (headingMatch) {
+      const level = headingMatch[1].length as 1 | 2 | 3;
+      blocks.push({ kind: 'heading', level, text: headingMatch[2] });
+      i += 1;
+      continue;
+    }
+    // Bullet list — consecutive "- " or "* " lines.
+    if (/^[-*]\s+\S/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^[-*]\s+\S/.test(lines[i])) {
+        items.push(lines[i].replace(/^[-*]\s+/, ''));
+        i += 1;
+      }
+      blocks.push({ kind: 'bullets', items });
+      continue;
+    }
+    // Ordered list — consecutive "N. " lines.
+    if (/^\d+\.\s+\S/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\.\s+\S/.test(lines[i])) {
+        items.push(lines[i].replace(/^\d+\.\s+/, ''));
+        i += 1;
+      }
+      blocks.push({ kind: 'ordered', items });
+      continue;
+    }
+    // Paragraph — collect consecutive non-empty, non-special lines.
+    const paragraphLines: string[] = [line];
+    i += 1;
+    while (
+      i < lines.length &&
+      lines[i].trim().length > 0 &&
+      !/^(#{1,3}\s|[-*]\s|\d+\.\s)/.test(lines[i])
+    ) {
+      paragraphLines.push(lines[i]);
+      i += 1;
+    }
+    blocks.push({ kind: 'paragraph', text: paragraphLines.join('\n') });
+  }
+  return blocks;
+}
+
+function ProseBlock({ block }: { block: ProseBlockNode }) {
+  if (block.kind === 'heading') {
+    const size =
+      block.level === 1
+        ? 'text-[17px]'
+        : block.level === 2
+          ? 'text-[15.5px]'
+          : 'text-[14.5px]';
+    return (
+      <h3 className={`font-semibold text-ink ${size}`}>
+        <ProseInline text={block.text} />
+      </h3>
+    );
+  }
+  if (block.kind === 'bullets') {
+    return (
+      <ul className="list-disc space-y-1 pl-5">
+        {block.items.map((it, i) => (
+          <li key={i}>
+            <ProseInline text={it} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (block.kind === 'ordered') {
+    return (
+      <ol className="list-decimal space-y-1 pl-5">
+        {block.items.map((it, i) => (
+          <li key={i}>
+            <ProseInline text={it} />
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  return (
+    <p className="whitespace-pre-wrap">
+      <ProseInline text={block.text} />
+    </p>
+  );
+}
+
+type InlineSeg =
+  | { kind: 'text'; text: string }
+  | { kind: 'code'; text: string }
+  | { kind: 'bold'; text: string };
+
+// Inline parse — code spans first (so any ** inside `…` stays literal),
+// then **bold** within remaining text segments.
+function parseInline(text: string): InlineSeg[] {
+  const out: InlineSeg[] = [];
+  const codeRe = /`([^`]+)`/g;
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
+  while ((m = codeRe.exec(text)) !== null) {
     if (m.index > last) {
-      segments.push({ code: false, text: text.slice(last, m.index) });
+      pushWithBold(out, text.slice(last, m.index));
     }
-    segments.push({ code: true, text: m[1] });
+    out.push({ kind: 'code', text: m[1] });
     last = m.index + m[0].length;
   }
   if (last < text.length) {
-    segments.push({ code: false, text: text.slice(last) });
+    pushWithBold(out, text.slice(last));
   }
+  return out;
+}
 
+function pushWithBold(out: InlineSeg[], text: string): void {
+  const boldRe = /\*\*([^*]+)\*\*/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = boldRe.exec(text)) !== null) {
+    if (m.index > last) {
+      out.push({ kind: 'text', text: text.slice(last, m.index) });
+    }
+    out.push({ kind: 'bold', text: m[1] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    out.push({ kind: 'text', text: text.slice(last) });
+  }
+}
+
+function ProseInline({ text }: { text: string }) {
+  const segments = parseInline(text);
   return (
-    <p className="whitespace-pre-wrap text-[15px] leading-[1.65] text-[#3A3A3A]">
-      {segments.map((s, i) =>
-        s.code ? (
-          <code
-            key={i}
-            className="rounded-md border-[0.5px] border-subtle-border bg-[#eef1f6] px-1.5 py-0.5 font-mono text-[13px] text-ink"
-          >
-            {s.text}
-          </code>
-        ) : (
-          <span key={i}>{s.text}</span>
-        ),
-      )}
-    </p>
+    <>
+      {segments.map((s, i) => {
+        if (s.kind === 'code') {
+          return (
+            <code
+              key={i}
+              className="rounded-md border-[0.5px] border-subtle-border bg-[#eef1f6] px-1.5 py-0.5 font-mono text-[13px] text-ink"
+            >
+              {s.text}
+            </code>
+          );
+        }
+        if (s.kind === 'bold') {
+          return (
+            <strong key={i} className="font-semibold text-ink">
+              {s.text}
+            </strong>
+          );
+        }
+        return <span key={i}>{s.text}</span>;
+      })}
+    </>
   );
 }
 
