@@ -81,6 +81,18 @@ export function Message({
         {message.userInput}
       </h2>
 
+      {/* Attached screenshot — rendered as a rounded thumbnail right
+          where the user sent it, so the conversation keeps a visual
+          record of what was shown to the AI. Reconstructs the data URL
+          from the stored mediaType + base64. */}
+      {message.attachedImage && (
+        <img
+          src={`data:${message.attachedImage.mediaType};base64,${message.attachedImage.base64Data}`}
+          alt="Attached screenshot"
+          className="mt-3 max-h-64 w-auto max-w-[320px] rounded-xl border border-subtle-border object-contain"
+        />
+      )}
+
       {/* Status indicator — examining / running / reviewing. Hidden once
           a terminal status is reached. */}
       {statusIndicator !== null && (
@@ -174,7 +186,7 @@ export function Message({
         </div>
       )}
 
-      {/* list-success — Vorlox's built-in folder browser. A short
+      {/* list-success — Verlox's built-in folder browser. A short
           conversational lead-in above the panel so it reads as the
           AI answering, not just a panel materialising. */}
       {status === 'list-success' && listing && (
@@ -190,7 +202,7 @@ export function Message({
         </>
       )}
 
-      {/* history-shown — Vorlox's own prompt history from localStorage.
+      {/* history-shown — Verlox's own prompt history from localStorage.
           Same lead-in treatment. */}
       {status === 'history-shown' && promptHistory && (
         <>
@@ -612,7 +624,7 @@ function BoardText({ children }: { children: ReactNode }) {
 }
 
 // Built-in prompt-history panel — what the user sees when they ask
-// "show me my history". Lists Vorlox's own log of prompts across
+// "show me my history". Lists Verlox's own log of prompts across
 // sessions, not the shell's. Newest first. Empty case gets a calm
 // "Nothing yet." line so the panel isn't ever blank.
 function PromptHistoryBoard({ entries }: { entries: PromptHistoryEntry[] }) {
@@ -690,7 +702,7 @@ function HistoryGlyph({ className = '' }: { className?: string }) {
 }
 
 // Built-in folder browser — what the user sees when they ask "list the
-// files." No shell command ran; this is Vorlox's own directory view.
+// files." No shell command ran; this is Verlox's own directory view.
 // Folder header → resolved path + count. Rows → icon + name, folders
 // first. A huge folder caps at max-height and becomes a scroll box.
 function FileListingBoard({ listing }: { listing: DirListing }) {

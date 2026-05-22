@@ -14,6 +14,12 @@ import { listDirectory } from './directory';
 import { killAllSync, startCommand, stopCommand } from './command-runner';
 import * as backend from './backend-client';
 import { getEnvironment } from './detect-environment';
+import {
+  checkForUpdatesNow,
+  initUpdater,
+  installUpdate,
+  subscribeToUpdates,
+} from './updater';
 
 Menu.setApplicationMenu(null);
 
@@ -27,7 +33,15 @@ function createWindow(): void {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'Vorlox',
+    title: 'Verlox',
+    // Window icon. In dev (running the raw Electron binary) this replaces
+    // the default Electron atom with the Verlox mark. In a packaged build
+    // the executable's own icon (baked in by electron-builder from
+    // build/icon.ico) drives the taskbar, so this is only needed for dev;
+    // the file lives outside the asar, hence the dev-only guard.
+    icon: process.env.ELECTRON_RENDERER_URL
+      ? join(__dirname, '../../build/icon.png')
+      : undefined,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -55,6 +69,10 @@ function createWindow(): void {
   win.on('ready-to-show', () => {
     win.show();
   });
+
+  // Subscribe this window to auto-update status broadcasts so the
+  // Update button reflects the current state (and the latest on mount).
+  subscribeToUpdates(win.webContents);
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -120,6 +138,10 @@ ipcMain.on(IpcChannels.ShellOpenExternal, (_event, url: string) => {
   void shell.openExternal(url);
 });
 
+// --- Auto-update ----------------------------------------------------------
+ipcMain.on(IpcChannels.UpdateInstall, () => installUpdate());
+ipcMain.on(IpcChannels.UpdateCheck, () => checkForUpdatesNow());
+
 // --- AI handlers ----------------------------------------------------------
 
 ipcMain.handle(IpcChannels.BackendPlanTurn, (_e, input: TurnInput) =>
@@ -176,6 +198,9 @@ ipcMain.on(IpcChannels.BackendSynthesizeCancel, (_event, messageId: string) => {
 app.whenReady().then(() => {
   initCwd();
   createWindow();
+  // Kick off the auto-update check (no-op in dev / unpackaged). The
+  // window is already subscribed to status broadcasts via createWindow.
+  initUpdater();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

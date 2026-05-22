@@ -10,7 +10,7 @@ import type {
 const running = new Map<string, ChildProcess>();
 
 // ANSI escape sequences — colour codes, cursor moves, window-title sets.
-// Many CLI tools emit these; Vorlox renders plain text, so unstripped
+// Many CLI tools emit these; Verlox renders plain text, so unstripped
 // they show as noise. Stripped at the source so output is clean
 // everywhere downstream (display, copy, the history sent to the backend).
 //
@@ -120,7 +120,7 @@ export function startCommand(
   // `cwd` is supplied by the renderer per-conversation — each conversation
   // tracks its own working directory (or none, in which case the renderer
   // passes the user's home directory). Each command runs in a fresh shell,
-  // so a `cd` inside a command does not affect Vorlox's tracked cwd; the
+  // so a `cd` inside a command does not affect Verlox's tracked cwd; the
   // AI layer handles `cd` as a special case that updates the conversation's
   // cwd via setCwd().
   const { bin, args } = invocationFor(shell, command);
@@ -174,7 +174,7 @@ export function startCommand(
     send(IpcChannels.CommandOutput, {
       id,
       stream: 'stderr',
-      data: `vorlox: ${err.message}\n`,
+      data: `verlox: ${err.message}\n`,
     });
     finish(null, null);
   });

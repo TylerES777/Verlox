@@ -124,7 +124,7 @@ export function LoginScreen() {
       {/* Wordmark header */}
       <div className="flex justify-center pb-2 pt-8">
         <span className="font-mono text-[14px] font-medium tracking-tight text-ink">
-          vorlox
+          verlox
         </span>
       </div>
 
@@ -220,7 +220,7 @@ export function LoginScreen() {
               className="text-[13px] focus:outline-none disabled:opacity-60"
             >
               <span className="text-ink-label">
-                {isSignUp ? 'Already have an account? ' : 'New to Vorlox? '}
+                {isSignUp ? 'Already have an account? ' : 'New to Verlox? '}
               </span>
               <span className="text-ink underline decoration-[0.5px] underline-offset-2">
                 {isSignUp ? 'Sign in' : 'Create an account'}

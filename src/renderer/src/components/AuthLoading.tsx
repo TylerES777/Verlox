@@ -11,7 +11,7 @@ export function AuthLoading() {
     <div className="flex h-full w-full flex-col bg-card">
       <div className="flex justify-center pb-2 pt-8">
         <span className="font-mono text-[14px] font-medium tracking-tight text-ink">
-          vorlox
+          verlox
         </span>
       </div>
       <div className="flex-1" />

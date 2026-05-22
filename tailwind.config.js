@@ -103,6 +103,40 @@ export default {
           from: { opacity: '1' },
           to: { opacity: '0' },
         },
+        // Slow breathing glow for the Running pane's outer board. The
+        // shadow's spread and tint oscillate gently so the whole pane
+        // reads as "alive" — same emotional register as the running
+        // status dot's flicker, but at the container scale. Drives
+        // ambient presence; does not call attention.
+        'pane-breath': {
+          '0%, 100%': {
+            boxShadow:
+              '0 1px 0 rgba(255,255,255,0.9) inset, 0 0 0 0.5px rgba(0,0,0,0.04), 0 8px 24px -12px rgba(20,140,80,0.18), 0 2px 8px -4px rgba(0,0,0,0.06)',
+          },
+          '50%': {
+            boxShadow:
+              '0 1px 0 rgba(255,255,255,0.9) inset, 0 0 0 0.5px rgba(0,0,0,0.04), 0 12px 32px -10px rgba(20,140,80,0.28), 0 2px 8px -4px rgba(0,0,0,0.08)',
+          },
+        },
+        // Mount/unmount transition for the whole pane. Eases in with a
+        // slight rise + scale-up so it appears as a settled object
+        // rather than popping in. The fade-out runs longer and adds a
+        // gentle scale-down so the pane *dissolves* rather than blinks
+        // off — the user previously read the shorter version as a pop.
+        'pane-in': {
+          from: { opacity: '0', transform: 'translateY(6px) scale(0.985)' },
+          to: { opacity: '1', transform: 'translateY(0) scale(1)' },
+        },
+        'pane-out': {
+          from: { opacity: '1', transform: 'translateY(0) scale(1)' },
+          to: { opacity: '0', transform: 'translateY(4px) scale(0.985)' },
+        },
+        // Row mount — a single process row easing in when it joins the
+        // list. Subtle enough not to read as motion, just "it appeared."
+        'row-in': {
+          from: { opacity: '0', transform: 'translateY(4px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
       },
       animation: {
         flicker: 'flicker 2.5s ease-in-out infinite',
@@ -111,6 +145,10 @@ export default {
         // completes so the incoming label doesn't flicker back to 0.
         'fade-in': 'fade-in 200ms ease-out forwards',
         'fade-out': 'fade-out 200ms ease-out forwards',
+        'pane-breath': 'pane-breath 4.5s ease-in-out infinite',
+        'pane-in': 'pane-in 360ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards',
+        'pane-out': 'pane-out 420ms cubic-bezier(0.4, 0, 0.6, 1) forwards',
+        'row-in': 'row-in 260ms ease-out forwards',
       },
     },
   },

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  AttachedImage,
   BackendErrorCode,
   CwdInfo,
   DirListing,
@@ -19,7 +20,11 @@ import {
   type PromptHistoryEntry,
   type PromptHistoryStatus,
 } from './usePromptHistory';
-import { registerProcess } from './useRunningProcesses';
+import {
+  readRunningProcesses,
+  registerProcess,
+} from './useRunningProcesses';
+import type { RunningProcessSummary } from '@shared/types';
 
 // ── State machine ─────────────────────────────────────────────────────────
 
@@ -93,6 +98,11 @@ export interface CommandMessage {
   id: string;
   userInput: string;
   cwd: string;                              // display form at submit time
+  // Screenshot the user attached to this turn, if any. Held so the
+  // conversation can render the same rounded thumbnail inline where the
+  // message was sent. mediaType + base64Data reconstruct a data URL for
+  // display (data:<mediaType>;base64,<base64Data>).
+  attachedImage: AttachedImage | null;
   startedAt: number;
   endedAt: number | null;
 
@@ -119,7 +129,7 @@ export interface CommandMessage {
   // Reveal-smoothing pair (Phase 3.4.1 pattern, preserved):
   // pendingResponse accumulates raw text from synthesize stream OR refusal
   // text. The reveal interval advances finalResponse one char per 20ms tick.
-  // Vorlox-generated strings (cd success/error, planning error, killed
+  // Verlox-generated strings (cd success/error, planning error, killed
   // footer) bypass — they render hard.
   pendingResponse: string;
   finalResponse: string;
@@ -147,7 +157,7 @@ export interface CommandMessage {
 
   // Backstop for the hang-on-prompt hazard. Set true when the running
   // step has produced no output and not exited for a while — it may be
-  // a command waiting for input Vorlox can't answer. Non-destructive:
+  // a command waiting for input Verlox can't answer. Non-destructive:
   // the Message just shows a calm notice. Cleared the moment output
   // resumes or the step ends. Only meaningful while status==='executing'.
   stalled: boolean;
@@ -162,6 +172,7 @@ type Action =
       userInput: string;
       cwd: string;
       historyEntryId: string;
+      attachedImage: AttachedImage | null;
     }
   // PLAN_RECEIVED's pauseForConfirmation flag decides the initial status:
   //   false → 'executing' (orchestrator runs steps immediately)
@@ -249,11 +260,13 @@ function newMessage(
   userInput: string,
   cwd: string,
   historyEntryId: string,
+  attachedImage: AttachedImage | null,
 ): CommandMessage {
   return {
     id,
     userInput,
     cwd,
+    attachedImage,
     historyEntryId,
     startedAt: Date.now(),
     endedAt: null,
@@ -281,7 +294,13 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
     case 'INPUT_SUBMITTED':
       return [
         ...state,
-        newMessage(action.id, action.userInput, action.cwd, action.historyEntryId),
+        newMessage(
+          action.id,
+          action.userInput,
+          action.cwd,
+          action.historyEntryId,
+          action.attachedImage,
+        ),
       ];
 
     case 'PLAN_RECEIVED':
@@ -420,7 +439,7 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
       );
 
     case 'CD_SUCCESS':
-      // Vorlox-generated string — bypass reveal-smoothing; render hard.
+      // Verlox-generated string — bypass reveal-smoothing; render hard.
       return state.map((m) =>
         m.id === action.id
           ? {
@@ -598,7 +617,9 @@ function planningErrorMessage(code: BackendErrorCode): string {
     case 'unauthorized':
       return 'Your session expired. Please sign in again.';
     case 'rate_limit':
-      return 'Too many requests. Please wait a moment and try again.';
+      // Covers both genuine rate-limiting and Anthropic 529 "Overloaded"
+      // (the backend maps both to this code). Phrased to fit either.
+      return 'The AI service is busy right now. Wait a moment and try again.';
     case 'network':
       return "Couldn't reach the service. Check your connection.";
     case 'server':
@@ -614,7 +635,7 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
     case 'unauthorized':
       return 'Your session expired. Please sign in again.';
     case 'rate_limit':
-      return 'The summary is rate-limited. The commands ran; the summary will need a retry.';
+      return 'The AI service was busy, so the summary didn’t generate — the commands ran fine, just retry for the summary.';
     case 'network':
       return "Couldn't reach the service for the summary. The commands ran.";
     case 'server':
@@ -776,7 +797,7 @@ function toHistoryEntry(m: CommandMessage): TurnHistoryEntry {
       }
       break;
     case 'history-shown':
-      outcome = `Showed the user's ${m.promptHistory?.length ?? 0} most recent Vorlox prompts.`;
+      outcome = `Showed the user's ${m.promptHistory?.length ?? 0} most recent Verlox prompts.`;
       break;
     case 'cd-error':
     case 'list-error':
@@ -794,7 +815,7 @@ function toHistoryEntry(m: CommandMessage): TurnHistoryEntry {
         });
         outcome = blocks.join('\n\n');
         const reply = m.finalResponse || m.pendingResponse;
-        if (reply) outcome += `\n\nVorlox replied: ${reply}`;
+        if (reply) outcome += `\n\nVerlox replied: ${reply}`;
       } else {
         // Reply / refusal turns ran nothing — the AI's prose is the outcome.
         outcome = m.finalResponse || m.pendingResponse || '(no response)';
@@ -809,7 +830,7 @@ function toHistoryEntry(m: CommandMessage): TurnHistoryEntry {
 export function useCommands(
   // The owning conversation tab's id. Long-lived processes register
   // against this so the global processes board can jump back to /
-  // pre-fill the right tab on Restart or "Ask Vorlox why".
+  // pre-fill the right tab on Restart or "Ask Verlox why".
   conversationId: string,
   // The conversation's working directory, or null if the user hasn't
   // chosen one ("folderless"). Folderless conversations still work —
@@ -835,10 +856,13 @@ export function useCommands(
 ): {
   messages: CommandMessage[];
   forceScrollVersion: number;
-  submitInput: (userInput: string) => Promise<void>;
+  submitInput: (userInput: string, image?: AttachedImage | null) => Promise<void>;
   stopCommand: (id: string) => void;
   confirmPlan: (messageId: string) => void;
   cancelPlan: (messageId: string) => void;
+  // Drops the entire conversation, killing any running steps and
+  // cancelling synthesize streams along the way. Stays signed in.
+  clearConversation: () => void;
 } {
   const [messages, setMessages] = useState<CommandMessage[]>([]);
   const messagesRef = useRef<CommandMessage[]>([]);
@@ -921,6 +945,31 @@ export function useCommands(
     dispatch({ type: 'CLEAR_ALL' });
     forceSignOut();
   }, [dispatch, forceSignOut]);
+
+  // Public "clear conversation" action. Same teardown shape as
+  // bounceToLogin (kill running steps, cancel synthesize streams,
+  // release paused Plan Cards) but stays signed in and just drops the
+  // message list. Used by the Header's Clear button so the user can
+  // reset a conversation without losing their session.
+  //
+  // Safe to call when nothing is running — the loops simply iterate an
+  // empty set. Synchronous so the React render that empties messages
+  // batches with whatever caller triggered the clear.
+  const clearConversation = useCallback((): void => {
+    for (const m of messagesRef.current) {
+      const stepId = activeStepIdsRef.current.get(m.id);
+      if (stepId) window.api.stopCommand(stepId);
+      if (m.status === 'synthesizing' || m.status === 'streaming') {
+        window.api.synthesizeCancel(m.id);
+      }
+    }
+    activeStepIdsRef.current.clear();
+    for (const resolve of pendingConfirmationsRef.current.values()) {
+      resolve(false);
+    }
+    pendingConfirmationsRef.current.clear();
+    dispatch({ type: 'CLEAR_ALL' });
+  }, [dispatch]);
 
   // Fetch environment (platform + shell) once on mount.
   useEffect(() => {
@@ -1102,17 +1151,20 @@ export function useCommands(
 
         activeStepIdsRef.current.set(messageId, stepId);
         dispatch({ type: 'STEP_START', id: messageId, index: stepIndex });
-        // Register in the global processes board so long-lived
-        // commands (dev servers, watchers) show up there with
-        // stop/open/restart affordances. Same step id we use for
-        // window.api.stopCommand.
-        registerProcess({
-          stepId,
-          conversationId,
-          command: step.command,
-          cwd: stepCwd,
-          shell: stepShell,
-        });
+        // Register in the global Running pane ONLY for processes the
+        // planner flagged as long-running (dev servers, watchers,
+        // daemons). Quick one-shot commands — even slow ones like
+        // installs — stay out of the pane; otherwise a command that
+        // ran for one second would linger there as if it were live.
+        if (step.longRunning) {
+          registerProcess({
+            stepId,
+            conversationId,
+            command: step.command,
+            cwd: stepCwd,
+            shell: stepShell,
+          });
+        }
         window.api.startCommand({
           id: stepId,
           command: step.command,
@@ -1129,9 +1181,12 @@ export function useCommands(
 
   // ── submitInput: the orchestrator ──────────────────────────────────────
   const submitInput = useCallback(
-    async (userInput: string) => {
+    async (userInput: string, image: AttachedImage | null = null) => {
       const trimmed = userInput.trim();
-      if (trimmed.length === 0) return;
+      // Text is optional when an image is attached — "what's this?"
+      // with a screenshot is a valid prompt. Only refuse when BOTH
+      // text and image are empty.
+      if (trimmed.length === 0 && !image) return;
       // Only `environment` is mandatory now — a folderless conversation
       // (cwd === null) is fine. The effective directory for both the
       // backend plan context and local command execution falls back to
@@ -1144,30 +1199,56 @@ export function useCommands(
       // dispatch), so this must be captured before INPUT_SUBMITTED.
       const history = messagesRef.current.map(toHistoryEntry);
 
-      // Append every prompt to Vorlox's own persistent log, so the
-      // built-in "show me my history" view and the Timeline sidebar
-      // can list what the user has asked across sessions. Done
-      // before any branching so even failed turns are remembered.
-      // The returned id lets us update this entry with commands +
-      // outcome once the turn settles.
-      const historyEntryId = appendPrompt(trimmed);
+      // What the conversation header AND the Timeline show. When the
+      // user sends an image with no text, fall back to a label so both
+      // surfaces render an entry instead of an empty line (the Timeline
+      // previously skipped image-only sends entirely).
+      const displayText =
+        trimmed.length > 0 ? trimmed : 'Sent a screenshot';
+
+      // Append every prompt to Verlox's own log so the built-in
+      // "show me my history" view and the Timeline sidebar list what
+      // the user asked. Done before any branching so even failed turns
+      // are remembered. The returned id lets us update this entry with
+      // commands + outcome once the turn settles.
+      const historyEntryId = appendPrompt(displayText);
 
       const id = crypto.randomUUID();
       dispatch({
         type: 'INPUT_SUBMITTED',
         id,
-        userInput: trimmed,
+        userInput: displayText,
         // Empty string for folderless turns — the field is stored for
         // history but isn't rendered prominently.
         cwd: cwd?.display ?? '',
         historyEntryId,
+        attachedImage: image,
       });
       setForceScrollVersion((v) => v + 1);
 
       // 1. /api/turn — plan generation
       const planMode = planModeRef.current;
+      // Snapshot the Running pane at submit time. The backend uses this
+      // to know what's actually alive — distinct from conversation
+      // history, which is frozen at past-turn time and can't reflect a
+      // later Stop click in the pane.
+      const runningProcesses: RunningProcessSummary[] = readRunningProcesses().map(
+        (p) => ({
+          command: p.command,
+          status: p.status,
+          uptimeSeconds: Math.max(
+            0,
+            Math.round(((p.endedAt ?? Date.now()) - p.startedAt) / 1000),
+          ),
+          detectedUrl: p.detectedUrl,
+        }),
+      );
       const planResult = await window.api.planTurn({
-        userInput: trimmed,
+        // When an image is attached but the user gave no text, send a
+        // generic prompt so the backend schema (which requires non-
+        // empty userInput) still validates. The image carries the
+        // real signal — the AI sees it and reads what's going on.
+        userInput: trimmed.length > 0 ? trimmed : 'Take a look at this.',
         context: {
           cwd: effectiveCwd,
           platform: environment.platform,
@@ -1176,6 +1257,8 @@ export function useCommands(
         },
         planMode,
         history,
+        runningProcesses,
+        attachedImage: image,
       });
 
       if (!planResult.ok) {
@@ -1221,7 +1304,7 @@ export function useCommands(
         return;
       }
 
-      // 2b. built-in list — Vorlox renders the folder contents directly
+      // 2b. built-in list — Verlox renders the folder contents directly
       //     via the directory API; no shell command runs. listTarget is
       //     null for "the current folder," or an absolute / "~/"-prefixed
       //     path. window.api.listDir handles tilde expansion and
@@ -1237,7 +1320,7 @@ export function useCommands(
         return;
       }
 
-      // 2c. built-in prompt history — Vorlox reads its own log from
+      // 2c. built-in prompt history — Verlox reads its own log from
       //     localStorage and renders the entries directly. No shell
       //     command runs. The head entry is the prompt we just
       //     appended for this very turn; drop only that one so the
@@ -1248,7 +1331,7 @@ export function useCommands(
         const limit = plan.historyLimit ?? 50;
         const all = readPromptHistory();
         const withoutHead =
-          all.length > 0 && all[0].text === trimmed ? all.slice(1) : all;
+          all.length > 0 && all[0].text === displayText ? all.slice(1) : all;
         const entries = withoutHead.slice(0, Math.max(1, limit));
         dispatch({ type: 'HISTORY_SHOWN', id, entries });
         return;
@@ -1448,5 +1531,6 @@ export function useCommands(
     stopCommand,
     confirmPlan,
     cancelPlan,
+    clearConversation,
   };
 }

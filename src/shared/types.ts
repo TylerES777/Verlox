@@ -140,6 +140,36 @@ export interface TurnHistoryEntry {
   outcome: string;
 }
 
+// Compact view of one process the user currently has alive in the
+// Running pane. Threaded into every /api/turn so the planner knows
+// what's actually running NOW — the conversation history is frozen at
+// the moment each turn ran, so it can't tell the AI that the dev server
+// it started two turns ago has since been stopped from the Running pane.
+export interface RunningProcessSummary {
+  command: string;
+  // 'running' | 'done' | 'failed' | 'cancelled'. Recently-exited
+  // entries linger ~60s before the registry drops them, so the AI sees
+  // "just exited" too.
+  status: string;
+  // ms elapsed since the process started, rounded to nearest second.
+  uptimeSeconds: number;
+  // The localhost URL the process advertised on stdout, if any.
+  detectedUrl: string | null;
+}
+
+// Image attached to a single user prompt — a screenshot of a code
+// error / UI issue the user can't easily describe in words. The
+// renderer base64-encodes the file before transport (Anthropic's
+// Messages API takes base64 image content blocks). Only present on
+// turns where the user attached an image; not replayed in history.
+export interface AttachedImage {
+  // 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' — the four
+  // formats Anthropic accepts on image content blocks.
+  mediaType: string;
+  // Base64-encoded image bytes (no "data:..." prefix).
+  base64Data: string;
+}
+
 export interface TurnInput {
   userInput: string;
   context: TurnContext;
@@ -147,12 +177,25 @@ export interface TurnInput {
   // Earlier turns in this conversation tab, oldest first. Empty for the
   // first turn of a conversation.
   history: TurnHistoryEntry[];
+  // Snapshot of every process currently in the Running pane (running
+  // or recently-exited). Empty when nothing is in the pane.
+  runningProcesses: RunningProcessSummary[];
+  // Optional screenshot / image the user attached to THIS prompt.
+  // The backend forwards it to Claude as an image content block in
+  // the user message. Not carried in conversation history — the
+  // resulting AI response text serves as durable context.
+  attachedImage?: AttachedImage | null;
 }
 
 export interface PlanStep {
   title: string;
   command: string;
   description: string;
+  // True only for processes designed to run indefinitely (dev servers,
+  // watchers, daemons, log tails). The Running pane tracks only these —
+  // quick one-shot commands, even slow ones, stay out. Set by the
+  // planner. Optional so older cached plans / responses still type-check.
+  longRunning?: boolean;
 }
 
 export interface PlanAffects {
@@ -173,14 +216,14 @@ export interface PlanResponse {
   displayMode: PlanDisplayMode;
   isCdCommand: boolean;
   cdTarget: string | null;
-  // Built-in file-listing intent. When true, Vorlox renders the folder
+  // Built-in file-listing intent. When true, Verlox renders the folder
   // contents using its own directory API — no shell command runs. steps
   // is empty in this case (like a cd turn).
   isListCommand: boolean;
   // Absolute or "~/"-prefixed path to list, or null for the current
   // working directory. Only meaningful when isListCommand is true.
   listTarget: string | null;
-  // Built-in prompt-history intent. When true, Vorlox renders the
+  // Built-in prompt-history intent. When true, Verlox renders the
   // user's own prompt log directly — no shell command runs. steps is
   // empty in this case.
   isHistoryCommand: boolean;
@@ -331,6 +374,26 @@ export type SynthesizeEvent =
   | SynthesizeDoneEvent
   | SynthesizeErrorEvent;
 
+// Auto-update -----------------------------------------------------------------
+
+// Lifecycle of an app update, surfaced to the renderer so the Update
+// button can reflect it. 'downloaded' is the state that shows the
+// click-to-install button; it persists until the user installs.
+export type UpdateState =
+  | 'idle' // up to date / nothing happening
+  | 'checking' // querying the release feed
+  | 'downloading' // a newer version is being pulled down
+  | 'downloaded' // ready to install — the Update button shows
+  | 'error'; // check or download failed (stays quiet in the UI)
+
+export interface UpdateStatus {
+  state: UpdateState;
+  // The newer version string once known (e.g. "0.2.0"), else null.
+  version: string | null;
+  // Download progress 0–100 while state is 'downloading', else null.
+  percent: number | null;
+}
+
 // IPC API -------------------------------------------------------------------
 
 export interface IpcApi {
@@ -359,6 +422,13 @@ export interface IpcApi {
   // Electron's shell.openExternal. Used by the live processes board
   // when a dev server's localhost URL has been detected in output.
   openExternal: (url: string) => void;
+
+  // Auto-update. The renderer subscribes to status changes to drive the
+  // Update button; installUpdate quits + installs a downloaded update;
+  // checkForUpdates triggers a manual re-check.
+  onUpdateStatus: (cb: (status: UpdateStatus) => void) => Unsubscribe;
+  installUpdate: () => void;
+  checkForUpdates: () => void;
 
   // Plan turn (synchronous JSON; replaces the Phase 3 translate call).
   planTurn: (input: TurnInput) => Promise<TurnResultWire>;

@@ -31,7 +31,7 @@ interface PostResult {
   contentType: string | null;
 }
 
-// Stable synthetic origin used by the Vorlox desktop client. better-auth's
+// Stable synthetic origin used by the Verlox desktop client. better-auth's
 // CSRF check on /auth/* endpoints requires Origin in TRUSTED_ORIGINS;
 // Electron's renderer doesn't send a meaningful Origin, so we set our own.
 // The backend's TRUSTED_ORIGINS env var must include this exact string.

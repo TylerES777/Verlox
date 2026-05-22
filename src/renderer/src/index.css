@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Locked Vorlox palette. Mirrors tailwind.config.js — keep them in sync.
+/* Locked Verlox palette. Mirrors tailwind.config.js — keep them in sync.
    Tailwind utilities cover most use sites; CSS variables are here for
    the body background, components that need raw values, and any future
    styled blocks where a Tailwind class would be unwieldy. */

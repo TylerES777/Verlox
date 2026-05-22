@@ -49,7 +49,7 @@ export function ConversationsShell() {
     setInsertRequest({ value: text, tick: Date.now() });
   }, []);
 
-  // "Ask Vorlox why" from the processes board — activates the source
+  // "Ask Verlox why" from the processes board — activates the source
   // conversation AND pre-fills its input with a diagnostic prompt.
   const handleAskWhy = useCallback(
     (conversationId: string, prompt: string) => {
@@ -118,30 +118,24 @@ export function ConversationsShell() {
 
   return (
     <div className="flex h-full w-full">
-      {/* Timeline sidebar — always visible. Fixed-width column on the
-          left; no collapse affordance because the app's empty-state
-          felt off without it. */}
-      {/* Sidebar — 440px wide. The Timeline lives in a bounded
-          area near the top (max 65vh) so it stays a board, not a
-          full-height column; everything below is reserved for future
-          additions. A soft white fade at the Timeline's bottom edge
-          softens the scroll cut-off into the empty space. */}
+      {/* Sidebar — 440px wide. The Timeline sizes to its content and
+          self-caps its scroll window at ~8 entries (see TIMELINE_
+          SCROLL_MAX), so it stays a compact board near the top rather
+          than a full-height column. The Running pane below takes the
+          remaining space. */}
       <aside
         className="flex w-[440px] shrink-0 flex-col border-r border-hairline"
         aria-label="Prompt timeline and running processes"
       >
-        <div className="relative max-h-[65vh] min-h-0 shrink overflow-hidden">
+        <div className="shrink-0">
           <Timeline onSelect={handleTimelineSelect} />
-          <div
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-b from-transparent to-white"
-            aria-hidden="true"
-          />
         </div>
-        {/* Live processes board — sits below the Timeline, takes the
-            remaining vertical space. Lists every long-lived shell
-            process Vorlox has running with stop / restart / open / ask
-            controls. */}
-        <div className="min-h-0 flex-1 border-t border-hairline">
+        {/* Live processes pane — sits below the Timeline. Only present
+            when there's something to show (it self-manages fade-in /
+            fade-out and collapses to nothing when empty so the Timeline
+            reclaims the vertical space). The board carries its own
+            border / elevation, so this wrapper stays chrome-free. */}
+        <div className="min-h-0 flex-1">
           <RunningProcesses
             tabs={tabs}
             onJump={setActiveId}

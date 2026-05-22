@@ -1,0 +1,39 @@
+<svg width="560" height="160" viewBox="0 0 560 160" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Verlox">
+  <!-- Horizontal lockup: the squircle icon + the mono wordmark. The
+       wordmark mirrors the in-app wordmark (JetBrains Mono, lowercase,
+       tight tracking) so the logo and the running app read as one brand.
+       For a fully portable asset, outline the text in your vector tool;
+       it's kept as live text here so the weight/tracking stays editable. -->
+  <defs>
+    <linearGradient id="vxl-bg" x1="80" y1="24" x2="80" y2="136" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#26272D"/>
+      <stop offset="0.55" stop-color="#141519"/>
+      <stop offset="1" stop-color="#0A0A0C"/>
+    </linearGradient>
+    <linearGradient id="vxl-sheen" x1="80" y1="24" x2="80" y2="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="vxl-pip" x1="96" y1="70" x2="110" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5FD08F"/>
+      <stop offset="1" stop-color="#1E8048"/>
+    </linearGradient>
+    <radialGradient id="vxl-glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(103 80) scale(20)">
+      <stop offset="0" stop-color="#56C988" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#56C988" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Icon -->
+  <rect x="24" y="24" width="112" height="112" rx="28" fill="url(#vxl-bg)"/>
+  <rect x="24" y="24" width="112" height="112" rx="28" fill="url(#vxl-sheen)"/>
+  <rect x="24.5" y="24.5" width="111" height="111" rx="27.5" stroke="#FFFFFF" stroke-opacity="0.09"/>
+  <path d="M61 56 L80 80 L61 104" stroke="#F5F6F8" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="103" cy="80" r="14" fill="url(#vxl-glow)"/>
+  <circle cx="103" cy="80" r="6.5" fill="url(#vxl-pip)"/>
+
+  <!-- Wordmark -->
+  <text x="168" y="80" dominant-baseline="central"
+        font-family="'JetBrains Mono', 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace"
+        font-size="58" font-weight="500" letter-spacing="-2" fill="#15161A">verlox</text>
+</svg>

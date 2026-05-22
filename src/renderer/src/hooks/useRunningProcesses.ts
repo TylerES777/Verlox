@@ -23,7 +23,7 @@ export interface RunningProcess {
   stepId: string;
   // The conversation the user originally triggered this from. Used to
   // jump back when the user clicks a row, and to pre-fill the input
-  // there for the "ask Vorlox why" button.
+  // there for the "ask Verlox why" button.
   conversationId: string;
   // Shell + cwd + command — enough to re-spawn on Restart.
   command: string;
@@ -38,7 +38,7 @@ export interface RunningProcess {
   // First localhost URL detected in stdout, if any. Surfaces an
   // "Open" button on the row.
   detectedUrl: string | null;
-  // Last N lines of output, capped, for the "ask Vorlox why" prompt
+  // Last N lines of output, capped, for the "ask Verlox why" prompt
   // pre-fill on failure.
   tailOutput: string;
 }
@@ -47,14 +47,29 @@ export interface RunningProcess {
 // see it / click restart. 60 seconds is a reasonable default.
 const EXITED_TTL_MS = 60_000;
 // Cap on the tail output we keep around — last ~4 KB is plenty for
-// an "ask Vorlox why" pre-fill, and bounds the registry's memory.
+// an "ask Verlox why" pre-fill, and bounds the registry's memory.
 const TAIL_OUTPUT_MAX = 4_000;
 
-// Match the first http(s)://localhost / 127.0.0.1 / 0.0.0.0 URL in
-// the output, optionally with a port and path. Used to surface an
-// "Open" button on dev-server processes.
+// Match the first http(s)://<localhost-ish host> URL in the output,
+// optionally with port and path. Powers the "Open" button on dev-server
+// rows. Hosts covered:
+//   localhost, 127.0.0.1, 0.0.0.0       — common bind addresses
+//   [::], [::1], [0:0:0:0:0:0:0:0]      — IPv6 bind forms (Python's
+//                                          http.server prints `http://[::]:8000/`
+//                                          on Windows by default)
 const LOCALHOST_URL_RE =
-  /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?(?:\/[^\s)]*)?/;
+  /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[(?:::|::1|0:0:0:0:0:0:0:0|0:0:0:0:0:0:0:1)\])(?::\d+)?(?:\/[^\s)]*)?/;
+
+// Python's stdlib http.server prints a banner like:
+//   Serving HTTP on :: port 8000 (http://[::]:8000/) ...
+// When the URL it offers is an unreachable bind host (`[::]`, `0.0.0.0`),
+// rewrite it to `localhost` for the Open button — the browser can't open
+// `http://[::]:8000` directly on Windows, but `http://localhost:8000` works.
+function normalizeServerUrl(raw: string): string {
+  return raw
+    .replace(/\/\/\[(?:::|::1|0:0:0:0:0:0:0:0|0:0:0:0:0:0:0:1)\]/, '//localhost')
+    .replace(/\/\/0\.0\.0\.0/, '//localhost');
+}
 
 const registry = new Map<string, RunningProcess>();
 const listeners = new Set<() => void>();
@@ -109,7 +124,7 @@ export function appendProcessOutput(stepId: string, chunk: string): void {
   let detectedUrl = entry.detectedUrl;
   if (detectedUrl === null) {
     const match = LOCALHOST_URL_RE.exec(combined);
-    if (match) detectedUrl = match[0];
+    if (match) detectedUrl = normalizeServerUrl(match[0]);
   }
   // Only notify if something actually changed beyond the tail buffer
   // (URL detection or status). Per-chunk re-renders of the board
@@ -155,6 +170,19 @@ export function finalizeProcess(
 // metadata for re-spawning.
 export function readProcess(stepId: string): RunningProcess | null {
   return registry.get(stepId) ?? null;
+}
+
+// Manual remove — drops the entry from the board immediately.
+// Used by the Remove (X) button on each row so the user can clear
+// stopped / failed / completed processes without waiting for the
+// auto-TTL. Refuses to remove a still-running entry — they should
+// stop it first.
+export function removeProcess(stepId: string): void {
+  const entry = registry.get(stepId);
+  if (!entry) return;
+  if (entry.status === 'running') return;
+  registry.delete(stepId);
+  notify();
 }
 
 export function readRunningProcesses(): RunningProcess[] {

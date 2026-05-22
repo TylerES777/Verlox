@@ -9,6 +9,7 @@ import type {
   SynthesizeEvent,
   SynthesizeRequest,
   TurnInput,
+  UpdateStatus,
 } from '@shared/types';
 
 const api: IpcApi = {
@@ -43,6 +44,15 @@ const api: IpcApi = {
 
   openExternal: (url: string) =>
     ipcRenderer.send(IpcChannels.ShellOpenExternal, url),
+
+  onUpdateStatus: (cb) => {
+    const listener = (_e: IpcRendererEvent, status: UpdateStatus) => cb(status);
+    ipcRenderer.on(IpcChannels.UpdateStatusChanged, listener);
+    return () =>
+      ipcRenderer.removeListener(IpcChannels.UpdateStatusChanged, listener);
+  },
+  installUpdate: () => ipcRenderer.send(IpcChannels.UpdateInstall),
+  checkForUpdates: () => ipcRenderer.send(IpcChannels.UpdateCheck),
 
   planTurn: (input: TurnInput) =>
     ipcRenderer.invoke(IpcChannels.BackendPlanTurn, input),

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  clearPromptHistory,
   usePromptHistory,
   type PromptHistoryEntry,
   type PromptHistoryStatus,
@@ -11,6 +12,13 @@ interface TimelineProps {
   // conversation's input.
   onSelect: (text: string) => void;
 }
+
+// Max height of the Timeline's scroll window. The board grows with the
+// entries up to this point — about 7 rows plus a day-heading — then
+// stops growing and scrolls internally, so the ~8th entry is what trips
+// the scrollbar. Tuned by eye against the entry row height (~44px);
+// kept in px so it doesn't drift with viewport size like the old 65vh.
+const TIMELINE_SCROLL_MAX = '340px';
 
 // Persistent ambient history. Always-visible record of the prompts
 // the user has sent, grouped by day. Calmer than asking "show me my
@@ -57,35 +65,116 @@ export function Timeline({ onSelect }: TimelineProps) {
     [],
   );
 
+  // Outer tinted frame — same liquid-glass language as the Running
+  // pane: warm grey gradient + 1px top highlight + breathing-style
+  // soft drop shadow. Wraps the bright white inner card that holds
+  // the actual history list.
+  const frameStyle: React.CSSProperties = {
+    background:
+      'linear-gradient(180deg, rgba(244,245,248,0.95) 0%, rgba(240,242,246,0.95) 100%)',
+    backdropFilter: 'blur(12px) saturate(140%)',
+    WebkitBackdropFilter: 'blur(12px) saturate(140%)',
+  };
+  const contentStyle: React.CSSProperties = {
+    background: 'linear-gradient(180deg, #FFFFFF 0%, #FDFEFE 100%)',
+    boxShadow:
+      '0 1px 0 rgba(255,255,255,0.9) inset, 0 1px 2px rgba(16,24,40,0.04)',
+  };
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center pb-4 pl-10 pr-5 pt-5">
-        <h2 className="text-[15px] font-semibold text-ink">Timeline</h2>
+    <div className="flex flex-col p-5">
+      {/* Title row — "Timeline" as a regular component name (sentence-
+          case, semibold), not a tracked uppercase label. Clear sits on
+          the right as a subtle text+icon affordance. */}
+      <div className="mb-3 flex shrink-0 items-center justify-between px-1">
+        <h2 className="text-[15px] font-semibold tracking-tight text-ink">
+          Timeline
+        </h2>
+        {entries.length > 0 && (
+          <button
+            type="button"
+            onClick={clearPromptHistory}
+            title="Clear history (also clears when you quit Verlox)"
+            aria-label="Clear history"
+            className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-ink-micro transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+          >
+            <ClearGlyph />
+            <span>Clear</span>
+          </button>
+        )}
       </div>
-      {entries.length === 0 ? (
-        <p className="px-5 py-2 text-[12.5px] leading-relaxed text-ink-label">
-          Your prompts will appear here as you go.
-        </p>
-      ) : (
-        <div className="relative min-h-0 flex-1 overflow-y-auto pb-8 pl-5 pr-5">
-          {/* The connecting vertical line — runs from near the first
-              dot to near the last. Positioned at the dot column. */}
-          <div
-            className="pointer-events-none absolute bottom-8 left-[24px] top-8 w-px bg-hairline"
-            aria-hidden="true"
-          />
-          {groups.map((group, gi) => (
-            <TimelineGroup
-              key={group.heading}
-              group={group}
-              onSelect={onSelect}
-              onHoverEntry={setHoveredEntry}
-              onLeaveEntry={clearHovered}
-              isFirst={gi === 0}
-            />
-          ))}
+
+      {/* Outer board — rounded tinted frame holds the bright white
+          inset card with the actual history. Sizes to its content so
+          the board only grows with the entries; the inner scroll
+          region caps the visible window at ~8 entries (see TIMELINE_
+          SCROLL_MAX) and scrolls internally beyond that, so the board
+          never marches down the sidebar indefinitely. */}
+      <div
+        className="relative flex flex-col overflow-hidden rounded-2xl border border-subtle-border"
+        style={frameStyle}
+      >
+        {/* Top-edge highlight — 1px white sheen along the inside top
+            of the frame, sells the lifted glass feel. */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/85 to-transparent"
+          aria-hidden="true"
+        />
+
+        {/* Inner white content card */}
+        <div
+          className="relative m-2 flex flex-col overflow-hidden rounded-xl border border-subtle-border/70"
+          style={contentStyle}
+        >
+          {entries.length === 0 ? (
+            <p className="px-4 py-4 text-[12.5px] leading-relaxed text-ink-label">
+              Your prompts will appear here as you go. The Timeline starts
+              fresh each time you open Verlox.
+            </p>
+          ) : (
+            <>
+              <div
+                className="relative overflow-y-auto px-5 pb-6 pt-3
+                           [&::-webkit-scrollbar]:w-2
+                           [&::-webkit-scrollbar-track]:bg-transparent
+                           [&::-webkit-scrollbar-thumb]:rounded-full
+                           [&::-webkit-scrollbar-thumb]:bg-black/25
+                           hover:[&::-webkit-scrollbar-thumb]:bg-black/40"
+                style={{ maxHeight: TIMELINE_SCROLL_MAX }}
+              >
+                {/* The connecting vertical line behind the dots. Lives
+                    in the content flow (not absolute-in-scroll-container,
+                    which positions inconsistently once the region
+                    scrolls) so it tracks the dots reliably. Its height
+                    is set to span from the first dot to the last via the
+                    wrapper below. */}
+                <div className="relative">
+                  <div
+                    className="pointer-events-none absolute bottom-2 left-[24px] top-2 w-px bg-black/12"
+                    aria-hidden="true"
+                  />
+                  {groups.map((group, gi) => (
+                    <TimelineGroup
+                      key={group.heading}
+                      group={group}
+                      onSelect={onSelect}
+                      onHoverEntry={setHoveredEntry}
+                      onLeaveEntry={clearHovered}
+                      isFirst={gi === 0}
+                    />
+                  ))}
+                </div>
+              </div>
+              {/* Bottom fade — softens the scroll cut-off into the card.
+                  Sits over the scroll region's lower edge; pointer-
+                  events-none so it never blocks clicks on the last row. */}
+              <div
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-10 rounded-b-xl bg-gradient-to-b from-transparent via-white/70 to-white"
+                aria-hidden="true"
+              />
+            </>
+          )}
         </div>
-      )}
+      </div>
       {hovered &&
         createPortal(
           <TimelineHoverCard hovered={hovered} />,
@@ -471,4 +560,25 @@ function formatExactTime(ts: number): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+// Reload-style circular arrow — same glyph the Header's Clear button
+// uses on a conversation. Keeps the "reset / start over" visual
+// language consistent across surfaces.
+function ClearGlyph() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className="h-3 w-3"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 8a5 5 0 1 0 1.6-3.7" />
+      <polyline points="3,2 3,5 6,5" />
+    </svg>
+  );
 }

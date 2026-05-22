@@ -1,0 +1,63 @@
+# electron-builder configuration. Run via `npm run package:win` (etc.),
+# which first does `electron-vite build` to produce out/{main,preload,
+# renderer}, then packages that into an installer.
+appId: com.verlox.app
+productName: Verlox
+copyright: Copyright © 2026 Verlox
+
+# Where auto-update files (installer + latest.yml) are published and
+# where the installed app checks for new versions. FILL IN owner/repo
+# once you create the GitHub repo for the desktop app, then publish a
+# release with:  npm run package:win -- --publish always   (with a
+# GH_TOKEN env var that has repo write access).
+publish:
+  provider: github
+  owner: TylerES777
+  repo: Verlox
+
+directories:
+  # Installer + unpacked app land here.
+  output: dist
+  # electron-builder auto-picks up build/icon.ico (Windows) and
+  # build/icon.png (mac/linux) from here. Generate them first with
+  # `npm run make-icons`.
+  buildResources: build
+
+# What goes inside the app. electron-vite emits to out/; we ship that
+# plus package.json. Production node_modules (electron-store) are
+# included automatically from "dependencies".
+files:
+  - out/**/*
+  - package.json
+
+# Pack the app source into an asar archive (default, but explicit).
+# userData (token, settings) lives outside the asar, so this is safe.
+asar: true
+
+win:
+  target:
+    - nsis
+  icon: build/icon.ico
+
+# NSIS installer behaviour — a normal "choose where to install" wizard
+# rather than a silent one-click, so it reads as a real desktop app
+# install. Users get desktop + Start Menu shortcuts and an uninstaller.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Verlox
+
+mac:
+  target:
+    - dmg
+  icon: build/icon.png
+  category: public.app-category.developer-tools
+
+linux:
+  target:
+    - AppImage
+  icon: build/icon.png
+  category: Development

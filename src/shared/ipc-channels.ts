@@ -21,6 +21,12 @@ export const IpcChannels = {
   // System shell
   ShellOpenExternal: 'shell:open-external',
 
+  // Auto-update (electron-updater). Main broadcasts status changes;
+  // renderer can request a manual check or trigger the install.
+  UpdateStatusChanged: 'update:status-changed',
+  UpdateCheck: 'update:check',
+  UpdateInstall: 'update:install',
+
   // Backend AI
   BackendPlanTurn: 'backend:plan-turn',
   BackendSynthesizeStart: 'backend:synthesize:start',

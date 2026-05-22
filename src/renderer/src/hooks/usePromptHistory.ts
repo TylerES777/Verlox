@@ -1,11 +1,17 @@
 import { useEffect, useReducer } from 'react';
 
-// Vorlox's own prompt history. Every user prompt across every
-// conversation is appended to a single rolling log persisted to
-// localStorage, so the "show me my history" built-in and the
-// Timeline sidebar can list what the user has asked across sessions
-// — not their shell history, which is essentially useless from
-// Vorlox's process model.
+// Verlox's own prompt history. Every user prompt across every
+// conversation is appended to a single rolling log so the "show me
+// my history" built-in and the Timeline sidebar can list what the
+// user has asked this session — not their shell history, which is
+// essentially useless from Verlox's process model.
+//
+// SESSION-ONLY: the log lives entirely in memory. When the app
+// quits or the renderer reloads, the cache is gone and the timeline
+// starts fresh. This is deliberate — the user reported that an
+// always-persistent timeline of past prompts dominated the sidebar
+// on startup and drowned the rest of the UI's signal. A clean slate
+// each launch keeps Timeline as ambient context for THIS session.
 //
 // Each entry pairs the prompt with the eventual outcome — what
 // commands ran, the short conclusion, and the turn's terminal
@@ -41,79 +47,30 @@ export interface PromptHistoryEntry {
   status: PromptHistoryStatus;
 }
 
-const STORAGE_KEY = 'vorlox.promptHistory';
 const MAX_ENTRIES = 500;
 const COMMAND_MAX_LEN = 80;
 const COMMAND_MAX_COUNT = 5;
 const OUTCOME_MAX_LEN = 200;
 
-// Module-scope mirror of the log so the Timeline sidebar can subscribe
-// to updates without re-reading localStorage on every render. Seeded
-// once on first read from disk.
-let cache: PromptHistoryEntry[] | null = null;
+// Module-scope mirror of the log. In-memory only — no persistence.
+// Lives for the lifetime of the renderer process; cleared on quit /
+// reload / clearPromptHistory().
+let cache: PromptHistoryEntry[] = [];
 const listeners = new Set<() => void>();
-
-function ensureCache(): PromptHistoryEntry[] {
-  if (cache !== null) return cache;
-  cache = readFromStorage();
-  return cache;
-}
-
-function readFromStorage(): PromptHistoryEntry[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(
-        (e): e is { text: unknown; timestamp: unknown } & Record<string, unknown> =>
-          e != null &&
-          typeof e === 'object' &&
-          typeof (e as { text?: unknown }).text === 'string' &&
-          typeof (e as { timestamp?: unknown }).timestamp === 'number',
-      )
-      .map((e): PromptHistoryEntry => ({
-        id: typeof e.id === 'string' ? e.id : crypto.randomUUID(),
-        text: e.text as string,
-        timestamp: e.timestamp as number,
-        commands: Array.isArray(e.commands)
-          ? (e.commands as unknown[]).filter(
-              (c): c is string => typeof c === 'string',
-            )
-          : [],
-        outcome: typeof e.outcome === 'string' ? e.outcome : null,
-        status: isStatus(e.status) ? e.status : 'pending',
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function isStatus(value: unknown): value is PromptHistoryStatus {
-  return (
-    value === 'pending' ||
-    value === 'done' ||
-    value === 'replied' ||
-    value === 'cd' ||
-    value === 'list' ||
-    value === 'history' ||
-    value === 'cancelled' ||
-    value === 'error'
-  );
-}
-
-function saveToStorage(entries: PromptHistoryEntry[]): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-  } catch {
-    // localStorage unavailable (sandboxed, quota) — silently drop.
-    // The in-memory cache still keeps the data for this session.
-  }
-}
 
 function notifyListeners(): void {
   listeners.forEach((listener) => listener());
+}
+
+// One-time cleanup of the legacy localStorage key that previous
+// versions used to persist prompt history. Runs on module load so the
+// user's data folder is tidied as soon as they launch a build with
+// the in-memory implementation. Safe to call repeatedly — removeItem
+// is a no-op once the key is gone.
+try {
+  window.localStorage.removeItem('vorlox.promptHistory');
+} catch {
+  // localStorage unavailable / sandboxed — nothing to clean up.
 }
 
 function truncate(text: string, max: number): string {
@@ -131,10 +88,9 @@ function truncate(text: string, max: number): string {
 export function appendPrompt(text: string): string {
   const trimmed = text.trim();
   if (trimmed.length === 0) return '';
-  const current = ensureCache();
   const id = crypto.randomUUID();
   let next: PromptHistoryEntry[];
-  if (current.length > 0 && current[0].text === trimmed) {
+  if (cache.length > 0 && cache[0].text === trimmed) {
     next = [
       {
         id,
@@ -144,7 +100,7 @@ export function appendPrompt(text: string): string {
         outcome: null,
         status: 'pending',
       },
-      ...current.slice(1),
+      ...cache.slice(1),
     ];
   } else {
     next = [
@@ -156,11 +112,10 @@ export function appendPrompt(text: string): string {
         outcome: null,
         status: 'pending',
       },
-      ...current,
+      ...cache,
     ];
   }
   cache = next.slice(0, MAX_ENTRIES);
-  saveToStorage(cache);
   notifyListeners();
   return id;
 }
@@ -172,10 +127,9 @@ export function updatePromptOutcome(
   update: { commands: string[]; outcome: string | null; status: PromptHistoryStatus },
 ): void {
   if (id.length === 0) return;
-  const current = ensureCache();
-  const idx = current.findIndex((e) => e.id === id);
+  const idx = cache.findIndex((e) => e.id === id);
   if (idx === -1) return;
-  const next = current.slice();
+  const next = cache.slice();
   const cappedCommands = update.commands
     .slice(0, COMMAND_MAX_COUNT)
     .map((c) => truncate(c, COMMAND_MAX_LEN));
@@ -187,14 +141,22 @@ export function updatePromptOutcome(
     status: update.status,
   };
   cache = next;
-  saveToStorage(cache);
+  notifyListeners();
+}
+
+// Wipes the entire log. The Timeline empties immediately (subscribers
+// re-render via notifyListeners). Used by the Timeline header's Clear
+// button so the user can prune the sidebar without quitting.
+export function clearPromptHistory(): void {
+  if (cache.length === 0) return;
+  cache = [];
   notifyListeners();
 }
 
 // Synchronous read for the orchestrator's HISTORY_SHOWN dispatch.
 // Returns a snapshot — callers should not mutate.
 export function readPromptHistory(): PromptHistoryEntry[] {
-  return ensureCache().slice();
+  return cache.slice();
 }
 
 // Reactive read for components that should update when the log
@@ -208,5 +170,5 @@ export function usePromptHistory(): PromptHistoryEntry[] {
       listeners.delete(bump);
     };
   }, []);
-  return ensureCache();
+  return cache;
 }

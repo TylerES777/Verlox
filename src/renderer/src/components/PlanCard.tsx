@@ -73,80 +73,145 @@ export function PlanCard({ plan, steps, onConfirm, onCancel }: PlanCardProps) {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onCancel]);
 
+  // Outer tinted frame — same glass-frame pattern as the Running pane.
+  // Footgun variant gets a warmer amber tint so the gate-needed read
+  // happens before the user parses the label. Plan-Mode variant stays
+  // neutral grey — it's "you opted into review," not a warning.
+  const frameBackground = isFootgun
+    ? 'linear-gradient(180deg, rgba(252,244,232,0.96) 0%, rgba(250,238,220,0.95) 100%)'
+    : 'linear-gradient(180deg, rgba(244,245,248,0.95) 0%, rgba(240,242,246,0.95) 100%)';
+  const frameStyle: React.CSSProperties = {
+    background: frameBackground,
+    backdropFilter: 'blur(12px) saturate(140%)',
+    WebkitBackdropFilter: 'blur(12px) saturate(140%)',
+    boxShadow: isFootgun
+      ? '0 1px 0 rgba(255,255,255,0.7) inset, 0 0 0 0.5px rgba(0,0,0,0.05), 0 12px 32px -16px rgba(180,120,40,0.25), 0 2px 8px -4px rgba(0,0,0,0.06)'
+      : '0 1px 0 rgba(255,255,255,0.7) inset, 0 0 0 0.5px rgba(0,0,0,0.04), 0 12px 32px -16px rgba(20,30,60,0.15), 0 2px 8px -4px rgba(0,0,0,0.05)',
+  };
+  // Inner white content surface — bright card inset within the frame,
+  // sitting below the header strip. The contrast against the tinted
+  // frame above is what separates the two zones (no hard divider).
+  const contentStyle: React.CSSProperties = {
+    background: 'linear-gradient(180deg, #FFFFFF 0%, #FDFEFE 100%)',
+    boxShadow:
+      '0 1px 0 rgba(255,255,255,0.9) inset, 0 1px 2px rgba(16,24,40,0.04)',
+  };
+  // Run button — dark gradient with a subtle inner highlight + lift
+  // shadow, so the primary action reads as elevated rather than a
+  // flat fill. Footgun gets a warmer brown-black to echo the frame
+  // tint; default stays neutral ink.
+  const runStyle: React.CSSProperties = {
+    background: isFootgun
+      ? 'linear-gradient(180deg, #2A1F12 0%, #15100A 100%)'
+      : 'linear-gradient(180deg, #1B1B1F 0%, #0A0A0C 100%)',
+    boxShadow:
+      '0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 2px rgba(0,0,0,0.15), 0 4px 12px -4px rgba(0,0,0,0.25)',
+  };
+  // Pip color matches the variant — amber for review/plan, footgun
+  // gets a deeper orange. Same lit-glass treatment as the Running
+  // pane's dot so visual language stays consistent.
+  const pipStyle: React.CSSProperties = isFootgun
+    ? {
+        background: 'linear-gradient(135deg, #F2B45A 0%, #C76A1F 100%)',
+        boxShadow:
+          'inset 0 0.5px 0 rgba(255,255,255,0.45), 0 0 6px rgba(220,140,40,0.55)',
+      }
+    : {
+        background: 'linear-gradient(135deg, #E8C36B 0%, #B88A2E 100%)',
+        boxShadow:
+          'inset 0 0.5px 0 rgba(255,255,255,0.45), 0 0 6px rgba(200,160,70,0.5)',
+      };
+
   return (
     <div
       ref={containerRef}
-      className="my-3 rounded-2xl border-[0.5px] border-subtle-border bg-surface-faint p-5"
+      className="relative my-3 overflow-hidden rounded-2xl border border-subtle-border"
+      style={frameStyle}
     >
-      {/* Caption — deep black, uppercase, tracked out. Same treatment for
-          both variants; the only difference is the word. Reads as
-          "engaged," not "warning." (User: NOT amber.) */}
-      <div className="mb-3 text-[10.5px] font-medium uppercase tracking-[0.08em] text-ink">
-        {captionText}
+      {/* Top-edge highlight — 1px white sheen along the inside of the
+          frame's top edge. Sells the lifted glass feel. */}
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/85 to-transparent"
+        aria-hidden="true"
+      />
+
+      {/* Header strip — pip + uppercase label, sits on the tinted
+          frame. No divider — the contrast with the bright inner card
+          below is the separation, matching the Running pane pattern. */}
+      <div className="relative flex items-center gap-2 px-5 pt-3 pb-2.5">
+        <span
+          className="h-1.5 w-1.5 rounded-full"
+          style={pipStyle}
+          aria-hidden="true"
+        />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-label">
+          {captionText}
+        </span>
       </div>
 
-      {/* Intent — the model's interpretation of what was asked, in tight
-          sans, surfaced for explicit confirmation. */}
-      <p
-        className="mb-3 text-[15px] font-semibold text-ink leading-snug"
-        style={{ letterSpacing: '-0.01em' }}
+      {/* Inner white content card — holds intent, prose, steps,
+          affects, and the action row. Inset within the frame. */}
+      <div
+        className="relative mx-2 mb-2 rounded-xl border border-subtle-border/70 px-5 py-4"
+        style={contentStyle}
       >
-        {plan.intent}
-      </p>
-
-      {/* Footgun reason banner — only in the footgun variant. Italic,
-          slightly heavier text colour than the plan prose to draw the
-          eye without resorting to a color accent. Replaces (not
-          augments) the plan prose below. */}
-      {footgunSentence && (
-        <p className="mb-4 text-[14px] italic leading-relaxed text-ink-body">
-          {footgunSentence}
+        {/* Intent — the model's interpretation of what was asked. */}
+        <p
+          className="mb-3 text-[15px] font-semibold leading-snug text-ink"
+          style={{ letterSpacing: '-0.01em' }}
+        >
+          {plan.intent}
         </p>
-      )}
 
-      {/* Plan prose — one-paragraph approach summary in Inter. Hidden
-          in the footgun variant since the reason banner above is the
-          focal explanation; layering the model's prose on top dilutes
-          the warning. */}
-      {!isFootgun && plan.plan && (
-        <p className="mb-4 text-[14px] leading-relaxed text-ink-body">
-          {plan.plan}
-        </p>
-      )}
+        {/* Footgun reason banner — replaces (not augments) the plan
+            prose below in the footgun variant. */}
+        {footgunSentence && (
+          <p className="mb-4 text-[14px] italic leading-relaxed text-ink-body">
+            {footgunSentence}
+          </p>
+        )}
 
-      {/* Steps — full list with commands always shown: the user is
-          reviewing a plan before it runs, so every command is visible. */}
-      {steps.length > 0 && (
-        <div className="mb-4 space-y-1">
-          {steps.map((s) => (
-            <StepRow key={s.index} step={s} showCommand />
-          ))}
+        {/* Plan prose — one-paragraph approach summary. Hidden in
+            footgun variant so the banner above stays the focal point. */}
+        {!isFootgun && plan.plan && (
+          <p className="mb-4 text-[14px] leading-relaxed text-ink-body">
+            {plan.plan}
+          </p>
+        )}
+
+        {/* Steps — full list with commands always shown. */}
+        {steps.length > 0 && (
+          <div className="mb-4 space-y-1">
+            {steps.map((s) => (
+              <StepRow key={s.index} step={s} showCommand />
+            ))}
+          </div>
+        )}
+
+        {/* Affects — always renders. */}
+        <AffectsBlock affects={plan.affects} />
+
+        {/* Action row — Cancel first in DOM for tab order + auto-focus.
+            Run carries the lifted dark-gradient treatment so it reads
+            as the deliberate primary action. */}
+        <div className="mt-5 flex items-center justify-end gap-3">
+          <button
+            ref={cancelButtonRef}
+            type="button"
+            onClick={onCancel}
+            className="rounded-md px-3 py-1.5 text-[13px] text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/15"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-md px-4 py-1.5 text-[13px] font-medium text-white transition-transform focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/30 active:scale-[0.98]"
+            style={runStyle}
+          >
+            {runLabel}
+          </button>
         </div>
-      )}
-
-      {/* Affects — always renders. Read-only with empty arrays renders a
-          single reassuring line; otherwise grouped by category. */}
-      <AffectsBlock affects={plan.affects} />
-
-      {/* Action row — Cancel first in DOM (so first in tab order) and
-          auto-focused. Run is the visual primary (filled dark) but
-          requires a deliberate tab to reach via keyboard. */}
-      <div className="mt-5 flex items-center justify-end gap-3">
-        <button
-          ref={cancelButtonRef}
-          type="button"
-          onClick={onCancel}
-          className="text-[13px] text-ink-label hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/20 rounded px-2 py-1 transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onClick={onConfirm}
-          className="rounded-md bg-ink px-4 py-1.5 text-[13px] font-medium text-card hover:bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/30 transition-colors"
-        >
-          {runLabel}
-        </button>
       </div>
     </div>
   );
