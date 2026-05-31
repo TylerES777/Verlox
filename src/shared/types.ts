@@ -110,11 +110,111 @@ export interface EnvironmentInfo {
 
 // Backend error code (shared by all backend calls) --------------------------
 
-export type BackendErrorCode = 'unauthorized' | 'network' | 'rate_limit' | 'server';
+export type BackendErrorCode =
+  | 'unauthorized'
+  | 'network'
+  | 'rate_limit'
+  | 'server'
+  // The user ran out of credits for the current period (HTTP 402).
+  | 'limit_reached'
+  // The user hit a free-tier feature cap (HTTP 403) — daily images or
+  // monthly Plan Mode uses. Distinct from running out of credits.
+  | 'feature_capped';
+
+// Which free-tier feature cap was hit. Threaded on a 'feature_capped'
+// error so the UI can name the limit precisely.
+export type FeatureCap = 'images' | 'thinkMode';
+
+// One free-tier feature cap (images/day, Plan Mode/month). `limit` is
+// null for Pro, meaning unlimited.
+export interface UsageCap {
+  used: number;
+  limit: number | null;
+  // The window the cap counts over.
+  window: 'day' | 'month';
+}
+
+// One row of the credit ledger, mirrored from the backend. Powers the
+// usage dashboard's recent-activity list.
+export interface UsageEvent {
+  // 'turn' | 'diagram'.
+  action: string;
+  model: string;
+  planMode: boolean;
+  hadImage: boolean;
+  credits: number;
+  // ISO timestamp.
+  createdAt: string;
+}
+
+// Credit-balance snapshot for the current period, mirrored from the
+// backend's /api/usage. Drives the balance readout, the run-out popup,
+// and the usage dashboard. Free tier refills daily; Pro refills weekly.
+export interface UsageInfo {
+  // Credits spent this period.
+  used: number;
+  // Credit grant for the period.
+  limit: number;
+  // The period key this snapshot counts against.
+  period: string;
+  // Credits left this period.
+  remaining: number;
+  // 'free' | 'pro' — which billing tier the grant/model reflect.
+  tier: string;
+  // ISO timestamp when the current period ends and credits refill.
+  resetsAt?: string;
+  // Free-tier feature caps (images/day, Plan Mode/month). Present only
+  // on the full /api/usage payload, not on lightweight tier reads.
+  caps?: {
+    images: UsageCap;
+    thinkMode: UsageCap;
+  };
+  // Recent credit-ledger rows, newest first.
+  events?: UsageEvent[];
+}
 
 export interface BackendErrorWire {
   ok: false;
   code: BackendErrorCode;
+  // Present only when code is 'feature_capped' — which cap was hit.
+  cap?: FeatureCap;
+}
+
+// Result of a billing action (start checkout / open portal). On success the
+// main process has already opened the URL in the browser; on failure the
+// renderer shows a calm message keyed off `error`.
+export type BillingErrorCode =
+  | 'unauthorized'
+  | 'network'
+  | 'not_configured' // Stripe isn't set up on the backend yet (503)
+  | 'no_account' // no Stripe customer yet (portal before any checkout)
+  | 'server';
+
+export interface BillingActionResult {
+  ok: boolean;
+  error?: BillingErrorCode;
+  // True when "start checkout" actually opened the manage portal because
+  // the user already has a live subscription (duplicate-purchase guard).
+  // Lets the UI show "opened your billing portal" instead of "checkout".
+  alreadySubscribed?: boolean;
+}
+
+// Live subscription snapshot for the account menu, mirrored from the
+// backend's /api/billing/status. Lets the app show exactly which plan
+// you're on and when it renews or ends.
+export interface BillingStatus {
+  // 'free' | 'pro' — the stored tier.
+  tier: string;
+  // True when there's a live (active/trialing) subscription at Stripe.
+  active: boolean;
+  // True when the subscription is set to cancel at the period end (the
+  // user canceled but still has access until currentPeriodEnd).
+  cancelAtPeriodEnd: boolean;
+  // Unix seconds when the current paid period ends — the renewal date,
+  // or the date access ends if cancelAtPeriodEnd. null when no sub.
+  currentPeriodEnd: number | null;
+  // Raw Stripe subscription status (active, canceled, past_due…), or null.
+  status: string | null;
 }
 
 // /api/turn — plan generation -----------------------------------------------
@@ -417,6 +517,27 @@ export interface IpcApi {
 
   // Environment (platform + shell). Static for the app's lifetime.
   getEnvironment: () => Promise<EnvironmentInfo>;
+
+  // The running app version (package.json version via app.getVersion()).
+  // Shown in the account menu so the user can see what they're on — and
+  // confirm an auto-update actually swapped the build.
+  getAppVersion: () => Promise<string>;
+
+  // Current month's free-tier usage for the signed-in user, or null if
+  // the request failed (network/unauthorized). Shown in the account menu.
+  getUsage: () => Promise<UsageInfo | null>;
+
+  // Billing. startCheckout opens a Stripe Checkout for the Pro plan;
+  // openBillingPortal opens the Stripe customer portal (manage card /
+  // cancel). Both open the URL in the default browser from the main
+  // process and resolve once the browser has been launched (the actual
+  // plan change arrives via webhook; the app refreshes its tier on focus).
+  startCheckout: () => Promise<BillingActionResult>;
+  openBillingPortal: () => Promise<BillingActionResult>;
+
+  // Live subscription status (plan + renew/cancel date), or null if the
+  // request failed. Shown in the account menu.
+  getBillingStatus: () => Promise<BillingStatus | null>;
 
   // Open a URL (http/https only) in the user's default browser via
   // Electron's shell.openExternal. Used by the live processes board

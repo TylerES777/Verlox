@@ -42,6 +42,8 @@ const api: IpcApi = {
 
   getEnvironment: () => ipcRenderer.invoke(IpcChannels.EnvGet),
 
+  getAppVersion: () => ipcRenderer.invoke(IpcChannels.AppGetVersion),
+
   openExternal: (url: string) =>
     ipcRenderer.send(IpcChannels.ShellOpenExternal, url),
 
@@ -56,6 +58,12 @@ const api: IpcApi = {
 
   planTurn: (input: TurnInput) =>
     ipcRenderer.invoke(IpcChannels.BackendPlanTurn, input),
+
+  getUsage: () => ipcRenderer.invoke(IpcChannels.BackendGetUsage),
+
+  startCheckout: () => ipcRenderer.invoke(IpcChannels.BillingCheckout),
+  openBillingPortal: () => ipcRenderer.invoke(IpcChannels.BillingPortal),
+  getBillingStatus: () => ipcRenderer.invoke(IpcChannels.BillingStatus),
 
   synthesizeStart: (request: SynthesizeRequest) =>
     ipcRenderer.send(IpcChannels.BackendSynthesizeStart, request),

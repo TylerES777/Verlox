@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { IpcChannels } from '@shared/ipc-channels';
 import type {
   AuthCredentials,
+  BillingActionResult,
   CommandStartPayload,
   DiagramRequest,
   SynthesizeEvent,
@@ -42,6 +43,16 @@ function createWindow(): void {
     icon: process.env.ELECTRON_RENDERER_URL
       ? join(__dirname, '../../build/icon.png')
       : undefined,
+    // Hide the OS title bar (the black strip) but keep the native
+    // minimize/maximize/close controls as an overlay coloured to match
+    // the white app surface. The renderer provides a draggable strip
+    // where this bar used to be (see ConversationsShell).
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#FFFFFF',
+      symbolColor: '#3A3A3A',
+      height: 40,
+    },
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -129,6 +140,7 @@ ipcMain.handle(IpcChannels.AuthSignOut, () => backend.signOut());
 ipcMain.handle(IpcChannels.AuthGetCurrentUser, () => backend.getCurrentUser());
 
 ipcMain.handle(IpcChannels.EnvGet, () => getEnvironment());
+ipcMain.handle(IpcChannels.AppGetVersion, () => app.getVersion());
 
 ipcMain.on(IpcChannels.ShellOpenExternal, (_event, url: string) => {
   // Only http(s) — refuse file://, javascript:, etc. Defensive guard
@@ -137,6 +149,31 @@ ipcMain.on(IpcChannels.ShellOpenExternal, (_event, url: string) => {
   if (!/^https?:\/\//.test(url)) return;
   void shell.openExternal(url);
 });
+
+// --- Billing (Stripe) -----------------------------------------------------
+// Fetch a checkout / portal URL from the backend (token lives in main),
+// then open it in the user's default browser. The renderer only learns
+// ok/error — the URL never crosses into it.
+
+ipcMain.handle(IpcChannels.BillingCheckout, async (): Promise<BillingActionResult> => {
+  const res = await backend.createCheckoutSession();
+  if (res.ok && res.url) {
+    void shell.openExternal(res.url);
+    return { ok: true, alreadySubscribed: res.alreadySubscribed };
+  }
+  return { ok: false, error: res.error };
+});
+
+ipcMain.handle(IpcChannels.BillingPortal, async (): Promise<BillingActionResult> => {
+  const res = await backend.createPortalSession();
+  if (res.ok && res.url) {
+    void shell.openExternal(res.url);
+    return { ok: true };
+  }
+  return { ok: false, error: res.error };
+});
+
+ipcMain.handle(IpcChannels.BillingStatus, () => backend.getBillingStatus());
 
 // --- Auto-update ----------------------------------------------------------
 ipcMain.on(IpcChannels.UpdateInstall, () => installUpdate());
@@ -147,6 +184,8 @@ ipcMain.on(IpcChannels.UpdateCheck, () => checkForUpdatesNow());
 ipcMain.handle(IpcChannels.BackendPlanTurn, (_e, input: TurnInput) =>
   backend.planTurn(input),
 );
+
+ipcMain.handle(IpcChannels.BackendGetUsage, () => backend.getUsage());
 
 ipcMain.handle(IpcChannels.BackendGenerateDiagram, (_e, request: DiagramRequest) =>
   backend.generateDiagram(request),

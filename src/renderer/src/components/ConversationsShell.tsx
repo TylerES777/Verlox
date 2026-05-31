@@ -117,7 +117,18 @@ export function ConversationsShell() {
   );
 
   return (
-    <div className="flex h-full w-full">
+    <div className="flex h-full w-full flex-col">
+      {/* Custom title strip — replaces the hidden native title bar. It's
+          the window's drag handle (WebkitAppRegion: drag), and the native
+          min/max/close controls render at its right via titleBarOverlay
+          (configured in the main process). White, so it blends into the
+          app instead of the old black OS bar. */}
+      <div
+        className="h-10 shrink-0 bg-card"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        aria-hidden="true"
+      />
+      <div className="flex min-h-0 w-full flex-1">
       {/* Sidebar — 440px wide. The Timeline sizes to its content and
           self-caps its scroll window at ~8 entries (see TIMELINE_
           SCROLL_MAX), so it stays a compact board near the top rather
@@ -183,6 +194,7 @@ export function ConversationsShell() {
             ))}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

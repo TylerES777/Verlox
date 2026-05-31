@@ -1,3 +1,5 @@
+import { Tooltip } from './Tooltip';
+
 export interface ConversationTab {
   id: string;
   title: string;
@@ -60,15 +62,16 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
         })}
       </div>
       {/* New-tab button — outside the segmented control. */}
-      <button
-        type="button"
-        onClick={onNew}
-        aria-label="New conversation"
-        title="New conversation"
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-      >
-        <PlusGlyph />
-      </button>
+      <Tooltip label="New conversation">
+        <button
+          type="button"
+          onClick={onNew}
+          aria-label="New conversation"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+        >
+          <PlusGlyph />
+        </button>
+      </Tooltip>
     </div>
   );
 }

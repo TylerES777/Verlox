@@ -11,6 +11,7 @@ import type {
   PlanResponse,
   TurnInput,
   TurnResultWire,
+  UsageInfo,
 } from '@shared/types';
 import { BACKEND_URL } from './config.js';
 import { clearToken, getToken, setToken } from './auth-store.js';
@@ -195,8 +196,137 @@ export async function planTurn(input: TurnInput): Promise<TurnResultWire> {
     clearToken();
     return { ok: false, code: 'unauthorized' };
   }
+  // 402 Payment Required = out of credits for the current period. Distinct
+  // code so the renderer shows the run-out popup, not a generic error.
+  if (result.status === 402) return { ok: false, code: 'limit_reached' };
+  // 403 = a free-tier feature cap (daily images or monthly Plan Mode). The
+  // body carries `cap` so the UI can name the exact limit that was hit.
+  if (result.status === 403) {
+    const body = result.json as { cap?: unknown } | null;
+    const cap =
+      body?.cap === 'images' || body?.cap === 'thinkMode'
+        ? body.cap
+        : undefined;
+    return { ok: false, code: 'feature_capped', cap };
+  }
   if (result.status === 429) return { ok: false, code: 'rate_limit' };
   return { ok: false, code: 'server' };
+}
+
+// --- AI: /api/usage (free-tier consumption for the current month) ----------
+
+export async function getUsage(): Promise<UsageInfo | null> {
+  let response: Response;
+  try {
+    const token = getToken();
+    if (!token) return null;
+    response = await fetch(`${BACKEND_URL}/api/usage`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Origin: DESKTOP_ORIGIN,
+      },
+    });
+  } catch {
+    return null;
+  }
+  if (response.status !== 200) {
+    if (response.status === 401) clearToken();
+    return null;
+  }
+  try {
+    const data = (await response.json()) as UsageInfo | null;
+    if (!data || typeof data.used !== 'number' || typeof data.limit !== 'number') {
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+// --- Billing: Stripe checkout + customer portal ----------------------------
+
+import type { BillingErrorCode, BillingStatus } from '@shared/types';
+
+// GET /api/billing/status → current plan + renew/cancel date. Returns null
+// on any failure (the menu just omits the line).
+export async function getBillingStatus(): Promise<BillingStatus | null> {
+  try {
+    const token = getToken();
+    if (!token) return null;
+    const response = await fetch(`${BACKEND_URL}/api/billing/status`, {
+      headers: { Authorization: `Bearer ${token}`, Origin: DESKTOP_ORIGIN },
+    });
+    if (response.status !== 200) {
+      if (response.status === 401) clearToken();
+      return null;
+    }
+    const data = (await response.json()) as BillingStatus | null;
+    if (!data || typeof data.tier !== 'string') return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+interface BillingUrlResult {
+  ok: boolean;
+  url?: string;
+  error?: BillingErrorCode;
+  alreadySubscribed?: boolean;
+}
+
+// POST /api/billing/checkout → { url } (Stripe Checkout). The caller (main
+// process) opens the URL in the browser. Errors are mapped to a calm code.
+// If the user already has a live subscription the backend returns a portal
+// URL + alreadySubscribed:true instead of a fresh checkout.
+export async function createCheckoutSession(): Promise<BillingUrlResult> {
+  let result: PostResult;
+  try {
+    result = await postJson('/api/billing/checkout', {}, { auth: true });
+  } catch {
+    return { ok: false, error: 'network' };
+  }
+  if (result.status === 200) {
+    const data = result.json as
+      | { url?: string; alreadySubscribed?: boolean }
+      | null;
+    if (data?.url)
+      return {
+        ok: true,
+        url: data.url,
+        alreadySubscribed: data.alreadySubscribed ?? false,
+      };
+    return { ok: false, error: 'server' };
+  }
+  if (result.status === 401) {
+    clearToken();
+    return { ok: false, error: 'unauthorized' };
+  }
+  if (result.status === 503) return { ok: false, error: 'not_configured' };
+  return { ok: false, error: 'server' };
+}
+
+// POST /api/billing/portal → { url } (Stripe customer portal).
+export async function createPortalSession(): Promise<BillingUrlResult> {
+  let result: PostResult;
+  try {
+    result = await postJson('/api/billing/portal', {}, { auth: true });
+  } catch {
+    return { ok: false, error: 'network' };
+  }
+  if (result.status === 200) {
+    const data = result.json as { url?: string } | null;
+    if (data?.url) return { ok: true, url: data.url };
+    return { ok: false, error: 'server' };
+  }
+  if (result.status === 401) {
+    clearToken();
+    return { ok: false, error: 'unauthorized' };
+  }
+  if (result.status === 400) return { ok: false, error: 'no_account' };
+  if (result.status === 503) return { ok: false, error: 'not_configured' };
+  return { ok: false, error: 'server' };
 }
 
 // --- AI: /api/diagram (synchronous JSON) -----------------------------------

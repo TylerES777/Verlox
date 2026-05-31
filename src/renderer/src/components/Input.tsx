@@ -1,3 +1,4 @@
+import { Tooltip } from './Tooltip';
 import {
   forwardRef,
   useCallback,
@@ -279,18 +280,19 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
               alt={attachment.name}
               className="h-16 w-16 rounded-xl border border-subtle-border object-cover shadow-sm"
             />
-            <button
-              type="button"
-              onClick={() => {
-                setAttachment(null);
-                setAttachmentError(null);
-              }}
-              aria-label="Remove attached image"
-              title="Remove attached image"
-              className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-subtle-border bg-card text-ink-label shadow-sm transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-            >
-              <XIcon />
-            </button>
+            <Tooltip label="Remove attached image">
+              <button
+                type="button"
+                onClick={() => {
+                  setAttachment(null);
+                  setAttachmentError(null);
+                }}
+                aria-label="Remove attached image"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-subtle-border bg-card text-ink-label shadow-sm transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+              >
+                <XIcon />
+              </button>
+            </Tooltip>
           </div>
         </div>
       )}
@@ -315,43 +317,47 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
           {pickerOpen && (
             <PathPicker initialPath={pickerInitialPath} onPick={handlePick} />
           )}
-          <button
-            type="button"
-            onClick={() => setPickerOpen((o) => !o)}
-            disabled={busy}
-            aria-label="Lock to a folder or file"
-            title={
+          <Tooltip
+            label={
               locked
                 ? 'Locked — change the folder or file'
                 : 'Lock to a folder or file'
             }
-            aria-pressed={locked}
-            className={`flex h-12 w-12 items-center justify-center rounded-xl border-[0.5px] transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
-              locked
-                ? 'border-amber/50 bg-amber/[0.08] text-amber'
-                : pickerOpen
-                  ? 'border-input-border bg-surface-subtle text-ink'
-                  : 'border-subtle-border bg-surface-subtle text-ink-label hover:text-ink'
-            }`}
           >
-            <FolderIcon />
-          </button>
+            <button
+              type="button"
+              onClick={() => setPickerOpen((o) => !o)}
+              disabled={busy}
+              aria-label="Lock to a folder or file"
+              aria-pressed={locked}
+              className={`flex h-12 w-12 items-center justify-center rounded-xl border-[0.5px] transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+                locked
+                  ? 'border-amber/50 bg-amber/[0.08] text-amber'
+                  : pickerOpen
+                    ? 'border-input-border bg-surface-subtle text-ink'
+                    : 'border-subtle-border bg-surface-subtle text-ink-label hover:text-ink'
+              }`}
+            >
+              <FolderIcon />
+            </button>
+          </Tooltip>
         </div>
         {/* Image-attach button — opens the hidden native file picker. */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={busy}
-          aria-label="Attach a screenshot or image"
-          title="Attach a screenshot or image (or paste / drop one)"
-          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border-[0.5px] transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
-            attachment
-              ? 'border-ink/30 bg-ink/[0.06] text-ink'
-              : 'border-subtle-border bg-surface-subtle text-ink-label hover:text-ink'
-          }`}
-        >
-          <PaperclipIcon />
-        </button>
+        <Tooltip label="Attach a screenshot or image (or paste / drop one)">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={busy}
+            aria-label="Attach a screenshot or image"
+            className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border-[0.5px] transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+              attachment
+                ? 'border-ink/30 bg-ink/[0.06] text-ink'
+                : 'border-subtle-border bg-surface-subtle text-ink-label hover:text-ink'
+            }`}
+          >
+            <PaperclipIcon />
+          </button>
+        </Tooltip>
         <input
           ref={fileInputRef}
           type="file"

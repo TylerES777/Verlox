@@ -6,6 +6,7 @@ import {
   type PromptHistoryEntry,
   type PromptHistoryStatus,
 } from '../hooks/usePromptHistory';
+import { Tooltip } from './Tooltip';
 
 interface TimelineProps {
   // Click handler — the caller pastes the prompt into the active
@@ -90,16 +91,17 @@ export function Timeline({ onSelect }: TimelineProps) {
           Timeline
         </h2>
         {entries.length > 0 && (
-          <button
-            type="button"
-            onClick={clearPromptHistory}
-            title="Clear history (also clears when you quit Verlox)"
-            aria-label="Clear history"
-            className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-ink-micro transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-          >
-            <ClearGlyph />
-            <span>Clear</span>
-          </button>
+          <Tooltip label="Clear history (also clears when you quit Verlox)">
+            <button
+              type="button"
+              onClick={clearPromptHistory}
+              aria-label="Clear history"
+              className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-ink-micro transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+            >
+              <ClearGlyph />
+              <span>Clear</span>
+            </button>
+          </Tooltip>
         )}
       </div>
 
@@ -210,25 +212,16 @@ function TimelineGroup({
   onLeaveEntry: () => void;
   isFirst: boolean;
 }) {
-  const headingDot = headingDotStyle(group.isToday);
   return (
     <div className={isFirst ? '' : 'mt-8'}>
-      <div className="relative flex items-center pl-10">
-        {/* Group-heading dot — sits centred on the rail. */}
-        <span
-          className="absolute left-[24px] h-2.5 w-2.5 -translate-x-1/2 rounded-full"
-          style={headingDot}
-          aria-hidden="true"
-        />
-        <h3
-          className={`text-[15px] font-semibold ${
-            group.isToday ? 'text-ink' : 'text-ink-label'
-          }`}
-        >
-          {group.heading}
-        </h3>
-      </div>
-      <ul className="mt-3.5 space-y-2.5">
+      <h3
+        className={`text-[15px] font-semibold ${
+          group.isToday ? 'text-ink' : 'text-ink-label'
+        }`}
+      >
+        {group.heading}
+      </h3>
+      <ul className="mt-3 space-y-2">
         {group.entries.map((entry, i) => (
           <TimelineEntry
             key={entry.id || `${entry.timestamp}-${i}`}
@@ -258,27 +251,17 @@ function TimelineEntry({
   faded: boolean;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const dot = entryDotStyle(entry.status, faded);
   function handleEnter() {
     const el = buttonRef.current;
     if (!el) return;
     onHoverEntry(entry, el.getBoundingClientRect());
   }
   return (
-    <li className="group/entry relative">
-      {/* Two dots stacked: the default status dot, and a vibrant
-          pink "active" dot that fades in on hover. The default fades
-          out simultaneously so the swap reads as one smooth change. */}
-      <span
-        className={`pointer-events-none absolute left-[24px] top-[15px] h-2 w-2 -translate-x-1/2 rounded-full transition-opacity duration-150 group-hover/entry:opacity-0 ${dot.extraClass}`}
-        style={dot.style}
-        aria-hidden="true"
-      />
-      <span
-        className="pointer-events-none absolute left-[24px] top-[15px] h-2.5 w-2.5 -translate-x-1/2 rounded-full opacity-0 transition-opacity duration-150 group-hover/entry:opacity-100"
-        style={PINK_DOT_STYLE}
-        aria-hidden="true"
-      />
+    <li>
+      {/* Each entry is its own rounded card with a small clock icon at
+          the left. Hover lifts the border / lightens the background; no
+          more colored status dots — the card affordance carries the
+          interaction, and status detail still lives on the hover card. */}
       <button
         ref={buttonRef}
         type="button"
@@ -287,27 +270,37 @@ function TimelineEntry({
         onMouseLeave={onLeaveEntry}
         onFocus={handleEnter}
         onBlur={onLeaveEntry}
-        className={`w-full rounded-lg py-2.5 pl-10 pr-3 text-left text-[14.5px] leading-snug transition-colors hover:bg-surface-subtle focus:outline-none ${
+        className={`flex w-full items-start gap-2.5 rounded-xl border border-subtle-border bg-card px-3 py-2.5 text-left text-[14px] leading-snug transition-colors hover:border-ink-hint hover:bg-surface-subtle focus:outline-none ${
           faded ? 'text-ink-label hover:text-ink' : 'text-ink-body hover:text-ink'
         }`}
       >
+        <ClockGlyph className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-micro" />
         <span className="break-words">{entry.text}</span>
       </button>
     </li>
   );
 }
 
-// Vibrant pink dot used on the hovered / active entry — matches the
-// accent dot in the reference mockup. Replaces the muted status dot
-// while the row is being interacted with so the focused row pops.
-const PINK_DOT_STYLE: CSSProperties = {
-  background: 'linear-gradient(135deg, #F472B6 0%, #DB2777 100%)',
-  boxShadow: [
-    'inset 0 1px 0 rgba(255,255,255,0.45)',
-    '0 0 0 0.5px rgba(220,90,180,0.4)',
-    '0 0 12px rgba(236,72,153,0.6)',
-  ].join(', '),
-};
+// Small clock face used as the entry leading icon — replaces the old
+// colored status dot. Stroke uses currentColor so the parent button
+// drives muted-vs-active tinting via text-* classes.
+function ClockGlyph({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.5 V8 L10.5 9.5" />
+    </svg>
+  );
+}
 
 // Hover card rendered via portal so the sidebar's overflow-hidden
 // doesn't clip it. Position is fixed against the hovered entry's
@@ -433,106 +426,9 @@ function startOfDay(date: Date): Date {
   return out;
 }
 
-// Per-status visual for the timeline entry dot. Each dot carries a
-// soft diagonal gradient + a coloured outer glow + a faint inner
-// highlight along the top edge — matches the diagram cards' glassy
-// treatment, just shrunk to a 8px circle. Inline style because the
-// multi-stop gradient and layered shadows don't fit cleanly into
-// Tailwind arbitrary values.
-function entryDotStyle(
-  status: PromptHistoryStatus,
-  faded: boolean,
-): { extraClass: string; style: CSSProperties } {
-  if (status === 'error') {
-    return {
-      extraClass: '',
-      style: {
-        background: 'linear-gradient(135deg, #F47B7D 0%, #C84147 100%)',
-        boxShadow: [
-          'inset 0 1px 0 rgba(255,255,255,0.35)',
-          '0 0 0 0.5px rgba(200,90,90,0.4)',
-          '0 0 8px rgba(220,90,90,0.55)',
-        ].join(', '),
-      },
-    };
-  }
-  if (status === 'cancelled') {
-    return {
-      extraClass: '',
-      style: {
-        background: 'linear-gradient(135deg, #C2C6CC 0%, #7E828A 100%)',
-        boxShadow: [
-          'inset 0 1px 0 rgba(255,255,255,0.35)',
-          '0 0 0 0.5px rgba(120,120,130,0.3)',
-          '0 0 6px rgba(140,140,150,0.3)',
-        ].join(', '),
-      },
-    };
-  }
-  if (status === 'pending') {
-    return {
-      extraClass: 'animate-flicker',
-      style: {
-        background: 'linear-gradient(135deg, #FCC97A 0%, #D8923B 100%)',
-        boxShadow: [
-          'inset 0 1px 0 rgba(255,255,255,0.45)',
-          '0 0 0 0.5px rgba(200,150,80,0.4)',
-          '0 0 10px rgba(230,170,70,0.6)',
-        ].join(', '),
-      },
-    };
-  }
-  // Default — done / replied / cd / list / history. Two tones based
-  // on whether the group is today (ink-leaning) or older (muted).
-  if (faded) {
-    return {
-      extraClass: '',
-      style: {
-        background: 'linear-gradient(135deg, #CFD3D9 0%, #969AA4 100%)',
-        boxShadow: [
-          'inset 0 1px 0 rgba(255,255,255,0.4)',
-          '0 0 0 0.5px rgba(150,155,165,0.3)',
-          '0 0 6px rgba(150,155,170,0.25)',
-        ].join(', '),
-      },
-    };
-  }
-  return {
-    extraClass: '',
-    style: {
-      background: 'linear-gradient(135deg, #9AA0AE 0%, #5B6075 100%)',
-      boxShadow: [
-        'inset 0 1px 0 rgba(255,255,255,0.45)',
-        '0 0 0 0.5px rgba(80,90,110,0.35)',
-        '0 0 8px rgba(80,95,120,0.4)',
-      ].join(', '),
-    },
-  };
-}
-
-// Group-heading dot — slightly more weight than entries. Today gets
-// the deepest gradient + strongest glow so it carries the most
-// presence; older days fade.
-function headingDotStyle(isToday: boolean): CSSProperties {
-  if (isToday) {
-    return {
-      background: 'linear-gradient(135deg, #6F7587 0%, #2A2F40 100%)',
-      boxShadow: [
-        'inset 0 1px 0 rgba(255,255,255,0.4)',
-        '0 0 0 0.5px rgba(60,70,90,0.4)',
-        '0 0 10px rgba(60,75,100,0.45)',
-      ].join(', '),
-    };
-  }
-  return {
-    background: 'linear-gradient(135deg, #B5B9C1 0%, #7B7F8A 100%)',
-    boxShadow: [
-      'inset 0 1px 0 rgba(255,255,255,0.35)',
-      '0 0 0 0.5px rgba(120,130,145,0.3)',
-      '0 0 8px rgba(120,130,145,0.3)',
-    ].join(', '),
-  };
-}
+// (Per-status entry dot + group-heading dot helpers were removed when
+// each entry became a rounded card with a leading clock glyph. Status
+// detail still surfaces on the hover card — see formatStatusLabel.)
 
 function formatStatusLabel(status: PromptHistoryStatus): string {
   switch (status) {

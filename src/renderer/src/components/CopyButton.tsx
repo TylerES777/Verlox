@@ -1,15 +1,23 @@
 import { useState } from 'react';
+import { Tooltip } from './Tooltip';
 
 interface CopyButtonProps {
   // The text written to the clipboard on click.
   text: string;
+  // 'inline' (default) is a bare glyph — used for in-flow copies (e.g.
+  // step output) where the button shouldn't claim layout. 'pill' matches
+  // the action-row toggles (diagram, eye, pause): a circular bordered
+  // chip, the same h-7 w-7 as its siblings.
+  variant?: 'inline' | 'pill';
+  // Override the labels — e.g. "Copy prompt" on a user prompt vs the
+  // default "Copy output". Doesn't affect behaviour.
+  label?: string;
 }
 
-// Small icon-only "copy" affordance for command output. Shows a brief
-// checkmark on success, then reverts to the copy glyph. Clipboard
-// failures (no permission, etc.) are swallowed — copy is a convenience,
-// never load-bearing.
-export function CopyButton({ text }: CopyButtonProps) {
+// Small icon-only "copy" affordance. Shows a brief checkmark on success,
+// then reverts to the copy glyph. Clipboard failures (no permission, etc.)
+// are swallowed — copy is a convenience, never load-bearing.
+export function CopyButton({ text, variant = 'inline', label }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -22,18 +30,25 @@ export function CopyButton({ text }: CopyButtonProps) {
     }
   };
 
+  const baseLabel = label ?? 'Copy output';
+  const inlineClass = `shrink-0 transition-colors focus:outline-none ${
+    copied ? 'text-step-done' : 'text-ink-micro hover:text-ink'
+  }`;
+  const pillClass = `flex h-7 w-7 items-center justify-center rounded-full border border-subtle-border bg-card transition-colors hover:border-ink-hint focus:outline-none ${
+    copied ? 'text-step-done' : 'text-ink-label hover:text-ink'
+  }`;
+
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      aria-label={copied ? 'Copied' : 'Copy output'}
-      title={copied ? 'Copied' : 'Copy output'}
-      className={`shrink-0 transition-colors focus:outline-none ${
-        copied ? 'text-step-done' : 'text-ink-micro hover:text-ink'
-      }`}
-    >
-      {copied ? <CheckGlyph /> : <CopyGlyph />}
-    </button>
+    <Tooltip label={copied ? 'Copied' : baseLabel}>
+      <button
+        type="button"
+        onClick={handleCopy}
+        aria-label={copied ? 'Copied' : baseLabel}
+        className={variant === 'pill' ? pillClass : inlineClass}
+      >
+        {copied ? <CheckGlyph /> : <CopyGlyph />}
+      </button>
+    </Tooltip>
   );
 }
 

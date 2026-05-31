@@ -5,33 +5,71 @@ import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
 import type { PathSelection } from './PathPicker';
 import { useCommands } from '../hooks/useCommands';
+import { useUpgrade } from '../contexts/UpgradeContext';
 
-// Empty-state example prompts. Each carries a short caption that pairs
-// with the prompt — reads as "category + intent" so the user can scan
-// the three cards quickly. The icon is rendered alongside in EmptyState.
+// Empty-state example prompts. Each category carries a short caption
+// (Explore / Navigate / Inspect), an icon, and a POOL of prompts that
+// rotate on a timer so the dashboard feels alive instead of fixed. The
+// user sees a different example on every visit and every few seconds
+// while they're staring at it, prompting them with fresh ideas.
 interface ExamplePrompt {
   caption: string;
   prompt: string;
   icon: 'folder' | 'compass' | 'pulse';
 }
 
-const EXAMPLES: ExamplePrompt[] = [
+interface CategoryPool {
+  caption: string;
+  icon: 'folder' | 'compass' | 'pulse';
+  prompts: string[];
+}
+
+const CATEGORIES: CategoryPool[] = [
   {
     caption: 'Explore',
-    prompt: 'List the files in this folder',
     icon: 'folder',
+    prompts: [
+      'List the files in this folder',
+      "What's in this folder?",
+      'Show me the biggest files here',
+      'What changed in this folder this week?',
+      'Count the files by type',
+      'Find every TODO in this folder',
+      'Open the README in this folder',
+    ],
   },
   {
     caption: 'Navigate',
-    prompt: 'Go to my Documents folder',
     icon: 'compass',
+    prompts: [
+      'Go to my Documents folder',
+      'Take me home',
+      'Go up one level',
+      'Switch to my Downloads',
+      'Open my Desktop',
+      'Jump to the last folder I was in',
+      'Open the project I worked on last',
+    ],
   },
   {
     caption: 'Inspect',
-    prompt: 'Show me what’s running on this machine',
     icon: 'pulse',
+    prompts: [
+      "Show me what's running on this machine",
+      "What's listening on port 3000?",
+      'How much disk space is free?',
+      'Show me the git status here',
+      'What node version do I have?',
+      'Show the last 5 git commits',
+      'Ping google.com a few times',
+    ],
   },
 ];
+
+// How often the visible prompt in each card rotates. Long enough that a
+// user reading one can finish before it swaps, short enough to feel
+// alive.
+const ROTATION_MS = 5500;
 
 // Max characters for a tab title before it gets an ellipsis.
 const TITLE_MAX = 28;
@@ -47,6 +85,26 @@ interface EmptyStateProps {
 }
 
 function EmptyState({ onExampleClick }: EmptyStateProps) {
+  // Random starting offset per card so we don't always open on the same
+  // three prompts. Each card then ticks independently from there.
+  const [offsets] = useState(() =>
+    CATEGORIES.map((c) => Math.floor(Math.random() * c.prompts.length)),
+  );
+  const [tick, setTick] = useState(0);
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (paused) return;
+    const id = setInterval(() => setTick((t) => t + 1), ROTATION_MS);
+    return () => clearInterval(id);
+  }, [paused]);
+
+  // The three currently-visible cards, derived from CATEGORIES + tick.
+  const examples: ExamplePrompt[] = CATEGORIES.map((cat, i) => ({
+    caption: cat.caption,
+    icon: cat.icon,
+    prompt: cat.prompts[(offsets[i] + tick) % cat.prompts.length],
+  }));
+
   // Ready-state pip — same lit-glass treatment as the Running pane's
   // green dot, sized down for the header strip. Signals "Verlox is
   // live, just waiting on you" without saying anything explicit.
@@ -95,10 +153,14 @@ function EmptyState({ onExampleClick }: EmptyStateProps) {
             example prompt, and a leading icon. Same liquid-glass
             language as the Running pane: tinted frame, white inset,
             top-edge highlight. */}
-        <div className="mt-10 grid w-full max-w-[820px] grid-cols-1 gap-3 sm:grid-cols-3">
-          {EXAMPLES.map((ex) => (
+        <div
+          className="mt-10 grid w-full max-w-[820px] grid-cols-1 gap-3 sm:grid-cols-3"
+          onMouseEnter={() => setPaused(true)}
+          onMouseLeave={() => setPaused(false)}
+        >
+          {examples.map((ex, i) => (
             <ExampleCard
-              key={ex.prompt}
+              key={CATEGORIES[i].caption}
               example={ex}
               onClick={() => onExampleClick(ex.prompt)}
             />
@@ -128,6 +190,24 @@ function ExampleCard({
   example: ExamplePrompt;
   onClick: () => void;
 }) {
+  // Hold the prompt we're actually rendering separately from the prop.
+  // When the prop changes (rotation tick), fade the current text out, swap
+  // the displayed string, then fade back in. The remount/`key` approach
+  // hard-cuts the old element before the new one fades in, which reads
+  // as a flicker — this two-phase opacity does a real crossfade.
+  const FADE_MS = 220;
+  const [displayedPrompt, setDisplayedPrompt] = useState(example.prompt);
+  const [fading, setFading] = useState(false);
+  useEffect(() => {
+    if (example.prompt === displayedPrompt) return;
+    setFading(true);
+    const timer = setTimeout(() => {
+      setDisplayedPrompt(example.prompt);
+      setFading(false);
+    }, FADE_MS);
+    return () => clearTimeout(timer);
+  }, [example.prompt, displayedPrompt]);
+
   const frameStyle: React.CSSProperties = {
     background:
       'linear-gradient(180deg, rgba(244,245,248,0.95) 0%, rgba(240,242,246,0.95) 100%)',
@@ -172,8 +252,17 @@ function ExampleCard({
         className="mx-2 mb-2 rounded-xl border border-subtle-border/70 px-3.5 py-3"
         style={innerStyle}
       >
-        <p className="text-[13.5px] leading-snug text-ink-body group-hover:text-ink transition-colors">
-          {example.prompt}
+        {/* Controlled opacity instead of a remount, so there's no
+            single-frame gap between the old and new text. The wrapper
+            transition handles both the fade-out (fading=true) and the
+            fade-in (fading=false) symmetrically. */}
+        <p
+          className={`text-[13.5px] leading-snug text-ink-body transition-opacity duration-200 group-hover:text-ink ${
+            fading ? 'opacity-0' : 'opacity-100'
+          }`}
+          style={{ transitionDuration: `${FADE_MS}ms` }}
+        >
+          {displayedPrompt}
         </p>
       </div>
     </button>
@@ -298,6 +387,13 @@ export function ConversationView({
     }
   }, []);
 
+  const { openUpgrade } = useUpgrade();
+  // When a turn is rejected for hitting the monthly cap, raise the pro
+  // wall (upgrade modal) so the upgrade path is front and centre.
+  const handleLimitReached = useCallback(() => {
+    openUpgrade({ limitReached: true });
+  }, [openUpgrade]);
+
   const {
     messages,
     forceScrollVersion,
@@ -306,7 +402,14 @@ export function ConversationView({
     confirmPlan,
     cancelPlan,
     clearConversation,
-  } = useCommands(conversationId, cwd, planMode, handleCwdChange, focusedFile);
+  } = useCommands(
+    conversationId,
+    cwd,
+    planMode,
+    handleCwdChange,
+    focusedFile,
+    handleLimitReached,
+  );
 
   // Clear button handler — drops the message list and pulls focus back
   // to the input so the user can immediately start typing again. The

@@ -6,6 +6,7 @@ import type {
   DirListing,
   EnvironmentInfo,
   ExecutionLogEntry,
+  FeatureCap,
   PlanDisplayMode,
   PlanResponse,
   PlanStep,
@@ -612,7 +613,7 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
 
 // ── Error message mapping (BackendErrorCode → user-facing copy) ──────────
 
-function planningErrorMessage(code: BackendErrorCode): string {
+function planningErrorMessage(code: BackendErrorCode, cap?: FeatureCap): string {
   switch (code) {
     case 'unauthorized':
       return 'Your session expired. Please sign in again.';
@@ -622,6 +623,12 @@ function planningErrorMessage(code: BackendErrorCode): string {
       return 'The AI service is busy right now. Wait a moment and try again.';
     case 'network':
       return "Couldn't reach the service. Check your connection.";
+    case 'limit_reached':
+      return "You're out of credits. They refill automatically — see your account menu for when, or upgrade for more.";
+    case 'feature_capped':
+      return cap === 'images'
+        ? "You've hit the free daily limit for image uploads. It resets tomorrow, or go Pro for unlimited."
+        : "You've used all your free Plan Mode runs for this month. Go Pro for unlimited Plan Mode.";
     case 'server':
       return 'Something went wrong. Please try again.';
   }
@@ -638,6 +645,14 @@ function synthesizeErrorMessage(code: BackendErrorCode): string {
       return 'The AI service was busy, so the summary didn’t generate — the commands ran fine, just retry for the summary.';
     case 'network':
       return "Couldn't reach the service for the summary. The commands ran.";
+    case 'limit_reached':
+      // The credit gate is enforced at /api/turn, so synthesize won't
+      // normally return this — handled for exhaustiveness.
+      return "You're out of credits. The commands ran; the summary needs your next refill.";
+    case 'feature_capped':
+      // Feature caps are enforced at /api/turn, never at synthesize —
+      // handled only for exhaustiveness.
+      return "The commands ran, but the summary couldn't be generated.";
     case 'server':
       return "Couldn't generate a summary. The commands ran.";
   }
@@ -853,6 +868,9 @@ export function useCommands(
   // being about that file. Set via the path picker, owned by
   // ConversationView.
   focusedFile: string | null,
+  // Called when a turn is rejected for hitting the monthly message cap
+  // (backend 402). The owner surfaces the upgrade / pro wall.
+  onLimitReached: () => void,
 ): {
   messages: CommandMessage[];
   forceScrollVersion: number;
@@ -886,6 +904,12 @@ export function useCommands(
   useEffect(() => {
     onCwdChangeRef.current = onCwdChange;
   }, [onCwdChange]);
+
+  // Same pattern for the limit-reached handler (opens the pro wall).
+  const onLimitReachedRef = useRef(onLimitReached);
+  useEffect(() => {
+    onLimitReachedRef.current = onLimitReached;
+  }, [onLimitReached]);
 
   // Resolver-map for the Plan Mode pause. When the orchestrator enters
   // 'awaiting-confirmation' it stashes a resolver here keyed by message
@@ -1266,10 +1290,19 @@ export function useCommands(
           bounceToLogin();
           return;
         }
+        // Out of credits, or a free-tier feature cap — surface the pro
+        // wall (upgrade modal) on top of the inline note, so the upgrade
+        // path is front and centre.
+        if (
+          planResult.code === 'limit_reached' ||
+          planResult.code === 'feature_capped'
+        ) {
+          onLimitReachedRef.current();
+        }
         dispatch({
           type: 'PLANNING_ERROR',
           id,
-          message: planningErrorMessage(planResult.code),
+          message: planningErrorMessage(planResult.code, planResult.cap),
         });
         return;
       }

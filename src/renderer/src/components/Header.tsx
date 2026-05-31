@@ -1,6 +1,6 @@
 import { HeaderMenu } from './HeaderMenu';
 import { PlanModeToggle } from './PlanModeToggle';
-import { UpdateButton } from './UpdateButton';
+import { Tooltip } from './Tooltip';
 
 interface HeaderProps {
   // The conversation's working-directory display path, or null when the
@@ -35,13 +35,10 @@ export function Header({
 }: HeaderProps) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b-[0.5px] border-hairline px-6">
+      {/* No wordmark inside the app — the brand lives on the window /
+          installer, not as an in-app watermark. The DEV badge stays as
+          a dev-only environment marker. */}
       <div className="flex shrink-0 items-center gap-2">
-        <span className="font-mono text-[14px] font-medium tracking-tight text-ink">
-          verlox
-        </span>
-        {/* DEV badge — only in dev builds (localhost backend). Amber
-            pill so a dev window is unmistakable at a glance and never
-            confused with the production app. */}
         {import.meta.env.DEV && (
           <span className="rounded-md border border-amber/40 bg-amber/[0.12] px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-amber">
             Dev
@@ -60,10 +57,6 @@ export function Header({
         <span className="flex-1" />
       )}
       <div className="flex shrink-0 items-center gap-3">
-        {/* Auto-update: self-managing — renders the Update button only
-            when a new version is downloaded (and a progress pill while
-            downloading), nothing otherwise. */}
-        <UpdateButton />
         {canClear && <ClearButton onClick={onClear} />}
         <PlanModeToggle on={planMode} onChange={onPlanModeChange} />
         <HeaderMenu />
@@ -79,16 +72,17 @@ export function Header({
 // clearing the terminal is a soft reset.
 function ClearButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title="Clear conversation"
-      aria-label="Clear conversation"
-      className="flex h-7 items-center gap-1.5 rounded-md border-[0.5px] border-subtle-border bg-surface-faint px-2.5 text-[12px] text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-    >
-      <EraserGlyph />
-      <span>Clear</span>
-    </button>
+    <Tooltip label="Clear conversation">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label="Clear conversation"
+        className="flex h-7 items-center gap-1.5 rounded-md border-[0.5px] border-subtle-border bg-surface-faint px-2.5 text-[12px] text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+      >
+        <EraserGlyph />
+        <span>Clear</span>
+      </button>
+    </Tooltip>
   );
 }
 

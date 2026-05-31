@@ -49,6 +49,11 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Verlox
+  # Stable, version-less installer name so the landing page can link
+  # directly to the file via GitHub's /releases/latest/download/ path
+  # (which always 404s if the filename carries a version that changes).
+  # electron-updater still works fine: latest.yml records this name.
+  artifactName: ${productName}-Setup.${ext}
 
 mac:
   target:

@@ -8,6 +8,7 @@ import {
   type RunningProcess,
 } from '../hooks/useRunningProcesses';
 import type { ConversationTab } from './TabBar';
+import { Tooltip } from './Tooltip';
 
 interface RunningProcessesProps {
   tabs: ConversationTab[];
@@ -202,11 +203,11 @@ function ProcessRow({
     >
       <div className="flex items-start gap-2">
         <StatusDot status={process.status} />
+        <Tooltip label={`Jump to ${tabTitle}`}>
         <button
           type="button"
           onClick={() => onJump(process.conversationId)}
           className="min-w-0 flex-1 text-left focus:outline-none"
-          title={`Jump to ${tabTitle}`}
         >
           <div className="truncate font-mono text-[12px] font-medium text-ink">
             {processLabel(process)}
@@ -215,6 +216,7 @@ function ProcessRow({
             {tabTitle}
           </div>
         </button>
+        </Tooltip>
       </div>
 
       {/* Action row — all icon buttons, tooltip on hover. Open
@@ -284,15 +286,16 @@ function IconButton({
       ? 'text-step-failed hover:bg-step-failed-tint'
       : 'text-ink-label hover:bg-surface-subtle hover:text-ink';
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors focus:outline-none ${toneClass}`}
-    >
-      {children}
-    </button>
+    <Tooltip label={title}>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={title}
+        className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors focus:outline-none ${toneClass}`}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 

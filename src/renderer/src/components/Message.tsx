@@ -1,11 +1,14 @@
-import { useState, type ReactNode } from 'react';
-import type { DiagramSchema, DirListing } from '@shared/types';
+import { useEffect, useState, type ReactNode } from 'react';
+import type { BackendErrorCode, DiagramSchema, DirListing } from '@shared/types';
 import type { CommandMessage, MessageStep, StepStatus } from '../hooks/useCommands';
 import type { PromptHistoryEntry } from '../hooks/usePromptHistory';
 import { StatusIndicator } from './StatusIndicator';
 import { Diagram } from './Diagram';
 import { PlanCard } from './PlanCard';
 import { CopyButton } from './CopyButton';
+import { Tooltip } from './Tooltip';
+import { useTier } from '../contexts/TierContext';
+import { useUpgrade } from '../contexts/UpgradeContext';
 
 interface MessageProps {
   message: CommandMessage;
@@ -71,15 +74,39 @@ export function Message({
   // status report and goes in a notification board.
   const responseIsConversation = status === 'replied';
 
+  // "just now" / "1m ago" / "2h ago" — auto-ticks every 30s. Computed
+  // once on the parent so we have one interval per turn (the AI's
+  // action row receives the same string via props).
+  const relativeTime = useRelativeTime(message.startedAt);
+
   return (
     <article className="mb-8 border-t border-hairline pt-8 first:border-t-0 first:pt-0">
-      {/* Intent — the user's request, in tight semibold sans. */}
-      <h2
-        className="text-[16px] font-semibold text-ink leading-snug"
-        style={{ letterSpacing: '-0.01em' }}
-      >
-        {message.userInput}
-      </h2>
+      {/* Intent — the user's request as a soft grey block with a
+          subtle "light from above" gradient. Capped width so long
+          prompts wrap inside the block rather than stretching the
+          whole column. The copy affordance sits in an action row below
+          (same pattern as the AI's response below), hover-revealed and
+          scoped to this `group` only. */}
+      <div className="group flex max-w-[640px] flex-col items-start gap-2">
+        <h2
+          className="rounded-3xl border border-[rgba(0,0,0,0.12)] px-5 py-3 text-[15px] font-medium leading-snug text-ink"
+          style={{
+            background:
+              'linear-gradient(180deg, #F5F6F8 0%, #E8EAED 100%)',
+            letterSpacing: '-0.01em',
+          }}
+        >
+          {message.userInput}
+        </h2>
+        <div className="flex items-center gap-2.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <CopyButton
+            text={message.userInput}
+            variant="pill"
+            label="Copy prompt"
+          />
+          <span className="text-[11.5px] text-ink-micro">{relativeTime}</span>
+        </div>
+      </div>
 
       {/* Attached screenshot — rendered as a rounded thumbnail right
           where the user sent it, so the conversation keeps a visual
@@ -132,6 +159,7 @@ export function Message({
           message={message}
           responseIsConversation={responseIsConversation}
           onStop={onStop}
+          relativeTime={relativeTime}
         />
       )}
 
@@ -254,15 +282,16 @@ export function Message({
           ResponseSection so it sits next to the "Show as diagram"
           toggle, not below it. */}
       {(status === 'executing' || status === 'synthesizing') && (
-        <button
-          type="button"
-          onClick={() => onStop(message.id)}
-          aria-label={status === 'executing' ? 'Stop' : 'Pause'}
-          title={status === 'executing' ? 'Stop' : 'Pause'}
-          className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-        >
-          {status === 'executing' ? <StopGlyph /> : <PauseGlyph />}
-        </button>
+        <Tooltip label={status === 'executing' ? 'Stop' : 'Pause'}>
+          <button
+            type="button"
+            onClick={() => onStop(message.id)}
+            aria-label={status === 'executing' ? 'Stop' : 'Pause'}
+            className="mt-2 flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+          >
+            {status === 'executing' ? <StopGlyph /> : <PauseGlyph />}
+          </button>
+        </Tooltip>
       )}
 
     </article>
@@ -279,11 +308,15 @@ function ResponseSection({
   message,
   responseIsConversation,
   onStop,
+  relativeTime,
 }: {
   message: CommandMessage;
   responseIsConversation: boolean;
   onStop: (id: string) => void;
+  relativeTime: string;
 }) {
+  const { isPro } = useTier();
+  const { openUpgrade } = useUpgrade();
   const { finalResponse, pendingResponse, userInput, status } = message;
   const [viewMode, setViewMode] = useState<'prose' | 'diagram'>('prose');
   const [diagram, setDiagram] = useState<DiagramSchema | null>(null);
@@ -358,21 +391,50 @@ function ResponseSection({
 
   return (
     <>
-      <div key={viewKey} className={fadeClass}>
-        {showingDiagram ? (
-          <div className="mt-3 rounded-2xl border border-subtle-border bg-card/60 p-5">
-            <Diagram diagram={diagram} />
-          </div>
-        ) : responseIsConversation ? (
-          <div className="mt-3">
-            <ProseResponse text={finalResponse} />
-          </div>
-        ) : (
-          <NotificationBoard className="mt-3">
-            <ProseResponse text={finalResponse} />
-          </NotificationBoard>
-        )}
-      </div>
+      {/* AI response area — its own `group` so the copy affordance in
+          the action row reveals only when you hover the AI's answer,
+          not when you hover the user's pill above. mt-6 puts real
+          breathing room between the operator's question and the
+          system's response so they read as distinct moments. */}
+      <div className="group mt-6">
+        <div key={viewKey} className={fadeClass}>
+          {showingDiagram ? (
+            <div className="w-fit max-w-full rounded-2xl border border-subtle-border bg-card/60 p-5">
+              <Diagram diagram={diagram} />
+            </div>
+          ) : responseIsConversation ? (
+            <div className="max-w-prose">
+              <ProseResponse text={finalResponse} />
+            </div>
+          ) : (
+            <NotificationBoard className="w-fit max-w-prose">
+              <ProseResponse text={finalResponse} />
+              {/* Eye-panel content lives INSIDE the response card so the
+                  raw command + output reads as a continuation of the AI's
+                  answer, not a separate floating block. The grid 1fr/0fr
+                  trick keeps the expand/collapse smooth; the border-top
+                  + mt-3 only appear when the panel is open because the
+                  whole div is collapsed to 0fr otherwise. */}
+              {message.displayMode === 'summary' && ranSteps.length > 0 && (
+                <div
+                  className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+                    eyeOpen && isSettled && proseFullyRendered
+                      ? 'grid-rows-[1fr]'
+                      : 'grid-rows-[0fr]'
+                  }`}
+                >
+                  <div className="overflow-hidden">
+                    <div className="mt-3 space-y-3 border-t border-subtle-border pt-3">
+                      {ranSteps.map((s) => (
+                        <OutputBlock key={s.index} step={s} />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </NotificationBoard>
+          )}
+        </div>
       {(() => {
         // Pause sits in the same row as the diagram + eye toggles
         // while prose is actively coming in — either the synthesise
@@ -392,24 +454,39 @@ function ResponseSection({
         if (!showButton && !showPause && !showEye) return null;
         return (
           <div className="mt-2 flex items-center gap-2">
-            {showPause && (
-              <button
-                type="button"
-                onClick={() => onStop(message.id)}
-                aria-label="Pause"
-                title="Pause"
-                className="flex h-7 w-7 items-center justify-center rounded-full border border-subtle-border bg-card text-ink-hint transition-colors hover:border-ink-hint hover:text-ink focus:outline-none"
-              >
-                <PauseGlyph />
-              </button>
+            {/* Copy the AI's prose answer. Placed first (left edge) so
+                it lines up with the user's copy button under the user
+                pill above — same visual position for both blocks. Hover-
+                revealed via the response-area `group`; hidden in the
+                diagram view because there's nothing to copy as text. */}
+            {!showingDiagram && finalResponse.length > 0 && (
+              <span className="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+                <CopyButton
+                  text={finalResponse}
+                  variant="pill"
+                  label="Copy response"
+                />
+              </span>
             )}
-            {showButton && (
+            {showPause && (
+              <Tooltip label="Pause">
+                <button
+                  type="button"
+                  onClick={() => onStop(message.id)}
+                  aria-label="Pause"
+                  className="flex h-7 w-7 items-center justify-center rounded-full border border-subtle-border bg-card text-ink-hint transition-colors hover:border-ink-hint hover:text-ink focus:outline-none"
+                >
+                  <PauseGlyph />
+                </button>
+              </Tooltip>
+            )}
+            {showButton && isPro && (
               <button
                 type="button"
                 onClick={handleToggle}
                 disabled={!canClick}
                 aria-pressed={showingDiagram}
-                className="inline-flex items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-label transition-colors hover:border-ink-hint hover:text-ink focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-subtle-border disabled:hover:text-ink-label"
+                className="inline-flex items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-label opacity-0 transition duration-150 hover:border-ink-hint hover:text-ink focus:outline-none group-hover:opacity-100 focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-subtle-border disabled:hover:text-ink-label"
               >
                 <DiagramToggleGlyph showingDiagram={showingDiagram} />
                 {loading
@@ -421,54 +498,55 @@ function ResponseSection({
                       : 'Show as diagram'}
               </button>
             )}
+            {/* Free users see the feature exists but locked — clicking
+                opens the plan page. Diagrams are a billable AI call, so
+                the server enforces this too (403). */}
+            {showButton && !isPro && (
+              <Tooltip label="Diagrams are a Pro feature — click to upgrade">
+                <button
+                  type="button"
+                  onClick={() => openUpgrade({ feature: 'Diagrams' })}
+                  className="inline-flex select-none items-center gap-1.5 rounded-full border border-subtle-border bg-card px-2.5 py-1 text-[11.5px] text-ink-micro opacity-0 transition duration-150 hover:border-ink-hint hover:text-ink-label focus:outline-none group-hover:opacity-100 focus-within:opacity-100"
+                >
+                  <DiagramToggleGlyph showingDiagram={false} />
+                  Show as diagram
+                  <LockGlyph />
+                </button>
+              </Tooltip>
+            )}
             {showEye && (
-              <button
-                type="button"
-                onClick={() => setEyeOpen((v) => !v)}
-                aria-label={eyeOpen ? 'Hide commands' : 'Show commands'}
-                title={eyeOpen ? 'Hide commands' : 'Show commands'}
-                aria-pressed={eyeOpen}
-                className={`flex h-7 w-7 items-center justify-center rounded-full border border-subtle-border bg-card transition-colors hover:border-ink-hint focus:outline-none ${
-                  eyeOpen ? 'text-ink' : 'text-ink-label hover:text-ink'
-                }`}
-              >
-                <EyeGlyph off={!eyeOpen} />
-              </button>
+              <Tooltip label={eyeOpen ? 'Hide commands' : 'Show commands'}>
+                <button
+                  type="button"
+                  onClick={() => setEyeOpen((v) => !v)}
+                  aria-label={eyeOpen ? 'Hide commands' : 'Show commands'}
+                  aria-pressed={eyeOpen}
+                  className={`flex h-7 w-7 items-center justify-center rounded-full border border-subtle-border bg-card opacity-0 transition duration-150 hover:border-ink-hint focus:outline-none group-hover:opacity-100 focus-within:opacity-100 ${
+                    eyeOpen ? 'text-ink' : 'text-ink-label hover:text-ink'
+                  }`}
+                >
+                  <EyeGlyph off={!eyeOpen} />
+                </button>
+              </Tooltip>
             )}
             {error && (
               <span className="text-[11px] text-step-failed">{error}</span>
             )}
+            {/* Relative time indicator — hover-revealed alongside the
+                copy icon so the action row stays uncluttered until
+                someone is actively looking. Auto-ticks every 30s. */}
+            <span className="text-[11.5px] text-ink-micro opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+              {relativeTime}
+            </span>
           </div>
         );
       })()}
-
-      {/* Eye-panel content — collapsible list of raw command + output
-          blocks for this turn. Sits below the toggle row; expands /
-          collapses smoothly via the grid 1fr/0fr trick. */}
-      {message.displayMode === 'summary' && ranSteps.length > 0 && (
-        <div
-          className={`grid transition-[grid-template-rows] duration-200 ease-out ${
-            eyeOpen && isSettled && proseFullyRendered
-              ? 'grid-rows-[1fr]'
-              : 'grid-rows-[0fr]'
-          }`}
-        >
-          <div className="overflow-hidden">
-            <div className="space-y-3 pt-3">
-              {ranSteps.map((s) => (
-                <OutputBlock key={s.index} step={s} />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      </div>
     </>
   );
 }
 
-function diagramErrorMessage(
-  code: 'unauthorized' | 'network' | 'rate_limit' | 'server',
-): string {
+function diagramErrorMessage(code: BackendErrorCode): string {
   switch (code) {
     case 'unauthorized':
       return 'Session expired. Sign in again.';
@@ -476,9 +554,29 @@ function diagramErrorMessage(
       return 'Rate-limited. Try again in a moment.';
     case 'network':
       return "Couldn't reach the service.";
+    case 'limit_reached':
+      return "You're out of credits.";
+    case 'feature_capped':
+      return 'That feature is capped on the free plan.';
     case 'server':
       return "Couldn't generate the diagram.";
   }
+}
+
+function LockGlyph() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      className="h-2.5 w-2.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      aria-hidden="true"
+    >
+      <rect x="2.5" y="5.5" width="7" height="5" rx="1" />
+      <path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" />
+    </svg>
+  );
 }
 
 function DiagramToggleGlyph({ showingDiagram }: { showingDiagram: boolean }) {
@@ -663,6 +761,19 @@ function PromptHistoryBoard({ entries }: { entries: PromptHistoryEntry[] }) {
       )}
     </div>
   );
+}
+
+// Re-formats a relative time string every 30 seconds so "just now" can
+// turn into "1m ago" without needing a manual refresh. One interval per
+// caller — fine at conversation scale; lift to a single shared tick if
+// we ever render hundreds of messages on one screen.
+function useRelativeTime(ts: number): string {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  return formatRelativeTime(ts);
 }
 
 function formatRelativeTime(ts: number): string {
@@ -3070,7 +3181,11 @@ function OutputBlock({ step }: { step: MessageStep }) {
           : 'border-l-subtle-border bg-surface-subtle';
   return (
     <div
-      className={`overflow-hidden rounded-xl border border-subtle-border border-l-[3px] ${accent}`}
+      // w-fit hugs the longest line of the command or output so a tiny
+      // result like "v24.13.0" doesn't get a column-wide chrome around
+      // it. max-w-full caps the block at the conversation width for long
+      // outputs that would otherwise overflow horizontally.
+      className={`w-fit max-w-full overflow-hidden rounded-xl border border-subtle-border border-l-[3px] ${accent}`}
     >
       {/* Command header — a status dot, the raw command, a copy
           affordance for the output. */}

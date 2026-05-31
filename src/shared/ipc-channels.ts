@@ -17,6 +17,8 @@ export const IpcChannels = {
 
   // Environment
   EnvGet: 'env:get',
+  // App version (from package.json, via app.getVersion()).
+  AppGetVersion: 'app:get-version',
 
   // System shell
   ShellOpenExternal: 'shell:open-external',
@@ -27,8 +29,16 @@ export const IpcChannels = {
   UpdateCheck: 'update:check',
   UpdateInstall: 'update:install',
 
+  // Billing (Stripe). Renderer asks main to start a checkout / open the
+  // customer portal; main fetches the URL from the backend and opens it
+  // in the user's default browser.
+  BillingCheckout: 'billing:checkout',
+  BillingPortal: 'billing:portal',
+  BillingStatus: 'billing:status',
+
   // Backend AI
   BackendPlanTurn: 'backend:plan-turn',
+  BackendGetUsage: 'backend:get-usage',
   BackendSynthesizeStart: 'backend:synthesize:start',
   BackendSynthesizeCancel: 'backend:synthesize:cancel',
   BackendSynthesizeEvent: 'backend:synthesize:event',
