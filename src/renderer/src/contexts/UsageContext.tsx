@@ -332,8 +332,10 @@ function UsagePanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-// One free-tier feature cap card (images/day, Plan Mode/month). A null
-// limit means unlimited (Pro), shown as a check rather than a count.
+// One feature cap card (images/day, Plan Mode/month). A null limit means
+// unlimited (Pro). A limit of 0 means the feature isn't on this tier at
+// all — a Pro-only feature for a free user (e.g. Plan Mode) — shown as
+// "Pro only" rather than a misleading "0 / 0" count.
 function CapCard({
   label,
   used,
@@ -344,13 +346,16 @@ function CapCard({
   limit: number | null;
 }) {
   const unlimited = limit === null;
-  const hit = !unlimited && used >= (limit as number);
+  const proOnly = limit === 0;
+  const hit = !unlimited && !proOnly && used >= (limit as number);
   return (
     <div className="rounded-xl border border-subtle-border bg-surface-faint p-3">
       <div className="text-[11px] text-ink-label">{label}</div>
       <div className="mt-1 text-[15px] font-semibold tabular-nums text-ink">
         {unlimited ? (
           <span className="text-[13px] font-medium text-ink-body">Unlimited</span>
+        ) : proOnly ? (
+          <span className="text-[13px] font-medium text-ink-label">Pro only</span>
         ) : (
           <span className={hit ? 'text-step-failed' : 'text-ink'}>
             {used} <span className="text-[12px] font-normal text-ink-label">/ {limit}</span>
