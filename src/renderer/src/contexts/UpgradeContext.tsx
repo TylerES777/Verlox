@@ -252,7 +252,6 @@ function UpgradeModal({
                 <li>15 credits a day</li>
                 <li>Fast Haiku model</li>
                 <li>2 image uploads a day</li>
-                <li>Plan Mode 4 times a month</li>
                 <li>Timeline history</li>
                 <li>The Running pane</li>
               </ul>
