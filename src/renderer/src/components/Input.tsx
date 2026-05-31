@@ -12,6 +12,8 @@ import {
 } from 'react';
 import type { AttachedImage } from '@shared/types';
 import { PathPicker, type PathSelection } from './PathPicker';
+import { useUsage } from '../contexts/UsageContext';
+import { useUpgrade } from '../contexts/UpgradeContext';
 
 const MAX_LINES = 6;
 
@@ -68,6 +70,15 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineHeightRef = useRef<number>(0);
   const [value, setValue] = useState('');
+
+  // True once the free daily image cap is spent. Rather than disabling the
+  // attach affordance, any attempt to attach (click, paste, or drop) opens
+  // the Go Pro wall — the user gets the upgrade path, not a dead button.
+  const { imagesExhausted } = useUsage();
+  const { openUpgrade } = useUpgrade();
+  const raiseImageWall = useCallback(() => {
+    openUpgrade({ feature: 'Image uploads', limitReached: true });
+  }, [openUpgrade]);
 
   // Path picker open state. The wrapper ref spans BOTH the folder button
   // and the picker panel, so a click on either counts as "inside" and
@@ -145,13 +156,20 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
   // Accept a File from the file picker, a paste, or a drop. Validates
   // type + size, base64-encodes, and stores as the current attachment.
   // Replaces any prior attachment — one image per submit.
-  const acceptFile = useCallback(async (file: File): Promise<void> => {
-    if (!ACCEPTED_IMAGE_TYPES.has(file.type)) {
-      setAttachmentError(
-        'Only PNG, JPEG, WebP, and GIF images are supported.',
-      );
-      return;
-    }
+  const acceptFile = useCallback(
+    async (file: File): Promise<void> => {
+      // Free daily image cap is spent — a paste/drop opens the Go Pro wall,
+      // mirroring the attach button, instead of silently failing.
+      if (imagesExhausted) {
+        raiseImageWall();
+        return;
+      }
+      if (!ACCEPTED_IMAGE_TYPES.has(file.type)) {
+        setAttachmentError(
+          'Only PNG, JPEG, WebP, and GIF images are supported.',
+        );
+        return;
+      }
     if (file.size > MAX_IMAGE_BYTES) {
       const mb = (file.size / (1024 * 1024)).toFixed(1);
       setAttachmentError(`Image is ${mb} MB — the limit is 5 MB.`);
@@ -173,7 +191,9 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
     } catch {
       setAttachmentError("Couldn't read that file. Try a different image.");
     }
-  }, []);
+    },
+    [imagesExhausted, raiseImageWall],
+  );
 
   const handleFileInputChange = (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -342,11 +362,23 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
             </button>
           </Tooltip>
         </div>
-        {/* Image-attach button — opens the hidden native file picker. */}
-        <Tooltip label="Attach a screenshot or image (or paste / drop one)">
+        {/* Image-attach button — opens the hidden native file picker.
+            Once the free daily image cap is spent, the click opens the
+            Go Pro wall instead; the tooltip explains why. */}
+        <Tooltip
+          label={
+            imagesExhausted
+              ? "You've used today's image uploads. Go Pro for unlimited."
+              : 'Attach a screenshot or image (or paste / drop one)'
+          }
+        >
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() =>
+              imagesExhausted
+                ? raiseImageWall()
+                : fileInputRef.current?.click()
+            }
             disabled={busy}
             aria-label="Attach a screenshot or image"
             className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border-[0.5px] transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${

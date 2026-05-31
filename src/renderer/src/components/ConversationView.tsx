@@ -5,7 +5,7 @@ import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
 import type { PathSelection } from './PathPicker';
 import { useCommands } from '../hooks/useCommands';
-import { useUpgrade } from '../contexts/UpgradeContext';
+import { useUsage } from '../contexts/UsageContext';
 
 // Empty-state example prompts. Each category carries a short caption
 // (Explore / Navigate / Inspect), an icon, and a POOL of prompts that
@@ -387,12 +387,14 @@ export function ConversationView({
     }
   }, []);
 
-  const { openUpgrade } = useUpgrade();
-  // When a turn is rejected for hitting the monthly cap, raise the pro
-  // wall (upgrade modal) so the upgrade path is front and centre.
+  const { refresh: refreshUsage } = useUsage();
+  // When a turn is rejected for hitting a cap, refresh the usage snapshot
+  // so the balance + caps (and the image-attach button's enabled state)
+  // reflect the wall the user just hit. The inline notification carries
+  // the Go Pro button, so we no longer auto-open the modal here.
   const handleLimitReached = useCallback(() => {
-    openUpgrade({ limitReached: true });
-  }, [openUpgrade]);
+    refreshUsage();
+  }, [refreshUsage]);
 
   const {
     messages,
@@ -531,6 +533,17 @@ export function ConversationView({
       ((m.status === 'done' || m.status === 'replied') &&
         m.finalResponse.length < m.pendingResponse.length),
   );
+
+  // Refresh the shared usage snapshot whenever a turn settles (busy →
+  // idle). Each turn may have spent credits or an image upload, so this
+  // keeps the credit balance and feature caps current — in particular it
+  // disables the image-attach button the moment the daily image cap is
+  // spent, without waiting for the next failed attempt.
+  const prevBusyRef = useRef(false);
+  useEffect(() => {
+    if (prevBusyRef.current && !isBusy) refreshUsage();
+    prevBusyRef.current = isBusy;
+  }, [isBusy, refreshUsage]);
 
   // No card chrome — the conversation flows directly on the white app
   // surface. Timeline sidebar's right border is the only divider; the

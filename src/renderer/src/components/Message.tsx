@@ -1,5 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import type { BackendErrorCode, DiagramSchema, DirListing } from '@shared/types';
+import type {
+  BackendErrorCode,
+  DiagramSchema,
+  DirListing,
+  FeatureCap,
+} from '@shared/types';
 import type { CommandMessage, MessageStep, StepStatus } from '../hooks/useCommands';
 import type { PromptHistoryEntry } from '../hooks/usePromptHistory';
 import { StatusIndicator } from './StatusIndicator';
@@ -49,6 +54,8 @@ export function Message({
     statusIndicator,
     finalResponse,
     errorMessage,
+    limitCode,
+    limitCap,
     steps,
     displayMode,
     plan,
@@ -78,6 +85,10 @@ export function Message({
   // once on the parent so we have one interval per turn (the AI's
   // action row receives the same string via props).
   const relativeTime = useRelativeTime(message.startedAt);
+
+  // Opens the subscription bar from the inline "Go Pro" button on usage
+  // limiter notifications (out of credits / image cap / Plan Mode cap).
+  const { openUpgrade } = useUpgrade();
 
   return (
     <article className="mb-8 border-t border-hairline pt-8 first:border-t-0 first:pt-0">
@@ -245,11 +256,24 @@ export function Message({
         </>
       )}
 
-      {/* cd-error / list-error / planning-error — a notification, error tone. */}
-      {(status === 'cd-error' ||
+      {/* Usage limiters (out of credits, image cap, Plan Mode cap) get a
+          dedicated notification: the same copy plus an inline "Go Pro"
+          button that opens the subscription bar. Each limiter keeps its
+          own message; only the CTA framing is shared. */}
+      {status === 'planning-error' && errorMessage && limitCode && (
+        <LimitNotification
+          message={errorMessage}
+          onGoPro={() => openUpgrade(upgradeOptsForLimit(limitCode, limitCap))}
+          className="mt-3"
+        />
+      )}
+
+      {/* cd-error / list-error / non-limiter planning-error — a plain
+          notification in error tone, no upgrade CTA. */}
+      {((status === 'cd-error' ||
         status === 'list-error' ||
-        status === 'planning-error') &&
-        errorMessage && (
+        (status === 'planning-error' && !limitCode)) &&
+        errorMessage) && (
           <NotificationBoard variant="error" className="mt-3">
             <BoardText>{errorMessage}</BoardText>
           </NotificationBoard>
@@ -718,6 +742,126 @@ function NotificationBoard({
 function BoardText({ children }: { children: ReactNode }) {
   return (
     <p className="text-[14px] leading-relaxed text-ink-body">{children}</p>
+  );
+}
+
+// Maps a usage limiter (out of credits / image cap / Plan Mode cap) to the
+// right framing for the upgrade modal. limitReached is always true here —
+// these only fire when the user actually hit a wall — and `feature` names
+// the specific thing they were trying to do so the modal can echo it.
+function upgradeOptsForLimit(
+  code: BackendErrorCode,
+  cap: FeatureCap | null,
+): { feature?: string; limitReached: boolean } {
+  if (code === 'feature_capped') {
+    return {
+      feature: cap === 'images' ? 'Image uploads' : 'Plan Mode',
+      limitReached: true,
+    };
+  }
+  // limit_reached — out of credits, no single feature to name.
+  return { limitReached: true };
+}
+
+// The limiter notification. Drops the harsh red error board (the only red
+// in the app) for the same liquid-glass language used by the Plan Card and
+// the example cards: a tinted frame, a 1px top-edge highlight, and a white
+// inner surface. A small gold "upgrade" badge sets the premium tone without
+// alarm. Keeps each limiter's own copy and adds an inline "Go Pro" button
+// that opens the subscription bar. Shared across all three limiters (out of
+// credits, image cap, Plan Mode cap) so they read consistently.
+function LimitNotification({
+  message,
+  onGoPro,
+  className = '',
+}: {
+  message: string;
+  onGoPro: () => void;
+  className?: string;
+}) {
+  const frameStyle: React.CSSProperties = {
+    background:
+      'linear-gradient(180deg, rgba(245,246,249,0.96) 0%, rgba(238,240,245,0.95) 100%)',
+    backdropFilter: 'blur(12px) saturate(140%)',
+    WebkitBackdropFilter: 'blur(12px) saturate(140%)',
+    boxShadow:
+      '0 1px 0 rgba(255,255,255,0.7) inset, 0 0 0 0.5px rgba(0,0,0,0.05), 0 14px 34px -18px rgba(20,30,60,0.22), 0 2px 8px -4px rgba(0,0,0,0.05)',
+  };
+  const innerStyle: React.CSSProperties = {
+    background: 'linear-gradient(180deg, #FFFFFF 0%, #FDFEFE 100%)',
+    boxShadow:
+      '0 1px 0 rgba(255,255,255,0.9) inset, 0 1px 2px rgba(16,24,40,0.04)',
+  };
+  // Dark elevated pill, same treatment as the Plan Card's primary action.
+  const goProStyle: React.CSSProperties = {
+    background: 'linear-gradient(180deg, #1B1B1F 0%, #0A0A0C 100%)',
+    boxShadow:
+      '0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 2px rgba(0,0,0,0.15), 0 4px 12px -4px rgba(0,0,0,0.25)',
+  };
+  // Lit gold badge — premium "upgrade" cue, echoes the amber pip language
+  // used across the Plan Card / header without introducing an error tone.
+  const badgeStyle: React.CSSProperties = {
+    background: 'linear-gradient(135deg, #F2D283 0%, #C8962E 100%)',
+    boxShadow:
+      'inset 0 0.5px 0 rgba(255,255,255,0.5), 0 0 6px rgba(200,160,70,0.45)',
+  };
+  return (
+    <div
+      className={`relative overflow-hidden rounded-2xl border border-subtle-border ${className}`}
+      style={frameStyle}
+    >
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/85 to-transparent"
+        aria-hidden="true"
+      />
+      <div
+        className="m-1.5 flex items-start gap-3 rounded-xl border border-subtle-border/70 px-4 py-3.5"
+        style={innerStyle}
+      >
+        <span
+          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white"
+          style={badgeStyle}
+          aria-hidden="true"
+        >
+          <SparkGlyph />
+        </span>
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <p className="text-[13.5px] leading-relaxed text-ink-body">
+            {message}
+          </p>
+          <div>
+            <button
+              type="button"
+              onClick={onGoPro}
+              style={goProStyle}
+              className="inline-flex select-none items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12.5px] font-medium text-white transition duration-150 hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-ink/25"
+            >
+              <SparkGlyph />
+              Go Pro
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Small spark/upgrade glyph — used on the gold badge and the Go Pro button.
+function SparkGlyph() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" />
+    </svg>
   );
 }
 

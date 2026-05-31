@@ -19,17 +19,52 @@ import { useUpgrade } from './UpgradeContext';
 
 interface UsageContextValue {
   openUsage: () => void;
+  // Latest usage snapshot, refreshed on mount and after each turn settles.
+  // Drives proactive UI like disabling the image-attach button once the
+  // free daily image cap is spent. Null until the first fetch resolves.
+  usage: UsageInfo | null;
+  // True when the free-tier daily image cap is fully spent (limit set and
+  // reached). False for Pro (limit null = unlimited) and while unknown.
+  imagesExhausted: boolean;
+  // Re-fetch the usage snapshot. Called after a turn finishes so caps and
+  // the credit balance reflect what the turn just consumed.
+  refresh: () => void;
 }
 
-const UsageContext = createContext<UsageContextValue>({ openUsage: () => {} });
+const UsageContext = createContext<UsageContextValue>({
+  openUsage: () => {},
+  usage: null,
+  imagesExhausted: false,
+  refresh: () => {},
+});
 
 export function UsageProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [usage, setUsage] = useState<UsageInfo | null>(null);
   const openUsage = useCallback(() => setOpen(true), []);
   const close = useCallback(() => setOpen(false), []);
 
+  const refresh = useCallback(() => {
+    window.api
+      .getUsage()
+      .then((u) => setUsage(u))
+      .catch(() => {
+        // Leave the last good snapshot in place on a transient failure —
+        // the server still enforces caps, so a stale client read is safe.
+      });
+  }, []);
+
+  // Prime the snapshot once the provider mounts (post-auth).
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const images = usage?.caps?.images;
+  const imagesExhausted =
+    !!images && images.limit !== null && images.used >= images.limit;
+
   return (
-    <UsageContext.Provider value={{ openUsage }}>
+    <UsageContext.Provider value={{ openUsage, usage, imagesExhausted, refresh }}>
       {children}
       {open && <UsagePanel onClose={close} />}
     </UsageContext.Provider>

@@ -156,6 +156,12 @@ export interface CommandMessage {
   // For *-error states + planning-error / synthesize-error:
   errorMessage: string | null;
 
+  // When a planning-error is a usage limiter (out of credits, or a free
+  // feature cap), these carry the backend code + cap so the notification
+  // can render the matching "Go Pro" CTA. Null for all non-limiter errors.
+  limitCode: BackendErrorCode | null;
+  limitCap: FeatureCap | null;
+
   // Backstop for the hang-on-prompt hazard. Set true when the running
   // step has produced no output and not exited for a while — it may be
   // a command waiting for input Verlox can't answer. Non-destructive:
@@ -194,7 +200,15 @@ type Action =
   // PLAN_CANCELLED terminates a paused turn. No steps ever run.
   // The turn stays in conversation history with the "Plan discarded." footer.
   | { type: 'PLAN_CANCELLED'; id: string }
-  | { type: 'PLANNING_ERROR'; id: string; message: string }
+  | {
+      type: 'PLANNING_ERROR';
+      id: string;
+      message: string;
+      // Set when the error is a usage limiter so the notification can
+      // render the right "Go Pro" CTA. Undefined for ordinary failures.
+      limitCode?: BackendErrorCode;
+      limitCap?: FeatureCap;
+    }
   // REPLIED: the AI answered without running commands — a clarifying
   // question, advice, or a calm decline. `text` is its message.
   | { type: 'REPLIED'; id: string; text: string }
@@ -286,6 +300,8 @@ function newMessage(
     listing: null,
     promptHistory: null,
     errorMessage: null,
+    limitCode: null,
+    limitCap: null,
     stalled: false,
   };
 }
@@ -420,6 +436,8 @@ function reduce(state: CommandMessage[], action: Action): CommandMessage[] {
               status: 'planning-error',
               statusIndicator: null,
               errorMessage: action.message,
+              limitCode: action.limitCode ?? null,
+              limitCap: action.limitCap ?? null,
               endedAt: Date.now(),
             }
           : m,
@@ -624,7 +642,7 @@ function planningErrorMessage(code: BackendErrorCode, cap?: FeatureCap): string 
     case 'network':
       return "Couldn't reach the service. Check your connection.";
     case 'limit_reached':
-      return "You're out of credits. They refill automatically — see your account menu for when, or upgrade for more.";
+      return "You're out of credits. They refill automatically. Check your account menu to see when.";
     case 'feature_capped':
       return cap === 'images'
         ? "You've hit the free daily limit for image uploads. It resets tomorrow, or go Pro for unlimited."
@@ -1290,19 +1308,19 @@ export function useCommands(
           bounceToLogin();
           return;
         }
-        // Out of credits, or a free-tier feature cap — surface the pro
-        // wall (upgrade modal) on top of the inline note, so the upgrade
-        // path is front and centre.
-        if (
+        // Out of credits, or a free-tier feature cap — surface the limiter
+        // inline. The notification itself carries a "Go Pro" button (wired
+        // in Message.tsx) so the upgrade path is one calm click away rather
+        // than an interrupting auto-popup.
+        const isLimiter =
           planResult.code === 'limit_reached' ||
-          planResult.code === 'feature_capped'
-        ) {
-          onLimitReachedRef.current();
-        }
+          planResult.code === 'feature_capped';
         dispatch({
           type: 'PLANNING_ERROR',
           id,
           message: planningErrorMessage(planResult.code, planResult.cap),
+          limitCode: isLimiter ? planResult.code : undefined,
+          limitCap: planResult.cap,
         });
         return;
       }
