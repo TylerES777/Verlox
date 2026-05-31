@@ -212,6 +212,7 @@ ipcMain.on(IpcChannels.BackendSynthesizeStart, async (event, request: Synthesize
         intent: request.intent,
         plan: request.plan,
         executionLog: request.executionLog,
+        model: request.model,
       },
       controller.signal,
     )) {

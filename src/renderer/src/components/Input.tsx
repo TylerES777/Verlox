@@ -10,8 +10,9 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from 'react';
-import type { AttachedImage } from '@shared/types';
+import type { AttachedImage, ModelChoice } from '@shared/types';
 import { PathPicker, type PathSelection } from './PathPicker';
+import { ModelSwitcher } from './ModelSwitcher';
 import { useUsage } from '../contexts/UsageContext';
 import { useUpgrade } from '../contexts/UpgradeContext';
 
@@ -61,10 +62,14 @@ interface InputProps {
   // whole input row so the user can't submit a second turn over the
   // one in flight. Clears the instant the turn finishes or is stopped.
   busy: boolean;
+  // Session-wide model selection + setter, owned by ConversationsShell.
+  // Drives the in-row model switcher.
+  modelChoice: ModelChoice;
+  onModelChoiceChange: (value: ModelChoice) => void;
 }
 
 export const Input = forwardRef<InputHandle, InputProps>(function Input(
-  { onSubmit, pickerInitialPath, onPickPath, locked, busy },
+  { onSubmit, pickerInitialPath, onPickPath, locked, busy, modelChoice, onModelChoiceChange },
   ref,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -396,6 +401,13 @@ export const Input = forwardRef<InputHandle, InputProps>(function Input(
           accept="image/png,image/jpeg,image/webp,image/gif"
           className="hidden"
           onChange={handleFileInputChange}
+        />
+        {/* Model switcher — Haiku / Sonnet / Opus. Free users are pinned
+            to Haiku; Sonnet/Opus show locked and open the Go Pro wall. */}
+        <ModelSwitcher
+          value={modelChoice}
+          onChange={onModelChoiceChange}
+          disabled={busy}
         />
         <textarea
           ref={textareaRef}

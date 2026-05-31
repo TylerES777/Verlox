@@ -8,6 +8,7 @@ import type {
   DiagramResultWire,
   DiagramSchema,
   ExecutionLogEntry,
+  ModelChoice,
   PlanResponse,
   TurnInput,
   TurnResultWire,
@@ -372,6 +373,8 @@ interface SynthesizeRequestBody {
   intent: string;
   plan: string;
   executionLog: ExecutionLogEntry[];
+  // Same model the plan used, for a consistent synthesized voice.
+  model?: ModelChoice;
 }
 
 /**

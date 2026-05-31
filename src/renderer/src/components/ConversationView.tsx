@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
-import type { CwdInfo } from '@shared/types';
+import type { CwdInfo, ModelChoice } from '@shared/types';
 import { Header } from './Header';
 import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
@@ -320,6 +320,11 @@ interface ConversationViewProps {
   // Header renders the toggle bound to it.
   planMode: boolean;
   onPlanModeChange: (value: boolean) => void;
+  // Session-wide model selection (Haiku / Sonnet / Opus), owned by
+  // ConversationsShell and shared across tabs. The Input bar renders the
+  // switcher bound to it; useCommands sends it on each turn.
+  modelChoice: ModelChoice;
+  onModelChoiceChange: (value: ModelChoice) => void;
   // Reports this conversation's tab title up to the shell. Fired once
   // when the first message arrives (the title derives from it).
   onTitleChange: (conversationId: string, title: string) => void;
@@ -346,6 +351,8 @@ export function ConversationView({
   isActive,
   planMode,
   onPlanModeChange,
+  modelChoice,
+  onModelChoiceChange,
   onTitleChange,
   onRunningChange,
   insertRequest,
@@ -408,6 +415,7 @@ export function ConversationView({
     conversationId,
     cwd,
     planMode,
+    modelChoice,
     handleCwdChange,
     focusedFile,
     handleLimitReached,
@@ -595,6 +603,8 @@ export function ConversationView({
         onPickPath={handlePickPath}
         locked={locked}
         busy={isBusy}
+        modelChoice={modelChoice}
+        onModelChoiceChange={onModelChoiceChange}
       />
     </div>
   );

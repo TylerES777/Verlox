@@ -7,6 +7,7 @@ import type {
   EnvironmentInfo,
   ExecutionLogEntry,
   FeatureCap,
+  ModelChoice,
   PlanDisplayMode,
   PlanResponse,
   PlanStep,
@@ -876,6 +877,11 @@ export function useCommands(
   // Cd-only and footgun-only turns bypass Plan Mode (cd is auto-handled;
   // footguns get their own stripped Plan Card in Chunk 5).
   planMode: boolean,
+  // Session-wide model selection (Haiku / Sonnet / Opus). Sent on each
+  // turn's /api/turn + /api/synthesize. Free users are pinned to Haiku
+  // server-side regardless of this value. Read via a ref so submitInput
+  // captures the latest value at submit time.
+  modelChoice: ModelChoice,
   // Called when a `cd` turn succeeds. The conversation owns its own cwd
   // state (one cwd per tab); useCommands resolves the path via the
   // backend validator but hands the result back here so the owning
@@ -914,6 +920,14 @@ export function useCommands(
   useEffect(() => {
     planModeRef.current = planMode;
   }, [planMode]);
+
+  // Mirror modelChoice into a ref so submitInput reads the latest value
+  // without re-creating its closure. Captured at submit time and carried
+  // through to the matching synthesize call for a consistent voice.
+  const modelChoiceRef = useRef(modelChoice);
+  useEffect(() => {
+    modelChoiceRef.current = modelChoice;
+  }, [modelChoice]);
 
   // Mirror onCwdChange into a ref so the cd branch of submitInput always
   // calls the latest callback without re-creating the orchestrator
@@ -1298,6 +1312,7 @@ export function useCommands(
           focusedFile,
         },
         planMode,
+        model: modelChoiceRef.current,
         history,
         runningProcesses,
         attachedImage: image,
@@ -1494,6 +1509,8 @@ export function useCommands(
         intent: plan.intent,
         plan: plan.plan,
         executionLog,
+        // Same model the plan ran on, for a consistent synthesized voice.
+        model: modelChoiceRef.current,
       });
       // Stream events arrive via the onSynthesizeEvent listener and drive
       // SYNTHESIZE_DELTA / TURN_DONE / SYNTHESIZE_ERROR dispatches.

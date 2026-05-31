@@ -5,6 +5,7 @@ import { RunningPill, type RunningItem } from './RunningPill';
 import { RunningProcesses } from './RunningProcesses';
 import { Timeline } from './Timeline';
 import { usePlanMode } from '../hooks/usePlanMode';
+import { useModelChoice } from '../hooks/useModelChoice';
 import { installProcessListeners } from '../hooks/useRunningProcesses';
 
 // What each ConversationView reports about its in-flight commands.
@@ -25,6 +26,7 @@ function makeConversation(): ConversationTab {
 // every launch starts with a single empty conversation.
 export function ConversationsShell() {
   const { planMode, setPlanMode } = usePlanMode();
+  const { modelChoice, setModelChoice } = useModelChoice();
 
   // Install the singleton IPC listeners that route command output /
   // exit into the live-processes board. Once per app lifetime.
@@ -186,6 +188,8 @@ export function ConversationsShell() {
                   isActive={tab.id === activeId}
                   planMode={planMode}
                   onPlanModeChange={setPlanMode}
+                  modelChoice={modelChoice}
+                  onModelChoiceChange={setModelChoice}
                   onTitleChange={handleTitleChange}
                   onRunningChange={handleRunningChange}
                   insertRequest={tab.id === activeId ? insertRequest : null}

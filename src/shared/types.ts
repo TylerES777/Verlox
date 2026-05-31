@@ -270,10 +270,19 @@ export interface AttachedImage {
   base64Data: string;
 }
 
+// Which Anthropic model serves a turn. Free users are pinned to 'haiku'
+// server-side regardless of selection; only Pro can pick 'sonnet' (the
+// default) or 'opus'. Kept in sync with the backend ModelChoice.
+export type ModelChoice = 'haiku' | 'sonnet' | 'opus';
+
 export interface TurnInput {
   userInput: string;
   context: TurnContext;
   planMode: boolean;
+  // The model the user selected for this turn. Optional — when omitted
+  // the backend serves the tier default (free→Haiku, pro→Sonnet). Free
+  // selections are ignored server-side (always Haiku).
+  model?: ModelChoice;
   // Earlier turns in this conversation tab, oldest first. Empty for the
   // first turn of a conversation.
   history: TurnHistoryEntry[];
@@ -450,6 +459,9 @@ export interface SynthesizeRequest {
   intent: string;
   plan: string;
   executionLog: ExecutionLogEntry[];
+  // Same model the plan used, so the synthesized prose keeps a consistent
+  // voice. Optional; free selections ignored server-side.
+  model?: ModelChoice;
 }
 
 export interface SynthesizeDeltaEvent {
