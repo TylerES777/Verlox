@@ -23,6 +23,9 @@ export const IpcChannels = {
   PtyKill: 'pty:kill',
   PtyData: 'pty:data',
   PtyExit: 'pty:exit',
+  // A completed command block (OSC 133 shell integration): command + output
+  // + exit code, for rendering Warp-style blocks.
+  PtyBlock: 'pty:block',
 
   // Restore points (the recovery safety net). The renderer drives a manual
   // timeline: choose a folder to protect, checkpoint on demand, and rewind

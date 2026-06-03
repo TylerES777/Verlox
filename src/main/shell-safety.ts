@@ -83,6 +83,48 @@ function global:Remove-Item {
   }
 }
 
+# --- Verlox shell integration (OSC 133) ------------------------------------
+# Emit invisible markers around each prompt / command / output so the app can
+# segment the stream into command blocks (and translate output per command).
+# The markers are written via [Console]::Write as SIDE EFFECTS — PSReadLine
+# strips escape sequences out of the prompt's return STRING, so embedding them
+# there doesn't survive. The command text rides along in the C marker via
+# GetBufferState. Defensive: any failure leaves a normal, working prompt.
+try {
+  $Global:__VerloxOrigPrompt = $Function:prompt
+  $Global:__VerloxReady = $false
+  function Global:prompt {
+    $ok = $?
+    $ec = $LASTEXITCODE
+    if ($null -eq $ec) { $ec = 0 }
+    # Native cmdlet errors don't set $LASTEXITCODE — fall back to $? so a
+    # failed command still reports a non-zero exit.
+    if (-not $ok -and $ec -eq 0) { $ec = 1 }
+    $e = [char]27
+    $b = [char]7
+    # D (previous command finished, with its exit code) + A (prompt start).
+    if ($Global:__VerloxReady) { [Console]::Write("$e]133;D;$ec$b") }
+    $Global:__VerloxReady = $true
+    [Console]::Write("$e]133;A$b")
+    $orig = ''
+    try { if ($Global:__VerloxOrigPrompt) { $orig = & $Global:__VerloxOrigPrompt } } catch { $orig = '' }
+    if ([string]::IsNullOrEmpty($orig)) {
+      $orig = "PS $($ExecutionContext.SessionState.Path.CurrentLocation)$('>' * ($NestedPromptLevel + 1)) "
+    }
+    $orig
+  }
+  if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
+    Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+      $line = $null
+      $cursor = $null
+      try { [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor) } catch {}
+      # C (command submitted / output begins), carrying the command text.
+      [Console]::Write("$([char]27)]133;C;$line$([char]7)")
+      [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+    }
+  }
+} catch {}
+
 Write-Host 'Verlox safety on: deletes here go to the Recycle Bin, so they can be undone.' -ForegroundColor DarkGray
 `;
 

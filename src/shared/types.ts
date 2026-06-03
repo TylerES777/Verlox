@@ -78,6 +78,17 @@ export interface PtyExitEvent {
   exitCode: number;
 }
 
+// A completed command block, parsed from the shell's OSC 133 markers. Powers
+// Warp-style command blocks and per-command AI translation. `command` and
+// `output` are raw (may contain ANSI); the renderer cleans/renders them.
+export interface PtyBlockEvent {
+  id: string;
+  command: string;
+  output: string;
+  exitCode: number | null;
+  durationMs: number;
+}
+
 // Restore points (recovery safety net) -------------------------------------
 // Verlox keeps a running history of a chosen "guarded folder" so files that
 // get deleted or mangled (by the user or an AI agent) can be rewound. Each
@@ -789,6 +800,8 @@ export interface IpcApi {
   ptyKill: (id: string) => void;
   onPtyData: (cb: (event: PtyDataEvent) => void) => Unsubscribe;
   onPtyExit: (cb: (event: PtyExitEvent) => void) => Unsubscribe;
+  // Completed command blocks (OSC 133). Fires once per finished command.
+  onPtyBlock: (cb: (event: PtyBlockEvent) => void) => Unsubscribe;
 
   // Restore points (recovery safety net). snapshotStatus reports the
   // protected folder + whether git is available; snapshotPickFolder opens a

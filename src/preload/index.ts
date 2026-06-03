@@ -6,6 +6,7 @@ import type {
   CommandStartPayload,
   DiagramRequest,
   IpcApi,
+  PtyBlockEvent,
   PtyDataEvent,
   PtyExitEvent,
   PtyInputPayload,
@@ -62,6 +63,12 @@ const api: IpcApi = {
     const listener = (_e: IpcRendererEvent, payload: PtyExitEvent) => cb(payload);
     ipcRenderer.on(IpcChannels.PtyExit, listener);
     return () => ipcRenderer.removeListener(IpcChannels.PtyExit, listener);
+  },
+
+  onPtyBlock: (cb) => {
+    const listener = (_e: IpcRendererEvent, payload: PtyBlockEvent) => cb(payload);
+    ipcRenderer.on(IpcChannels.PtyBlock, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.PtyBlock, listener);
   },
 
   snapshotStatus: () => ipcRenderer.invoke(IpcChannels.SnapshotStatus),

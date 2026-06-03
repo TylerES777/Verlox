@@ -3,7 +3,7 @@ import * as nodePty from '@homebridge/node-pty-prebuilt-multiarch';
 import type { IPty } from '@homebridge/node-pty-prebuilt-multiarch';
 import type { WebContents } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
-import type { PtyDataEvent, PtyExitEvent } from '@shared/types';
+import type { PtyBlockEvent, PtyDataEvent, PtyExitEvent } from '@shared/types';
 import { noteCommandRun } from './snapshot-manager';
 import { buildSafeShell } from './shell-safety';
 
@@ -20,9 +20,124 @@ interface Session {
   // a single window today, but keeping it per-session means a destroyed
   // sender never receives a send (which would throw).
   sender: WebContents;
+  // Command-block tracking state (driven by the OSC 133 marks the shell
+  // emits — see shell-safety.ts).
+  block: BlockState;
 }
 
 const sessions = new Map<string, Session>();
+
+// --- Command blocks (OSC 133 shell integration) ---------------------------
+// The shell emits invisible markers around each prompt/command/output:
+//   ESC]133;A  prompt start    ESC]133;B  command start (after prompt)
+//   ESC]133;C  output start    ESC]133;D;<exit>  command finished
+// We parse the byte stream as it flows by, accumulate the command text
+// (B→C) and its output (C→D), and emit a structured block on D. This is the
+// foundation for rendering Warp-style blocks (Phase 2) and the AI toggle.
+
+interface BlockState {
+  phase: 'idle' | 'prompt' | 'command' | 'output';
+  command: string;
+  output: string;
+  startedAt: number;
+  // Holds a partial OSC sequence split across two data chunks.
+  pending: string;
+}
+
+function newBlockState(): BlockState {
+  return { phase: 'idle', command: '', output: '', startedAt: 0, pending: '' };
+}
+
+const OSC133 = '\x1b]133;';
+
+// Length of the trailing substring of `tail` that is a prefix of OSC133 — so
+// a marker split across chunks isn't mistaken for output and lost.
+function partialPrefixLen(tail: string): number {
+  for (let k = Math.min(OSC133.length - 1, tail.length); k > 0; k--) {
+    if (tail.slice(-k) === OSC133.slice(0, k)) return k;
+  }
+  return 0;
+}
+
+function appendBlockText(state: BlockState, text: string): void {
+  if (!text) return;
+  if (state.phase === 'command') state.command += text;
+  else if (state.phase === 'output') state.output += text;
+}
+
+function handleBlockMark(
+  sender: WebContents,
+  id: string,
+  state: BlockState,
+  payload: string,
+): void {
+  const kind = payload[0];
+  if (kind === 'A') {
+    // New prompt — start a fresh pending block.
+    state.phase = 'prompt';
+    state.command = '';
+    state.output = '';
+  } else if (kind === 'B') {
+    state.phase = 'command';
+  } else if (kind === 'C') {
+    // payload is "C;<command>" — the command text rides in the marker.
+    state.command = payload.slice(2);
+    state.output = '';
+    state.startedAt = Date.now();
+    state.phase = 'output';
+  } else if (kind === 'D') {
+    const raw = payload.split(';')[1];
+    const exitNum = raw !== undefined && raw !== '' ? Number(raw) : NaN;
+    const block: PtyBlockEvent = {
+      id,
+      command: state.command,
+      output: state.output,
+      exitCode: Number.isFinite(exitNum) ? exitNum : null,
+      durationMs: state.startedAt ? Date.now() - state.startedAt : 0,
+    };
+    if (!sender.isDestroyed()) sender.send(IpcChannels.PtyBlock, block);
+    state.phase = 'idle';
+    state.command = '';
+    state.output = '';
+  }
+}
+
+// Feed a raw PTY chunk through the block parser. Extracts complete OSC 133
+// markers, routes the text between them to the current command/output buffer,
+// and buffers any marker split across the chunk boundary.
+function ingestBlocks(
+  sender: WebContents,
+  id: string,
+  state: BlockState,
+  chunk: string,
+): void {
+  const data = state.pending + chunk;
+  state.pending = '';
+  let i = 0;
+  while (i < data.length) {
+    const mark = data.indexOf(OSC133, i);
+    if (mark === -1) {
+      const tail = data.slice(i);
+      const hold = partialPrefixLen(tail);
+      if (hold > 0) {
+        appendBlockText(state, tail.slice(0, tail.length - hold));
+        state.pending = tail.slice(tail.length - hold);
+      } else {
+        appendBlockText(state, tail);
+      }
+      break;
+    }
+    appendBlockText(state, data.slice(i, mark));
+    const bel = data.indexOf('\x07', mark);
+    if (bel === -1) {
+      // Marker not finished yet — wait for the next chunk.
+      state.pending = data.slice(mark);
+      break;
+    }
+    handleBlockMark(sender, id, state, data.slice(mark + OSC133.length, bel));
+    i = bel + 1;
+  }
+}
 
 export function ptyStart(
   sender: WebContents,
@@ -46,15 +161,16 @@ export function ptyStart(
     rows: rows > 0 ? rows : 24,
     cwd: cwd && cwd.length > 0 ? cwd : homedir(),
     env: process.env as Record<string, string>,
-    // Force the older WinPTY backend on Windows. The modern ConPTY backend
-    // ships a helper (conpty_console_list_agent) that crashes with
-    // "AttachConsole failed" under Electron here, which kills the shell
-    // the instant it starts. WinPTY has no such helper and hosts
-    // interactive CLIs (Claude Code, REPLs) reliably. No-op off Windows.
-    useConpty: false,
+    // ConPTY (not WinPTY). Required for shell integration: WinPTY rebuilds the
+    // screen from the Windows console buffer and DROPS invisible OSC sequences,
+    // so the OSC 133 command-block markers never arrive. ConPTY passes them
+    // through faithfully. It was previously disabled over an "AttachConsole
+    // failed" crash; that no longer reproduces here, but interactive CLIs
+    // (vim, REPLs, Claude Code) should be re-verified on ConPTY before ship.
+    useConpty: true,
   });
 
-  sessions.set(id, { pty, sender });
+  sessions.set(id, { pty, sender, block: newBlockState() });
 
   // Only the PTY currently registered under `id` is the "live" one. In dev,
   // React StrictMode mounts → unmounts → remounts a component, so a tab can
@@ -66,6 +182,10 @@ export function ptyStart(
 
   pty.onData((data: string) => {
     if (!isCurrent()) return;
+    // Parse command-block boundaries from the stream before forwarding the
+    // raw bytes to xterm (the OSC 133 marks are invisible there).
+    const session = sessions.get(id);
+    if (session) ingestBlocks(sender, id, session.block, data);
     if (!sender.isDestroyed()) {
       const event: PtyDataEvent = { id, data };
       sender.send(IpcChannels.PtyData, event);
