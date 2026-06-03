@@ -1,11 +1,18 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { join } from 'node:path';
 import { IpcChannels } from '@shared/ipc-channels';
 import type {
+  AddProviderInput,
+  AddProviderResult,
+  AgentPlanInput,
   AuthCredentials,
   BillingActionResult,
   CommandStartPayload,
   DiagramRequest,
+  PtyInputPayload,
+  PtyResizePayload,
+  PtyStartPayload,
+  SettingsInfo,
   SynthesizeEvent,
   SynthesizeRequest,
   TurnInput,
@@ -13,6 +20,30 @@ import type {
 import { getCwd, initCwd, setCwd } from './store';
 import { listDirectory } from './directory';
 import { killAllSync, startCommand, stopCommand } from './command-runner';
+import {
+  killAllPtys,
+  ptyInput,
+  ptyKill,
+  ptyResize,
+  ptyStart,
+} from './pty-manager';
+import {
+  checkpoint as snapshotCheckpoint,
+  getStatus as snapshotStatus,
+  listSnapshots,
+  pickFolder as snapshotPickFolder,
+  restore as snapshotRestore,
+  setAuto as snapshotSetAuto,
+  setGuardedFolder,
+} from './snapshot-manager';
+import { planStep, verifyProvider } from './agent';
+import {
+  addProvider,
+  getAutoApprove,
+  listProviders,
+  removeProvider,
+  setAutoApprove,
+} from './settings-store';
 import * as backend from './backend-client';
 import { getEnvironment } from './detect-environment';
 import {
@@ -111,6 +142,18 @@ ipcMain.handle(IpcChannels.Ping, (): 'pong' => 'pong');
 ipcMain.handle(IpcChannels.CwdGet, () => getCwd());
 ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
 ipcMain.handle(IpcChannels.DirList, (_e, path: string) => listDirectory(path));
+ipcMain.handle(IpcChannels.DialogPickDirectory, async (): Promise<string | null> => {
+  const parent = BrowserWindow.getFocusedWindow() ?? undefined;
+  const opts = {
+    title: 'Choose a folder for the agent to work in',
+    properties: ['openDirectory' as const],
+  };
+  const result = parent
+    ? await dialog.showOpenDialog(parent, opts)
+    : await dialog.showOpenDialog(opts);
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
 
 ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
   startCommand(
@@ -125,6 +168,105 @@ ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
 ipcMain.on(IpcChannels.CommandStop, (_event, id: string) => {
   stopCommand(id);
 });
+
+// --- Real terminal (PTY) --------------------------------------------------
+// Back the interactive terminal tab. The renderer sends raw keystrokes and
+// viewport sizes; main owns the node-pty child and streams its output back.
+
+ipcMain.on(IpcChannels.PtyStart, (event, payload: PtyStartPayload) => {
+  ptyStart(event.sender, payload.id, payload.cwd, payload.cols, payload.rows);
+});
+
+ipcMain.on(IpcChannels.PtyInput, (_event, payload: PtyInputPayload) => {
+  ptyInput(payload.id, payload.data);
+});
+
+ipcMain.on(IpcChannels.PtyResize, (_event, payload: PtyResizePayload) => {
+  ptyResize(payload.id, payload.cols, payload.rows);
+});
+
+ipcMain.on(IpcChannels.PtyKill, (_event, id: string) => {
+  ptyKill(id);
+});
+
+// --- Restore points (recovery safety net) ---------------------------------
+// Main owns a hidden per-folder git vault that records the guarded folder's
+// history; the renderer drives a manual timeline (Phase 1) over these.
+
+ipcMain.handle(IpcChannels.SnapshotStatus, () => snapshotStatus());
+ipcMain.handle(IpcChannels.SnapshotPickFolder, () => snapshotPickFolder());
+ipcMain.handle(IpcChannels.SnapshotSetFolder, (_e, folder: string) =>
+  setGuardedFolder(folder),
+);
+ipcMain.handle(IpcChannels.SnapshotCheckpoint, (_e, label?: string) =>
+  snapshotCheckpoint(label),
+);
+ipcMain.handle(IpcChannels.SnapshotList, () => listSnapshots());
+ipcMain.handle(IpcChannels.SnapshotRestore, (_e, id: string) =>
+  snapshotRestore(id),
+);
+ipcMain.handle(IpcChannels.SnapshotSetAuto, (_e, enabled: boolean) =>
+  snapshotSetAuto(enabled),
+);
+
+// --- Agent Mode -----------------------------------------------------------
+// Plan the next step toward a goal (routed to the user's own key when set,
+// else the Verlox backend), and manage the agent settings. The AI key is
+// stored encrypted in main and never returned over IPC.
+
+function settingsInfo(): SettingsInfo {
+  return {
+    providers: listProviders(),
+    autoApproveReadonly: getAutoApprove(),
+  };
+}
+
+ipcMain.handle(IpcChannels.AgentPlanStep, (_e, input: AgentPlanInput) =>
+  planStep(input),
+);
+ipcMain.handle(IpcChannels.SettingsGet, (): SettingsInfo => settingsInfo());
+ipcMain.handle(
+  IpcChannels.SettingsAddProvider,
+  async (_e, input: AddProviderInput): Promise<AddProviderResult> => {
+    const name = (input.name || '').trim();
+    const baseUrl = (input.baseUrl || '').trim();
+    const model = (input.model || '').trim();
+    const key = (input.key || '').trim();
+    if (!name || !baseUrl || !model || !key) {
+      return {
+        ok: false,
+        error: 'Fill in name, endpoint URL, model, and key.',
+        settings: settingsInfo(),
+      };
+    }
+    try {
+      // Verify (a tiny test call) before saving, so a bad setup is never stored.
+      await verifyProvider({ ...input, name, baseUrl, model, key });
+      addProvider({ name, format: input.format, baseUrl, model }, key);
+      return { ok: true, settings: settingsInfo() };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        settings: settingsInfo(),
+      };
+    }
+  },
+);
+ipcMain.handle(
+  IpcChannels.SettingsRemoveProvider,
+  (_e, id: string): SettingsInfo => {
+    removeProvider(id);
+    return settingsInfo();
+  },
+);
+ipcMain.handle(
+  IpcChannels.SettingsSetAutoApprove,
+  (_e, enabled: boolean): SettingsInfo => {
+    setAutoApprove(!!enabled);
+    return settingsInfo();
+  },
+);
 
 // --- Auth handlers --------------------------------------------------------
 // All HTTP calls happen here in the main process. Token is stored in main
@@ -249,6 +391,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   killAllSync();
+  killAllPtys();
 });
 
 app.on('window-all-closed', () => {

@@ -3,6 +3,10 @@ import { Tooltip } from './Tooltip';
 export interface ConversationTab {
   id: string;
   title: string;
+  // 'conversation' — the plain-English plan/approve/run flow (default).
+  // 'terminal' — a real interactive PTY the user types into directly,
+  // able to host interactive CLIs (Claude Code, vim, REPLs).
+  kind: 'conversation' | 'terminal';
 }
 
 interface TabBarProps {
@@ -10,6 +14,7 @@ interface TabBarProps {
   activeId: string;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  // Opens a new terminal tab (the only tab kind now).
   onNew: () => void;
 }
 
@@ -20,7 +25,13 @@ interface TabBarProps {
 // Chrome. Each tab is an independent conversation (own history, own
 // folder). Closing the last tab clears it rather than leaving an
 // empty app — ConversationsShell handles that.
-export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps) {
+export function TabBar({
+  tabs,
+  activeId,
+  onSelect,
+  onClose,
+  onNew,
+}: TabBarProps) {
   return (
     <div className="flex shrink-0 items-center gap-2 overflow-x-auto">
       {/* Segmented-control container — gray pill holding all tabs. */}
@@ -39,13 +50,14 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
               <button
                 type="button"
                 onClick={() => onSelect(tab.id)}
-                className={`max-w-[180px] truncate py-1 pl-2 text-[12.5px] focus:outline-none ${
+                className={`flex max-w-[180px] items-center gap-1.5 truncate py-1 pl-2 text-[12.5px] focus:outline-none ${
                   active
                     ? 'font-medium text-ink'
                     : 'text-ink-label group-hover:text-ink'
                 }`}
               >
-                {tab.title}
+                {tab.kind === 'terminal' && <TerminalGlyph />}
+                <span className="truncate">{tab.title}</span>
               </button>
               <button
                 type="button"
@@ -61,18 +73,37 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
           );
         })}
       </div>
-      {/* New-tab button — outside the segmented control. */}
-      <Tooltip label="New conversation">
+      {/* New-tab affordance — opens another terminal. */}
+      <Tooltip label="New terminal">
         <button
           type="button"
           onClick={onNew}
-          aria-label="New conversation"
+          aria-label="New terminal"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
         >
           <PlusGlyph />
         </button>
       </Tooltip>
     </div>
+  );
+}
+
+function TerminalGlyph() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      className="h-3.5 w-3.5 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="1" y="2.5" width="12" height="9" rx="1.5" />
+      <path d="M3.5 5.5L6 7l-2.5 1.5" />
+      <line x1="7.5" y1="8.5" x2="10" y2="8.5" />
+    </svg>
   );
 }
 

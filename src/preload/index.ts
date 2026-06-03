@@ -6,6 +6,11 @@ import type {
   CommandStartPayload,
   DiagramRequest,
   IpcApi,
+  PtyDataEvent,
+  PtyExitEvent,
+  PtyInputPayload,
+  PtyResizePayload,
+  PtyStartPayload,
   SynthesizeEvent,
   SynthesizeRequest,
   TurnInput,
@@ -17,6 +22,7 @@ const api: IpcApi = {
   getCwd: () => ipcRenderer.invoke(IpcChannels.CwdGet),
   setCwd: (path) => ipcRenderer.invoke(IpcChannels.CwdSet, path),
   listDir: (path: string) => ipcRenderer.invoke(IpcChannels.DirList, path),
+  pickDirectory: () => ipcRenderer.invoke(IpcChannels.DialogPickDirectory),
 
   startCommand: (payload: CommandStartPayload) =>
     ipcRenderer.send(IpcChannels.CommandStart, payload),
@@ -34,6 +40,51 @@ const api: IpcApi = {
     ipcRenderer.on(IpcChannels.CommandExit, listener);
     return () => ipcRenderer.removeListener(IpcChannels.CommandExit, listener);
   },
+
+  ptyStart: (payload: PtyStartPayload) =>
+    ipcRenderer.send(IpcChannels.PtyStart, payload),
+
+  ptyInput: (payload: PtyInputPayload) =>
+    ipcRenderer.send(IpcChannels.PtyInput, payload),
+
+  ptyResize: (payload: PtyResizePayload) =>
+    ipcRenderer.send(IpcChannels.PtyResize, payload),
+
+  ptyKill: (id: string) => ipcRenderer.send(IpcChannels.PtyKill, id),
+
+  onPtyData: (cb) => {
+    const listener = (_e: IpcRendererEvent, payload: PtyDataEvent) => cb(payload);
+    ipcRenderer.on(IpcChannels.PtyData, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.PtyData, listener);
+  },
+
+  onPtyExit: (cb) => {
+    const listener = (_e: IpcRendererEvent, payload: PtyExitEvent) => cb(payload);
+    ipcRenderer.on(IpcChannels.PtyExit, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.PtyExit, listener);
+  },
+
+  snapshotStatus: () => ipcRenderer.invoke(IpcChannels.SnapshotStatus),
+  snapshotPickFolder: () => ipcRenderer.invoke(IpcChannels.SnapshotPickFolder),
+  snapshotSetFolder: (folder: string) =>
+    ipcRenderer.invoke(IpcChannels.SnapshotSetFolder, folder),
+  snapshotCheckpoint: (label?: string) =>
+    ipcRenderer.invoke(IpcChannels.SnapshotCheckpoint, label),
+  snapshotList: () => ipcRenderer.invoke(IpcChannels.SnapshotList),
+  snapshotRestore: (id: string) =>
+    ipcRenderer.invoke(IpcChannels.SnapshotRestore, id),
+  snapshotSetAuto: (enabled: boolean) =>
+    ipcRenderer.invoke(IpcChannels.SnapshotSetAuto, enabled),
+
+  agentPlanStep: (input) =>
+    ipcRenderer.invoke(IpcChannels.AgentPlanStep, input),
+  settingsGet: () => ipcRenderer.invoke(IpcChannels.SettingsGet),
+  settingsAddProvider: (input) =>
+    ipcRenderer.invoke(IpcChannels.SettingsAddProvider, input),
+  settingsRemoveProvider: (id) =>
+    ipcRenderer.invoke(IpcChannels.SettingsRemoveProvider, id),
+  settingsSetAutoApprove: (enabled) =>
+    ipcRenderer.invoke(IpcChannels.SettingsSetAutoApprove, enabled),
 
   signUp: (credentials) => ipcRenderer.invoke(IpcChannels.AuthSignUp, credentials),
   signIn: (credentials) => ipcRenderer.invoke(IpcChannels.AuthSignIn, credentials),

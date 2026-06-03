@@ -8,6 +8,9 @@
 
 const isDev = import.meta.env.DEV;
 
+// TEMP (do NOT commit): dev pointed at the Railway prod backend so the
+// desktop app can sign in without a local backend + DB running. Restore
+// the localhost:3001 dev branch before committing.
 export const BACKEND_URL = isDev
-  ? 'http://localhost:3001'
+  ? 'https://backend-production-08f5e.up.railway.app'
   : 'https://backend-production-08f5e.up.railway.app';

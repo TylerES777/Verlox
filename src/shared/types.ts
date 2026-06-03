@@ -35,6 +35,205 @@ export interface CommandExitEvent {
 
 export type Unsubscribe = () => void;
 
+// Real terminal (PTY) ------------------------------------------------------
+// Backs the interactive terminal tab. A PTY is a live pseudo-terminal the
+// user types into directly — distinct from the discrete CommandStart spawns
+// that power the plan-execution flow. The renderer renders an xterm.js
+// surface and relays raw bytes both ways; the main process owns the
+// node-pty child. Each terminal tab owns one PTY, keyed by `id`.
+
+export interface PtyStartPayload {
+  // Stable id chosen by the renderer (the terminal tab's id). All later
+  // input/resize/kill/data/exit messages carry this so main and renderer
+  // can route to the right PTY when several terminals are open at once.
+  id: string;
+  // Absolute directory to start the shell in. Omit to use the user's home.
+  cwd?: string;
+  // Initial terminal size, from the xterm fit addon's first measurement.
+  cols: number;
+  rows: number;
+}
+
+export interface PtyInputPayload {
+  id: string;
+  // Raw bytes the user typed (already UTF-8 string), forwarded verbatim
+  // to the PTY — no parsing, so interactive programs see real keystrokes.
+  data: string;
+}
+
+export interface PtyResizePayload {
+  id: string;
+  cols: number;
+  rows: number;
+}
+
+export interface PtyDataEvent {
+  id: string;
+  // Raw PTY output (includes ANSI / control sequences — xterm renders them).
+  data: string;
+}
+
+export interface PtyExitEvent {
+  id: string;
+  exitCode: number;
+}
+
+// Restore points (recovery safety net) -------------------------------------
+// Verlox keeps a running history of a chosen "guarded folder" so files that
+// get deleted or mangled (by the user or an AI agent) can be rewound. Each
+// record is one point in that history; the id is an opaque handle the
+// renderer passes back to restore. See main/snapshot-manager.ts.
+
+// One file that changed at a restore point, with how it changed. Lets the
+// timeline say plainly "New PY File.py removed" so the user can spot the
+// moment a file vanished and rewind to just before it.
+export interface SnapshotChange {
+  // Path relative to the guarded folder.
+  path: string;
+  // 'added' — file first appeared; 'removed' — file was deleted;
+  // 'modified' — contents changed; 'other' — rename/copy/type-change.
+  kind: 'added' | 'removed' | 'modified' | 'other';
+}
+
+export interface SnapshotRecord {
+  // Opaque handle (a git commit hash) used to rewind to this point.
+  id: string;
+  // Human label ("Checkpoint", "Before rewinding…", "Started protecting…").
+  label: string;
+  // Epoch milliseconds when the point was taken.
+  timestamp: number;
+  // Best-effort count of files that changed at this point; null when unknown.
+  filesChanged: number | null;
+  // True for points Verlox created as part of a rewind, so the UI can mark
+  // them differently from ordinary checkpoints.
+  isRestore: boolean;
+  // The files that changed at this point (capped per point to keep the
+  // payload small). Empty for baseline / empty checkpoints. Drives the
+  // "what changed here" detail so deletions are visible at a glance.
+  changes: SnapshotChange[];
+}
+
+export interface SnapshotStatus {
+  // Absolute path of the folder currently protected, or null if none chosen.
+  guardedFolder: string | null;
+  // Whether git (the engine behind restore points) is available. When
+  // false, the UI explains how to enable the feature instead of failing.
+  gitAvailable: boolean;
+  // Whether automatic snapshots (file-watcher + before-command) are on.
+  // The panel exposes this as the Auto-save toggle.
+  autoEnabled: boolean;
+}
+
+export interface SnapshotActionResult {
+  ok: boolean;
+  // Plain-language failure reason, shown to the user when ok is false.
+  error?: string;
+  // For checkpoint: whether a new point was actually created (false when
+  // nothing changed since the last one — a calm no-op, not an error).
+  created?: boolean;
+}
+
+// Agent Mode ----------------------------------------------------------------
+// One step the agent proposes toward a goal. Produced by either the Verlox
+// backend planner (when using your Verlox account) or by a direct call to the
+// AI service with your own key (set in settings). The renderer drives the
+// loop: show/approve the step, run it, feed the result back, ask for the next.
+
+export interface AgentStep {
+  // True when the goal is complete (or there's nothing to run) — the loop
+  // ends and `message` is the closing words.
+  done: boolean;
+  // Plain-English text to show the user (what the AI is doing / saying).
+  message: string;
+  // The single command to run next, or null when there's nothing to run.
+  command: string | null;
+  // One-line reason for this command.
+  reason: string;
+  // Whether the command only reads (so it can auto-run when that setting is
+  // on) versus changes things (which always needs approval).
+  readOnly: boolean;
+  // A footgun-style warning to surface prominently, or null.
+  risk: string | null;
+}
+
+// One already-executed step, fed back so the AI can decide the next move.
+export interface AgentStepHistory {
+  command: string;
+  exitCode: number | null;
+  output: string;
+}
+
+// Which brain runs a step: the Verlox account, or one of the user's own
+// custom providers (called directly from the user's machine).
+export type AgentEngine = 'verlox' | 'custom';
+
+// The wire format a custom provider speaks. Most services (OpenAI,
+// OpenRouter, Groq, Together, Google's compat endpoint, local Ollama /
+// LM Studio) speak the OpenAI chat-completions format; Anthropic has its own.
+export type ProviderFormat = 'openai' | 'anthropic';
+
+// A user-added AI provider. The key is stored separately (encrypted) and
+// never travels over IPC; this metadata is safe to show in the UI.
+export interface AgentProviderMeta {
+  id: string;
+  // Friendly label shown in the model switcher (e.g. "GPT-4o", "Groq Llama").
+  name: string;
+  format: ProviderFormat;
+  // Base URL of the API (e.g. https://api.openai.com/v1).
+  baseUrl: string;
+  // The model id to request from this provider.
+  model: string;
+}
+
+export interface AgentPlanInput {
+  goal: string;
+  priorSteps: AgentStepHistory[];
+  cwd: string;
+  platform: Platform;
+  shell: Shell;
+  // 'verlox' uses the Verlox account with `model` as a ModelChoice; 'custom'
+  // uses the saved provider identified by providerId, called directly from
+  // this machine.
+  engine: AgentEngine;
+  model: string;
+  providerId?: string;
+  // An optional image attached to the goal (first step only). Threaded to the
+  // AI so it can act on a screenshot. Supported by the Verlox backend and by
+  // OpenAI / Anthropic provider calls.
+  image?: AttachedImage | null;
+  // A snapshot of what's on the user's terminal screen(s), so the agent is
+  // always aware of the live terminal context (including other tabs).
+  terminalContext?: string;
+}
+
+export type AgentStepResult =
+  | { ok: true; step: AgentStep }
+  // Plain-language failure reason shown in the panel.
+  | { ok: false; error: string };
+
+// Settings the user controls for Agent Mode. Only provider metadata crosses
+// IPC, never the keys.
+export interface SettingsInfo {
+  providers: AgentProviderMeta[];
+  autoApproveReadonly: boolean;
+}
+
+// Fields for adding a provider. The key is verified before being saved, so a
+// bad key/URL/model reports an error and nothing is stored.
+export interface AddProviderInput {
+  name: string;
+  format: ProviderFormat;
+  baseUrl: string;
+  model: string;
+  key: string;
+}
+
+export interface AddProviderResult {
+  ok: boolean;
+  error?: string;
+  settings: SettingsInfo;
+}
+
 // Directory browsing -------------------------------------------------------
 // Backs the path picker (the folder-icon button in the input). The
 // renderer has no filesystem access of its own, so the main process
@@ -516,10 +715,53 @@ export interface IpcApi {
   // to list the user's home directory. Always resolves (never rejects) —
   // failures come back as a DirListing with a non-null `error`.
   listDir: (path: string) => Promise<DirListing>;
+  // Open a native folder chooser (agent working folder). Resolves to the
+  // chosen absolute path, or null if cancelled.
+  pickDirectory: () => Promise<string | null>;
   startCommand: (payload: CommandStartPayload) => void;
   stopCommand: (id: string) => void;
   onCommandOutput: (cb: (event: CommandOutputEvent) => void) => Unsubscribe;
   onCommandExit: (cb: (event: CommandExitEvent) => void) => Unsubscribe;
+
+  // Real terminal (PTY) — backs the interactive terminal tab. ptyStart
+  // spawns the shell; ptyInput forwards keystrokes; ptyResize tracks the
+  // xterm viewport; ptyKill tears the PTY down (on tab close / unmount).
+  // onPtyData / onPtyExit stream raw output and the exit notice; both
+  // carry the tab id so the renderer routes to the right terminal.
+  ptyStart: (payload: PtyStartPayload) => void;
+  ptyInput: (payload: PtyInputPayload) => void;
+  ptyResize: (payload: PtyResizePayload) => void;
+  ptyKill: (id: string) => void;
+  onPtyData: (cb: (event: PtyDataEvent) => void) => Unsubscribe;
+  onPtyExit: (cb: (event: PtyExitEvent) => void) => Unsubscribe;
+
+  // Restore points (recovery safety net). snapshotStatus reports the
+  // protected folder + whether git is available; snapshotPickFolder opens a
+  // native folder chooser; snapshotSetFolder begins protecting a folder
+  // (creates the vault + a baseline point); snapshotCheckpoint saves a point
+  // on demand; snapshotList returns the timeline (newest first);
+  // snapshotRestore rewinds the whole folder to a chosen point (and saves the
+  // current state first, so the rewind is itself undoable).
+  snapshotStatus: () => Promise<SnapshotStatus>;
+  snapshotPickFolder: () => Promise<string | null>;
+  snapshotSetFolder: (folder: string) => Promise<SnapshotActionResult>;
+  snapshotCheckpoint: (label?: string) => Promise<SnapshotActionResult>;
+  snapshotList: () => Promise<SnapshotRecord[]>;
+  snapshotRestore: (id: string) => Promise<SnapshotActionResult>;
+  // Turn automatic snapshots on/off; resolves with the updated status.
+  snapshotSetAuto: (enabled: boolean) => Promise<SnapshotStatus>;
+
+  // Agent Mode. agentPlanStep asks for the next step toward a goal (routed
+  // to the user's own key when set, else the Verlox backend). The settings*
+  // calls manage the optional own-key and the auto-approve-read-only switch;
+  // the key value never crosses IPC, only whether one is saved.
+  agentPlanStep: (input: AgentPlanInput) => Promise<AgentStepResult>;
+  settingsGet: () => Promise<SettingsInfo>;
+  // Add a custom provider: verified (a tiny test call), then saved only if it
+  // works. The key value never comes back over IPC.
+  settingsAddProvider: (input: AddProviderInput) => Promise<AddProviderResult>;
+  settingsRemoveProvider: (id: string) => Promise<SettingsInfo>;
+  settingsSetAutoApprove: (enabled: boolean) => Promise<SettingsInfo>;
 
   // Auth (token never crosses IPC).
   signUp: (credentials: AuthCredentials) => Promise<AuthResult>;
