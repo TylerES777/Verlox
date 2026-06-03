@@ -120,8 +120,16 @@ export interface SnapshotStatus {
   // false, the UI explains how to enable the feature instead of failing.
   gitAvailable: boolean;
   // Whether automatic snapshots (file-watcher + before-command) are on.
-  // The panel exposes this as the Auto-save toggle.
   autoEnabled: boolean;
+  // --- Undo / Redo (cursor over the snapshot history) --------------------
+  // Whether there's an older / newer state to move to. Drive the two buttons.
+  canUndo: boolean;
+  canRedo: boolean;
+  // Short, human description of the change each action affects, for the hover
+  // tooltips (e.g. "Removed deleteme.txt", "2 files changed"). Null when that
+  // direction isn't available.
+  undoSummary: string | null;
+  redoSummary: string | null;
 }
 
 export interface SnapshotActionResult {
@@ -131,6 +139,53 @@ export interface SnapshotActionResult {
   // For checkpoint: whether a new point was actually created (false when
   // nothing changed since the last one — a calm no-op, not an error).
   created?: boolean;
+}
+
+// --- SQL console -----------------------------------------------------------
+
+// How to reach a database. Postgres only for v1. The password crosses IPC
+// once (renderer → main) on connect; main holds the live connection from then
+// on, so the renderer never keeps the credential around.
+export interface SqlConnectConfig {
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+  // Require TLS (managed Postgres like Railway/Supabase/RDS usually needs it).
+  ssl: boolean;
+}
+
+export interface SqlConnectResult {
+  ok: boolean;
+  // Reported on success — the server version banner, for the connected header.
+  serverVersion?: string;
+  // Plain-language failure reason when ok is false.
+  error?: string;
+}
+
+// One column in a result set, in select order.
+export interface SqlColumn {
+  name: string;
+}
+
+export interface SqlQueryResult {
+  ok: boolean;
+  // Result columns + rows (rows as arrays aligned to columns). Capped in main
+  // so a huge SELECT can't flood the renderer; `truncated` flags when it hit
+  // the cap.
+  columns: SqlColumn[];
+  rows: Array<Array<string | null>>;
+  // Rows actually affected/returned as reported by the driver.
+  rowCount: number | null;
+  // The SQL command tag ("SELECT", "UPDATE", "CREATE", …).
+  command: string | null;
+  // True when rows were cut to the render cap.
+  truncated: boolean;
+  // Milliseconds the query took (round-trip in main).
+  durationMs: number;
+  // Plain-language failure reason when ok is false (e.g. a syntax error).
+  error?: string;
 }
 
 // Agent Mode ----------------------------------------------------------------
@@ -750,6 +805,16 @@ export interface IpcApi {
   snapshotRestore: (id: string) => Promise<SnapshotActionResult>;
   // Turn automatic snapshots on/off; resolves with the updated status.
   snapshotSetAuto: (enabled: boolean) => Promise<SnapshotStatus>;
+  // Step the protected folder back / forward through its snapshot history.
+  // Each resolves with the updated status (canUndo/canRedo refreshed).
+  snapshotUndo: () => Promise<SnapshotStatus>;
+  snapshotRedo: () => Promise<SnapshotStatus>;
+
+  // SQL console. sqlConnect opens (and tests) a connection owned by main,
+  // keyed by the tab id; sqlQuery runs SQL on it; sqlDisconnect tears it down.
+  sqlConnect: (id: string, config: SqlConnectConfig) => Promise<SqlConnectResult>;
+  sqlQuery: (id: string, sql: string) => Promise<SqlQueryResult>;
+  sqlDisconnect: (id: string) => Promise<void>;
 
   // Agent Mode. agentPlanStep asks for the next step toward a goal (routed
   // to the user's own key when set, else the Verlox backend). The settings*

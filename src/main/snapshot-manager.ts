@@ -50,6 +50,15 @@ let suspendWatch = false;
 // Epoch ms of the last auto point we actually created — throttles the
 // per-command hook so a burst of Enters can't spam checkpoints.
 let lastAutoTs = 0;
+// Folder currently being adopted by ensureProtected(), so concurrent
+// command starts in a freshly-entered folder don't each try to set it up.
+let adoptInFlight: string | null = null;
+// How many steps back from the newest snapshot the working tree currently
+// sits — the Undo/Redo cursor. 0 = at the newest. undo() increments it,
+// redo() decrements it; committing a new change resets it to 0 and discards
+// any redo states (classic undo-stack behaviour). Resets when the guarded
+// folder changes.
+let cursor = 0;
 
 // Wait this long after the last file change before saving an auto point, so
 // a flurry of edits (an agent rewriting ten files) becomes one snapshot.
@@ -263,8 +272,97 @@ bin/
 obj/
 `;
 
+// A one-line, human summary of the change between two snapshots, for the
+// hover tooltips ("Removed deleteme.txt", "2 files changed"). Null if no diff.
+async function summarizeChange(fromRef: string, toRef: string): Promise<string | null> {
+  const res = await runGit([...gitBase(), 'diff', '--name-status', fromRef, toRef]);
+  if (res.code !== 0) return null;
+  const lines = res.stdout
+    .replace(/\n+$/, '')
+    .split('\n')
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  if (lines.length === 1) {
+    const cols = lines[0].split('\t');
+    const code = cols[0]?.[0]?.toUpperCase();
+    const path = cols[cols.length - 1] ?? '';
+    const name = path.split(/[\\/]/).pop() || path;
+    const verb =
+      code === 'A'
+        ? 'Added'
+        : code === 'D'
+          ? 'Removed'
+          : code === 'R'
+            ? 'Renamed'
+            : 'Changed';
+    return `${verb} ${name}`;
+  }
+  return `${lines.length} files changed`;
+}
+
+// Compute the Undo/Redo view of the history for the current cursor: whether a
+// step is possible each way, and a human summary of the change involved.
+async function undoRedoInfo(): Promise<{
+  canUndo: boolean;
+  canRedo: boolean;
+  undoSummary: string | null;
+  redoSummary: string | null;
+}> {
+  const none = { canUndo: false, canRedo: false, undoSummary: null, redoSummary: null };
+  if (!guardedFolder || !vaultDir) return none;
+  const countRes = await runGit([...gitBase(), 'rev-list', '--count', 'HEAD']);
+  const total = parseInt(countRes.stdout.trim(), 10);
+  if (!Number.isFinite(total) || total <= 0) return none;
+  const canUndo = cursor < total - 1;
+  const canRedo = cursor > 0;
+  return {
+    canUndo,
+    canRedo,
+    // Undo reverts the change that produced the current state (parent → current).
+    undoSummary: canUndo ? await summarizeChange(`HEAD~${cursor + 1}`, `HEAD~${cursor}`) : null,
+    // Redo re-applies the change to the next-newer state (current → newer).
+    redoSummary: canRedo ? await summarizeChange(`HEAD~${cursor}`, `HEAD~${cursor - 1}`) : null,
+  };
+}
+
 export async function getStatus(): Promise<SnapshotStatus> {
-  return { guardedFolder, gitAvailable: await ensureGit(), autoEnabled };
+  return {
+    guardedFolder,
+    gitAvailable: await ensureGit(),
+    autoEnabled,
+    ...(await undoRedoInfo()),
+  };
+}
+
+// Step the working tree one snapshot older (Undo) or newer (Redo). These move
+// the cursor and rewrite the working tree (read-tree) but DON'T create a
+// commit — so there's no "Rewound to…" noise. The watcher is muted during the
+// rewrite so it doesn't record the change as a new point.
+export async function undo(): Promise<SnapshotStatus> {
+  if (!guardedFolder || !vaultDir) return getStatus();
+  const countRes = await runGit([...gitBase(), 'rev-list', '--count', 'HEAD']);
+  const total = parseInt(countRes.stdout.trim(), 10);
+  if (!Number.isFinite(total) || cursor >= total - 1) return getStatus();
+  suspendWatch = true;
+  cursor++;
+  const rt = await runGit([...gitBase(), 'read-tree', '--reset', '-u', `HEAD~${cursor}`]);
+  if (rt.code !== 0) cursor--; // couldn't move — stay put
+  setTimeout(() => {
+    suspendWatch = false;
+  }, 1500);
+  return getStatus();
+}
+
+export async function redo(): Promise<SnapshotStatus> {
+  if (!guardedFolder || !vaultDir || cursor <= 0) return getStatus();
+  suspendWatch = true;
+  cursor--;
+  const rt = await runGit([...gitBase(), 'read-tree', '--reset', '-u', `HEAD~${cursor}`]);
+  if (rt.code !== 0) cursor++; // couldn't move — stay put
+  setTimeout(() => {
+    suspendWatch = false;
+  }, 1500);
+  return getStatus();
 }
 
 // Open a native folder picker so the user can choose what to protect.
@@ -282,6 +380,41 @@ export async function pickFolder(): Promise<string | null> {
       }));
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+}
+
+// Folders we must never auto-adopt: the user's home directory and filesystem
+// roots. Auto-protecting those would try to snapshot an enormous, churny tree.
+// Auto-protection only kicks in for a real project folder the app is working
+// in. (A user can still be working directly in home — that just isn't guarded
+// automatically, which is the safe default.)
+function isAutoProtectable(folder: string): boolean {
+  if (!folder) return false;
+  const norm = folder.replace(/[\\/]+$/, '');
+  if (!norm) return false; // a bare root like "/" or "C:\"
+  if (/^[a-zA-Z]:$/.test(norm)) return false; // a drive root like "C:"
+  const home = app.getPath('home').replace(/[\\/]+$/, '');
+  if (norm.toLowerCase() === home.toLowerCase()) return false;
+  return true;
+}
+
+// Auto-adopt the folder the app is operating in as the protected folder, so
+// restore points happen on their own — the user never picks a folder to
+// protect. Called when the app runs a command in a folder. Idempotent and
+// cheap when that folder is already the guarded one; never throws (protection
+// is a safety net, never a blocker on getting work done).
+export async function ensureProtected(folder: string): Promise<void> {
+  try {
+    if (!isAutoProtectable(folder)) return;
+    const lower = folder.toLowerCase();
+    if (guardedFolder && guardedFolder.toLowerCase() === lower) return;
+    if (adoptInFlight && adoptInFlight.toLowerCase() === lower) return;
+    adoptInFlight = folder;
+    await setGuardedFolder(folder);
+  } catch {
+    // Best-effort.
+  } finally {
+    adoptInFlight = null;
+  }
 }
 
 // Point the safety net at `folder`: create its vault if new, install the
@@ -310,6 +443,8 @@ export async function setGuardedFolder(
   // Switch the module's active target before issuing git commands.
   guardedFolder = folder;
   vaultDir = vault;
+  // Fresh folder → start at the newest state.
+  cursor = 0;
 
   // Initialize the vault repo (idempotent — re-init on an existing repo is
   // a no-op that just reports "Reinitialized").
@@ -352,6 +487,20 @@ export async function checkpoint(
   const add = await runGit([...gitBase(), 'add', '-A']);
   if (add.code !== 0) {
     return { ok: false, error: add.stderr || 'Could not stage files for the snapshot.' };
+  }
+  // Nothing changed (and not a forced baseline) → calm no-op; leave the
+  // history and the undo cursor untouched.
+  const staged = await runGit([...gitBase(), 'diff', '--cached', '--quiet']);
+  const hasChanges = staged.code !== 0; // --quiet exits 1 when there are diffs
+  if (!hasChanges && !opts.allowEmpty) {
+    return { ok: true, created: false };
+  }
+  // We're about to commit a new state. If the user had undone some steps,
+  // this new change discards the "redo" future: move the branch tip back to
+  // the cursor commit first, so the new point lands on top of where they are.
+  if (cursor > 0) {
+    await runGit([...gitBase(), 'reset', '--soft', `HEAD~${cursor}`]);
+    cursor = 0;
   }
   const args = [...gitBase(), 'commit', '--no-verify', '-m', label?.trim() || 'Checkpoint'];
   if (opts.allowEmpty) args.push('--allow-empty');

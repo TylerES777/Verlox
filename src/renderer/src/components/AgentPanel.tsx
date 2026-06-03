@@ -17,6 +17,9 @@ import type {
 } from '@shared/types';
 import { CopyButton } from './CopyButton';
 import { snapshotTerminals } from '../lib/terminalRegistry';
+import { registerProcess } from '../hooks/useRunningProcesses';
+import { createPortal } from 'react-dom';
+import { PathPicker, type PathSelection } from './PathPicker';
 
 interface AgentPanelProps {
   // The owning terminal tab's id, so the panel can flag which screen is in
@@ -156,7 +159,9 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
   const [thinking, setThinking] = useState(false);
-  const [expanded, setExpanded] = useState(true);
+  // Hover/focus drive the bar open; otherwise it sits closed (compact).
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [workDir, setWorkDir] = useState('');
 
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
@@ -175,6 +180,17 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   const [brainId, setBrainId] = useState<string>('sonnet');
   const [brainMenuOpen, setBrainMenuOpen] = useState(false);
   const brainWrapRef = useRef<HTMLDivElement>(null);
+  const brainBtnRef = useRef<HTMLButtonElement>(null);
+  const brainMenuRef = useRef<HTMLDivElement>(null);
+  // Fixed-position coords for the portaled model menu (so the panel's
+  // overflow-hidden can't clip it). Anchored bottom-left, growing upward.
+  const [brainCoords, setBrainCoords] = useState<{ left: number; bottom: number } | null>(null);
+  // Built-in folder/file picker (the chat bar's folder button), portaled so
+  // the panel's overflow-hidden can't clip it.
+  const folderBtnRef = useRef<HTMLButtonElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerAnchor, setPickerAnchor] = useState<{ left: number; top: number } | null>(null);
 
   // Image attachment + folder lock.
   const [attachment, setAttachment] = useState<AttachmentState | null>(null);
@@ -234,9 +250,11 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   useEffect(() => {
     if (!brainMenuOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (brainWrapRef.current && !brainWrapRef.current.contains(e.target as Node)) {
-        setBrainMenuOpen(false);
-      }
+      const t = e.target as Node;
+      // The menu is portaled out of brainWrapRef, so check it separately.
+      if (brainWrapRef.current?.contains(t)) return;
+      if (brainMenuRef.current?.contains(t)) return;
+      setBrainMenuOpen(false);
     };
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape') setBrainMenuOpen(false);
@@ -249,10 +267,30 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     };
   }, [brainMenuOpen]);
 
+  // Close the folder picker on an outside click or Escape.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (folderBtnRef.current?.contains(t)) return;
+      if (pickerRef.current?.contains(t)) return;
+      setPickerOpen(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setPickerOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pickerOpen]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, expanded, thinking]);
+  }, [messages, thinking]);
 
   const addUser = (text: string) =>
     setMessages((p) => [...p, { kind: 'user', id: newId(), text }]);
@@ -427,6 +465,17 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     });
 
     window.api.startCommand({ id: runId, command, cwd, shell: env.shell });
+    // Register in the live-processes board so the sidebar's Running section
+    // shows it. The global listeners (installProcessListeners) handle its
+    // output (URL detection) and exit (status) from here. Long-lived commands
+    // (dev servers, watchers) stay visible; quick ones finish and drop out.
+    registerProcess({
+      stepId: runId,
+      conversationId: terminalId,
+      command,
+      cwd,
+      shell: env.shell,
+    });
   };
 
   const approve = (id: string, command: string) => {
@@ -500,13 +549,12 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   };
 
   // --- folder + image handlers ---
-  const chooseFolder = async () => {
-    const dir = await window.api.pickDirectory();
-    if (!dir) return;
-    pickedFolderRef.current = dir;
-    workDirRef.current = dir;
-    setWorkDir(dir);
+  const handlePickFolder = (sel: PathSelection) => {
+    pickedFolderRef.current = sel.dir;
+    workDirRef.current = sel.dir;
+    setWorkDir(sel.dir);
     setFolderLocked(true);
+    setPickerOpen(false);
   };
 
   const acceptFile = async (file: File) => {
@@ -626,22 +674,49 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
 
   const hasProviders = (settings?.providers.length ?? 0) > 0;
   const groups = Array.from(new Set(brains.map((b) => b.group)));
+  // Show the conversation thread only when there's something to show, so the
+  // panel stays a clean, calm input bar when idle (no manual collapse).
+  const showThread = messages.length > 0 || thinking;
+  // The bar opens on hover or focus, and stays open while there's a reason to:
+  // typing, a turn running, the model/settings menus, a thread, or an image.
+  const open =
+    hovered ||
+    focused ||
+    running ||
+    settingsOpen ||
+    showThread ||
+    brainMenuOpen ||
+    pickerOpen ||
+    !!attachment ||
+    input.trim().length > 0;
 
   return (
     <div
       onMouseDown={(e) => e.stopPropagation()}
-      className="absolute bottom-4 left-1/2 z-10 flex w-[min(92%,680px)] -translate-x-1/2 flex-col overflow-hidden rounded-2xl border border-black/10 bg-white/95 shadow-xl backdrop-blur"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className="absolute bottom-4 left-1/2 z-10 flex w-[min(92%,680px)] -translate-x-1/2 flex-col overflow-hidden rounded-3xl border border-black/10 bg-white/95 shadow-xl backdrop-blur"
       style={
         settingsOpen
           ? { height: 'min(80%, 32rem)' }
-          : expanded
+          : showThread
             ? { height: 'min(42%, 19rem)' }
             : undefined
       }
     >
       {/* Header (no `relative` so the settings overlay below anchors to the
           whole panel, not just this bar). */}
-      <div className="flex shrink-0 items-center justify-between border-b border-black/5 px-3 py-2">
+      <div className="shrink-0">
+        {/* Header bar — height + fade animate with the bar's open state. The
+            overflow-hidden is on this wrapper (not the header div), so the
+            settings overlay below still anchors to the whole panel. */}
+        <div
+          className={`grid transition-all duration-200 ease-out ${
+            open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="overflow-hidden">
+            <div className="flex items-center justify-between border-b border-black/5 px-3 py-2">
         <div className="flex min-w-0 items-center gap-1.5 text-[#6A6A6A]">
           <svg
             width="14"
@@ -678,10 +753,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
             </button>
           )}
           <button
-            onClick={() => {
-              setSettingsOpen((v) => !v);
-              setExpanded(true);
-            }}
+            onClick={() => setSettingsOpen((v) => !v)}
             className={`rounded p-1 hover:bg-black/5 ${
               hasProviders ? 'text-[#3E7A53]' : 'text-[#9A9A9A]'
             } hover:text-[#3A3A3A]`}
@@ -698,28 +770,15 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
               />
             </svg>
           </button>
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="rounded p-1 text-[#9A9A9A] hover:bg-black/5 hover:text-[#3A3A3A]"
-            aria-label={expanded ? 'Collapse panel' : 'Expand panel'}
-            title={expanded ? 'Collapse' : 'Expand'}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d={expanded ? 'M6 9l6 6 6-6' : 'M6 15l6-6 6 6'}
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+        </div>
+            </div>
+          </div>
         </div>
 
         {/* Settings overlay — covers the whole panel and scrolls inside it,
             so the full form is reachable and never clipped. */}
         {settingsOpen && (
-          <div className="absolute inset-0 z-40 overflow-y-auto rounded-2xl bg-white p-3">
+          <div className="absolute inset-0 z-40 overflow-y-auto rounded-3xl bg-white p-3">
             <div className="mb-1 flex items-center justify-between">
               <span className="text-xs font-medium text-[#3A3A3A]">AI providers</span>
               <button
@@ -856,7 +915,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
       </div>
 
       {/* Conversation area */}
-      {expanded && (
+      {showThread && (
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {messages.length === 0 && !thinking ? (
             <div className="mx-auto max-w-md py-6 text-center text-sm leading-relaxed text-[#9A9A9A]">
@@ -1010,159 +1069,221 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
             </button>
           </div>
         )}
-        <form onSubmit={submit} className="flex items-end gap-2 px-3 py-2">
-          {/* Choose working folder */}
-          <button
-            type="button"
-            onClick={chooseFolder}
+        <form onSubmit={submit} className="flex flex-col px-3.5 pb-3 pt-2.5">
+          {/* Input — full width on top, like the mockup. */}
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={onTextareaInput}
+            onKeyDown={onTextareaKeyDown}
+            onPaste={onPaste}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             disabled={running}
-            title={folderLocked ? `Working in ${workDir}` : 'Choose a folder to work in'}
-            aria-label="Choose working folder"
-            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
-              folderLocked
-                ? 'border-[#C8962E]/50 bg-[#C8962E]/10 text-[#A9781E]'
-                : 'border-black/10 text-[#6A6A6A] hover:text-[#3A3A3A]'
+            rows={1}
+            placeholder={
+              running
+                ? 'Working… approve a step or press Stop'
+                : attachment
+                  ? 'Add a note about the image…'
+                  : 'Ask Verlox to do something…'
+            }
+            aria-label="Ask Verlox to do something"
+            className={`w-full resize-none bg-transparent px-1 pt-0.5 text-[14px] leading-6 text-[#3A3A3A] placeholder:text-[#9A9A9A] focus:outline-none disabled:opacity-60 ${
+              dragging ? 'rounded-lg ring-2 ring-[#3A3A3A]/15' : ''
             }`}
-          >
-            <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M2 4.5h5l1.7 2H16v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
-            </svg>
-          </button>
-          {/* Attach image */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={running}
-            title="Attach an image (or paste / drop one)"
-            aria-label="Attach image"
-            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
-              attachment
-                ? 'border-[#3A3A3A]/30 bg-black/[0.05] text-[#3A3A3A]'
-                : 'border-black/10 text-[#6A6A6A] hover:text-[#3A3A3A]'
-            }`}
-          >
-            <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M14.5 8.5l-6.2 6.2a3 3 0 1 1-4.3-4.3L9.7 4.7a2 2 0 1 1 2.8 2.8L7 13" />
-            </svg>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            className="hidden"
-            onChange={onFileInput}
+            style={{ maxHeight: '120px' }}
           />
-          {/* Model switcher */}
-        <div ref={brainWrapRef} className="relative shrink-0">
-          {brainMenuOpen && (
-            <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 w-60 overflow-hidden rounded-xl border border-black/10 bg-white p-1 shadow-xl">
-              {groups.map((group) => (
-                <div key={group}>
-                  <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-[#B0B0B0]">
-                    {group}
-                  </div>
-                  {brains
-                    .filter((b) => b.group === group)
-                    .map((b) => {
-                      const active = b.id === brainId;
-                      return (
-                        <button
-                          key={b.id}
-                          type="button"
-                          onClick={() => pickBrain(b)}
-                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left ${
-                            active ? 'bg-black/[0.05]' : 'hover:bg-black/[0.035]'
-                          }`}
-                        >
-                          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[#3A3A3A]">
-                            {active ? '✓' : ''}
-                          </span>
-                          <span className="truncate text-xs font-medium text-[#3A3A3A]">
-                            {b.label}
-                          </span>
-                        </button>
-                      );
-                    })}
-                </div>
-              ))}
+
+          {/* Control row — left tools, right model + circular send.
+              Height + fade animate with the bar's open state. */}
+          <div
+            className={`grid transition-all duration-200 ease-out ${
+              open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+            }`}
+          >
+            <div className="overflow-hidden">
+              <div className="flex items-center gap-1.5 pt-2">
+            {/* Choose working folder */}
+            <button
+              ref={folderBtnRef}
+              type="button"
+              onClick={() => {
+                if (!pickerOpen) {
+                  const r = folderBtnRef.current?.getBoundingClientRect();
+                  if (r) setPickerAnchor({ left: r.left, top: r.top });
+                }
+                setPickerOpen((o) => !o);
+              }}
+              disabled={running}
+              title={folderLocked ? `Working in ${workDir}` : 'Choose a folder to work in'}
+              aria-label="Choose working folder"
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
+                folderLocked
+                  ? 'border-[#C8962E]/50 bg-[#C8962E]/10 text-[#A9781E]'
+                  : 'border-black/10 text-[#6A6A6A] hover:text-[#3A3A3A]'
+              }`}
+            >
+              <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M2 4.5h5l1.7 2H16v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+              </svg>
+            </button>
+            {/* Attach image */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={running}
+              title="Attach an image (or paste / drop one)"
+              aria-label="Attach image"
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
+                attachment
+                  ? 'border-[#3A3A3A]/30 bg-black/[0.05] text-[#3A3A3A]'
+                  : 'border-black/10 text-[#6A6A6A] hover:text-[#3A3A3A]'
+              }`}
+            >
+              <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M14.5 8.5l-6.2 6.2a3 3 0 1 1-4.3-4.3L9.7 4.7a2 2 0 1 1 2.8 2.8L7 13" />
+              </svg>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              className="hidden"
+              onChange={onFileInput}
+            />
+            {/* Model switcher */}
+            <div ref={brainWrapRef} className="shrink-0">
               <button
+                ref={brainBtnRef}
                 type="button"
                 onClick={() => {
-                  setBrainMenuOpen(false);
-                  setSettingsOpen(true);
+                  if (!brainMenuOpen) {
+                    const r = brainBtnRef.current?.getBoundingClientRect();
+                    if (r) {
+                      setBrainCoords({ left: r.left, bottom: window.innerHeight - r.top + 8 });
+                    }
+                  }
+                  setBrainMenuOpen((o) => !o);
                 }}
-                className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] text-[#6A6A6A] hover:bg-black/[0.035]"
+                disabled={running}
+                aria-haspopup="listbox"
+                aria-expanded={brainMenuOpen}
+                title={`Model: ${selectedBrain.label}`}
+                className="flex max-w-[150px] items-center gap-1 rounded-lg px-2 py-1.5 text-[12px] font-medium text-[#6A6A6A] hover:bg-black/5 hover:text-[#3A3A3A] disabled:opacity-40"
               >
-                ＋ Add an AI provider…
+                <span className="truncate">{selectedBrain.label}</span>
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={`shrink-0 transition-transform ${brainMenuOpen ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                >
+                  <polyline points="3,4.5 6,7.5 9,4.5" />
+                </svg>
               </button>
             </div>
-          )}
-          <button
-            type="button"
-            onClick={() => setBrainMenuOpen((o) => !o)}
-            disabled={running}
-            aria-haspopup="listbox"
-            aria-expanded={brainMenuOpen}
-            title={`Model: ${selectedBrain.label}`}
-            className="flex max-w-[120px] items-center gap-1 rounded-lg border border-black/10 px-2 py-1 text-[11px] font-medium text-[#6A6A6A] hover:text-[#3A3A3A] disabled:opacity-40"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="shrink-0">
-              <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" />
-            </svg>
-            <span className="truncate">{selectedBrain.label}</span>
-            <svg
-              width="10"
-              height="10"
-              viewBox="0 0 12 12"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className={`shrink-0 transition-transform ${brainMenuOpen ? 'rotate-180' : ''}`}
-              aria-hidden="true"
+            {brainMenuOpen &&
+              brainCoords &&
+              createPortal(
+                <div
+                  ref={brainMenuRef}
+                  style={{
+                    position: 'fixed',
+                    left: brainCoords.left,
+                    bottom: brainCoords.bottom,
+                    zIndex: 50,
+                  }}
+                  className="w-60 overflow-hidden rounded-xl border border-black/10 bg-white p-1 shadow-xl"
+                >
+                  {groups.map((group) => (
+                    <div key={group}>
+                      <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-[#B0B0B0]">
+                        {group}
+                      </div>
+                      {brains
+                        .filter((b) => b.group === group)
+                        .map((b) => {
+                          const active = b.id === brainId;
+                          return (
+                            <button
+                              key={b.id}
+                              type="button"
+                              onClick={() => pickBrain(b)}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left ${
+                                active ? 'bg-black/[0.05]' : 'hover:bg-black/[0.035]'
+                              }`}
+                            >
+                              <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[#3A3A3A]">
+                                {active ? '✓' : ''}
+                              </span>
+                              <span className="truncate text-xs font-medium text-[#3A3A3A]">
+                                {b.label}
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBrainMenuOpen(false);
+                      setSettingsOpen(true);
+                    }}
+                    className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] text-[#6A6A6A] hover:bg-black/[0.035]"
+                  >
+                    ＋ Add an AI provider…
+                  </button>
+                </div>,
+                document.body,
+              )}
+            {pickerOpen &&
+              pickerAnchor &&
+              createPortal(
+                <div
+                  ref={pickerRef}
+                  style={{
+                    position: 'fixed',
+                    left: pickerAnchor.left,
+                    top: pickerAnchor.top,
+                    zIndex: 50,
+                  }}
+                >
+                  <PathPicker initialPath={workDir || null} onPick={handlePickFolder} />
+                </div>,
+                document.body,
+              )}
+
+            {/* Spacer pushes send to the right edge, mockup-style. */}
+            <div className="flex-1" />
+
+            {/* Send */}
+            <button
+              type="submit"
+              disabled={(!input.trim() && !attachment) || running}
+              aria-label="Send"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#3A3A3A] text-white transition-colors hover:bg-black disabled:opacity-30"
             >
-              <polyline points="3,4.5 6,7.5 9,4.5" />
-            </svg>
-          </button>
-        </div>
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={onTextareaInput}
-          onKeyDown={onTextareaKeyDown}
-          onPaste={onPaste}
-          disabled={running}
-          rows={1}
-          placeholder={
-            running
-              ? 'Working… approve a step or press Stop'
-              : attachment
-                ? 'Add a note about the image…'
-                : 'Ask Verlox to do something…'
-          }
-          aria-label="Ask Verlox to do something"
-          className={`min-w-0 flex-1 resize-none self-center bg-transparent py-1 text-sm leading-5 text-[#3A3A3A] placeholder:text-[#9A9A9A] focus:outline-none disabled:opacity-60 ${
-            dragging ? 'rounded-lg ring-2 ring-[#3A3A3A]/15' : ''
-          }`}
-          style={{ maxHeight: '96px' }}
-        />
-        <button
-          type="submit"
-          disabled={(!input.trim() && !attachment) || running}
-          aria-label="Send"
-          className="flex h-8 w-8 shrink-0 items-center justify-center self-end rounded-lg bg-[#3A3A3A] text-white hover:bg-black disabled:opacity-30"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M5 12h13M13 6l6 6-6 6"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h13M13 6l6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+              </div>
+            </div>
+          </div>
         </form>
       </div>
     </div>

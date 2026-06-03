@@ -13,6 +13,7 @@ import type {
   PtyResizePayload,
   PtyStartPayload,
   SettingsInfo,
+  SqlConnectConfig,
   SynthesizeEvent,
   SynthesizeRequest,
   TurnInput,
@@ -29,13 +30,22 @@ import {
 } from './pty-manager';
 import {
   checkpoint as snapshotCheckpoint,
+  ensureProtected,
   getStatus as snapshotStatus,
   listSnapshots,
   pickFolder as snapshotPickFolder,
+  redo as snapshotRedo,
   restore as snapshotRestore,
   setAuto as snapshotSetAuto,
   setGuardedFolder,
+  undo as snapshotUndo,
 } from './snapshot-manager';
+import {
+  sqlConnect,
+  sqlDisconnect,
+  sqlDisconnectAll,
+  sqlQuery,
+} from './sql-manager';
 import { planStep, verifyProvider } from './agent';
 import {
   addProvider,
@@ -156,6 +166,10 @@ ipcMain.handle(IpcChannels.DialogPickDirectory, async (): Promise<string | null>
 });
 
 ipcMain.on(IpcChannels.CommandStart, (event, payload: CommandStartPayload) => {
+  // Auto-protect the folder the app is about to change, so restore points
+  // happen on their own — the user never picks a folder to protect.
+  // Fire-and-forget and idempotent: a no-op once this folder is guarded.
+  void ensureProtected(payload.cwd);
   startCommand(
     event.sender,
     payload.id,
@@ -208,6 +222,25 @@ ipcMain.handle(IpcChannels.SnapshotRestore, (_e, id: string) =>
 ipcMain.handle(IpcChannels.SnapshotSetAuto, (_e, enabled: boolean) =>
   snapshotSetAuto(enabled),
 );
+ipcMain.handle(IpcChannels.SnapshotUndo, () => snapshotUndo());
+ipcMain.handle(IpcChannels.SnapshotRedo, () => snapshotRedo());
+
+// --- SQL console ----------------------------------------------------------
+// Main owns the database connection (node-postgres), keyed by tab id, so the
+// renderer never holds the credential past the connect call.
+
+ipcMain.handle(IpcChannels.SqlConnect, (_e, id: string, config: SqlConnectConfig) =>
+  sqlConnect(id, config),
+);
+ipcMain.handle(IpcChannels.SqlQuery, (_e, id: string, sql: string) =>
+  sqlQuery(id, sql),
+);
+ipcMain.handle(IpcChannels.SqlDisconnect, (_e, id: string) => sqlDisconnect(id));
+
+// Close any open database connections when the app is quitting.
+app.on('before-quit', () => {
+  void sqlDisconnectAll();
+});
 
 // --- Agent Mode -----------------------------------------------------------
 // Plan the next step toward a goal (routed to the user's own key when set,

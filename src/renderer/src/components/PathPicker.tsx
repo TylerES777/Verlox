@@ -64,14 +64,11 @@ export function PathPicker({ initialPath, onPick }: PathPickerProps) {
     : entries;
 
   const parent = listing?.parent ?? null;
-  // The directory currently shown — what "Lock folder" locks to. Null
-  // only before the first listing resolves or on a load error.
-  const currentDir = listing && !listing.error ? listing.path : null;
 
   return (
     <div className="absolute bottom-full left-0 mb-2 w-[360px] overflow-hidden rounded-xl border-[0.5px] border-[rgba(0,0,0,0.08)] bg-card shadow-popover">
-      {/* Path bar: up-arrow, current path, lock-this-folder button. */}
-      <div className="flex items-center gap-2 border-b-[0.5px] border-hairline px-3 py-2">
+      {/* Path bar: back, home, and the current path. */}
+      <div className="flex items-center gap-1.5 border-b-[0.5px] border-hairline px-2.5 py-2">
         <button
           type="button"
           onClick={() => parent !== null && setPath(parent)}
@@ -82,35 +79,38 @@ export function PathPicker({ initialPath, onPick }: PathPickerProps) {
           <BackGlyph />
           <span>Back</span>
         </button>
+        <button
+          type="button"
+          onClick={() => setPath('')}
+          aria-label="Home folder"
+          title="Home folder"
+          className="flex shrink-0 items-center justify-center rounded px-1.5 py-1 text-ink-label hover:bg-surface-subtle hover:text-ink focus:outline-none"
+        >
+          <HomeGlyph />
+        </button>
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-hint">
           {listing?.path ?? path}
         </span>
-        <button
-          type="button"
-          onClick={() =>
-            currentDir !== null &&
-            onPick({ path: currentDir, isDirectory: true, dir: currentDir })
-          }
-          disabled={currentDir === null}
-          className="shrink-0 rounded-md bg-ink px-2.5 py-1 text-[11px] font-medium text-card hover:bg-black disabled:opacity-30 disabled:hover:bg-ink focus:outline-none"
-        >
-          Lock folder
-        </button>
       </div>
 
       {/* Search */}
-      <div className="border-b-[0.5px] border-hairline px-3 py-2">
-        <input
-          ref={searchRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search this folder…"
-          className="w-full bg-transparent text-[13px] text-ink placeholder:text-ink-hint focus:outline-none"
-        />
+      <div className="border-b-[0.5px] border-hairline p-2">
+        <div className="relative">
+          <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-hint">
+            <SearchGlyph />
+          </span>
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search this folder…"
+            className="w-full rounded-lg border border-hairline bg-surface-subtle py-1.5 pl-8 pr-2.5 text-[13px] text-ink placeholder:text-ink-hint focus:border-ink/20 focus:bg-card focus:outline-none"
+          />
+        </div>
       </div>
 
       {/* Entry list */}
-      <div className="max-h-[280px] overflow-y-auto py-1">
+      <div className="max-h-[280px] overflow-y-auto p-1">
         {loading && (
           <div className="px-3 py-2 text-[12px] text-ink-hint">Loading…</div>
         )}
@@ -127,10 +127,10 @@ export function PathPicker({ initialPath, onPick }: PathPickerProps) {
             <Row
               key={entry.path}
               entry={entry}
-              onActivate={() => {
+              onSelect={() => {
                 if (entry.isDirectory) {
-                  // Drill in — navigate, don't lock.
-                  setPath(entry.path);
+                  // Clicking a folder's NAME cd's into it (locks to it).
+                  onPick({ path: entry.path, isDirectory: true, dir: entry.path });
                 } else {
                   // Files are terminal: lock the conversation to the file.
                   onPick({
@@ -140,6 +140,8 @@ export function PathPicker({ initialPath, onPick }: PathPickerProps) {
                   });
                 }
               }}
+              // The "Inside" button drills in to browse the folder's contents.
+              onEnter={() => setPath(entry.path)}
             />
           ))}
       </div>
@@ -147,26 +149,88 @@ export function PathPicker({ initialPath, onPick }: PathPickerProps) {
   );
 }
 
-// One entry row. The whole row is the click target: folders drill in,
-// files lock. The chevron on folders is a non-interactive affordance
-// signalling "this opens."
-function Row({ entry, onActivate }: { entry: DirEntry; onActivate: () => void }) {
+// One entry row.
+//  - Folder: clicking the NAME cd's into that folder (locks to it); the
+//    trailing "Inside" button drills in to browse its contents instead.
+//  - File: clicking locks the conversation to that file.
+function Row({
+  entry,
+  onSelect,
+  onEnter,
+}: {
+  entry: DirEntry;
+  onSelect: () => void;
+  onEnter: () => void;
+}) {
+  if (!entry.isDirectory) {
+    return (
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-surface-subtle focus:outline-none"
+      >
+        <FileGlyph />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{entry.name}</span>
+      </button>
+    );
+  }
   return (
-    <button
-      type="button"
-      onClick={onActivate}
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-subtle focus:outline-none"
+    <div className="group flex items-center gap-1 rounded-lg pr-1 hover:bg-surface-subtle">
+      <button
+        type="button"
+        onClick={onSelect}
+        title={`Use ${entry.name}`}
+        className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left focus:outline-none"
+      >
+        <FolderGlyph />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{entry.name}</span>
+      </button>
+      <button
+        type="button"
+        onClick={onEnter}
+        aria-label={`Open ${entry.name}`}
+        title="Browse inside this folder"
+        className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-ink-micro transition-colors hover:bg-black/[0.06] hover:text-ink focus:outline-none focus-visible:bg-black/[0.06] focus-visible:text-ink"
+      >
+        Inside
+        <ChevronGlyph />
+      </button>
+    </div>
+  );
+}
+
+function SearchGlyph() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      aria-hidden="true"
     >
-      {entry.isDirectory ? <FolderGlyph /> : <FileGlyph />}
-      <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
-        {entry.name}
-      </span>
-      {entry.isDirectory && (
-        <span className="shrink-0 text-ink-micro">
-          <ChevronGlyph />
-        </span>
-      )}
-    </button>
+      <circle cx="6" cy="6" r="4" />
+      <line x1="9" y1="9" x2="12.5" y2="12.5" />
+    </svg>
+  );
+}
+
+function HomeGlyph() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 6.5 7 2.5l5 4" />
+      <path d="M3.2 5.8V11a1 1 0 0 0 1 1h5.6a1 1 0 0 0 1-1V5.8" />
+    </svg>
   );
 }
 

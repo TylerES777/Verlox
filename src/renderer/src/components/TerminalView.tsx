@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { SnapshotPanel } from './SnapshotPanel';
 import { AgentPanel } from './AgentPanel';
 import { registerTerminal, unregisterTerminal } from '../lib/terminalRegistry';
 
@@ -33,19 +32,17 @@ const pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
 // loop here: the user types straight into a real shell, so interactive
 // CLIs (Claude Code, vim, REPLs) work exactly as they would in any
 // terminal. The approve-before-run layer sits on top of this, not inside it.
+// Rewind / restore points now live in the sidebar, not over the terminal.
 export function TerminalView({ id, isActive }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  // The restore-points panel, opened by the shield button. Lives over the
-  // terminal surface so it never resizes the shell.
-  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
-  // At-a-glance protection state for the shield: 'off' (no folder / no git),
-  // 'manual' (folder protected, auto-save off), 'on' (protected + auto-save).
-  const [protection, setProtection] = useState<'off' | 'manual' | 'on'>('off');
   // Becomes true once the PTY has been spawned, so a deferred first fit
   // (for a tab that mounts while hidden) knows whether to start it.
   const startedRef = useRef(false);
+  // Output mode: false = raw shell output (default), true = AI explains each
+  // command's output instead. (The translation pipeline is wired separately.)
+  const [aiMode, setAiMode] = useState(false);
 
   // Mount the terminal once. Tabs stay mounted across switches (so a
   // long-running shell survives), so this effect runs a single time per
@@ -70,12 +67,33 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
       lineHeight: 1.2,
       cursorBlink: true,
       // A calm, light terminal that belongs to the white app surface
-      // instead of dropping a black box into it.
+      // instead of dropping a black box into it. The ANSI palette is tuned
+      // for a near-white background — xterm's defaults are built for dark
+      // terminals, so their yellow/green/cyan are garish and low-contrast
+      // here (e.g. PowerShell's PSReadLine paints the command token bright
+      // yellow). These are muted, darker variants that stay legible on white.
       theme: {
-        background: '#FBFBFA',
+        background: '#FFFFFF',
         foreground: '#3A3A3A',
         cursor: '#3A3A3A',
+        cursorAccent: '#FBFBFA',
         selectionBackground: '#D8E6F2',
+        black: '#3A3A3A',
+        red: '#B4322B',
+        green: '#3E7A53',
+        yellow: '#9A7D2E',
+        blue: '#2E5FA3',
+        magenta: '#8A4D9E',
+        cyan: '#2C7A7A',
+        white: '#9A9A9A',
+        brightBlack: '#6A6A6A',
+        brightRed: '#C0392B',
+        brightGreen: '#2E8B57',
+        brightYellow: '#B07A1E',
+        brightBlue: '#3B73C4',
+        brightMagenta: '#A05BB5',
+        brightCyan: '#2C9C9C',
+        brightWhite: '#4A4A4A',
       },
     });
     const fit = new FitAddon();
@@ -191,93 +209,76 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
     return () => cancelAnimationFrame(raf);
   }, [isActive, id]);
 
-  // Keep the shield's appearance in sync with the real protection state.
-  // Refetched on mount and whenever the panel opens or closes, so changing
-  // the guarded folder or toggling auto-save updates the shield immediately.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const s = await window.api.snapshotStatus();
-        if (cancelled) return;
-        setProtection(
-          !s.guardedFolder || !s.gitAvailable
-            ? 'off'
-            : s.autoEnabled
-              ? 'on'
-              : 'manual',
-        );
-      } catch {
-        // Status is best-effort; leave the shield as-is on failure.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [snapshotsOpen]);
-
-  const shieldStyle = {
-    off: 'border-black/10 bg-white/90 text-[#6A6A6A] hover:bg-white hover:text-[#3A3A3A]',
-    manual: 'border-[#3A3A3A]/25 bg-white text-[#3A3A3A] hover:bg-black/5',
-    on: 'border-[#3E7A53]/30 bg-[#EAF3ED] text-[#3E7A53] hover:bg-[#E2EEE7]',
-  }[protection];
-  const shieldLabel = protection === 'on' ? 'Protected' : 'Restore points';
-  const shieldTitle =
-    protection === 'on'
-      ? 'Protected — Verlox is saving this folder automatically. Click to see restore points.'
-      : protection === 'manual'
-        ? 'Protected — saving when you checkpoint. Click to see restore points.'
-        : 'Restore points — pick a folder to protect so Verlox can rewind mistakes.';
-
   // Clicking anywhere in the pane focuses the terminal, so a click after
   // the terminal has lost focus (e.g. to DevTools or another tab) always
   // restores typing. mousedown (not click) so focus lands before the
   // browser's default selection handling runs.
   return (
-    <div className="relative h-full w-full overflow-hidden">
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-white">
+      {/* Chrome bar — a solid header strip with the Raw / AI output toggle. */}
+      <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-surface-subtle px-3 py-1.5">
+        <div className="flex items-center gap-2">
+          <span className="flex gap-1" aria-hidden="true">
+            <span className="h-2 w-2 rounded-full bg-black/[0.08]" />
+            <span className="h-2 w-2 rounded-full bg-black/[0.08]" />
+            <span className="h-2 w-2 rounded-full bg-black/[0.08]" />
+          </span>
+          <span className="text-[11px] font-medium text-ink-hint">Terminal</span>
+        </div>
+        <OutputModeToggle on={aiMode} onChange={setAiMode} />
+      </div>
+
       <div
         ref={hostRef}
         onMouseDown={() => termRef.current?.focus()}
-        className="h-full w-full overflow-hidden"
+        className="min-h-0 flex-1 overflow-hidden px-4 pb-3 pt-3"
       />
-
-      {/* Restore-points toggle. The shield is the calm signal that Verlox
-          has your back; it fills green once a folder is protected. Clicking
-          it opens the timeline of restore points. */}
-      <button
-        onClick={() => setSnapshotsOpen((v) => !v)}
-        className={`absolute right-2 top-2 z-10 flex items-center gap-1 rounded-lg border px-2 py-1 text-xs shadow-sm backdrop-blur ${shieldStyle}`}
-        title={shieldTitle}
-        aria-label={shieldLabel}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinejoin="round"
-            fill={protection === 'on' ? 'currentColor' : 'none'}
-            fillOpacity={protection === 'on' ? 0.12 : 0}
-          />
-          {protection !== 'off' && (
-            <path
-              d="M8.7 12.1l2.2 2.2 4.4-4.6"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
-        </svg>
-        {shieldLabel}
-      </button>
-
-      {snapshotsOpen && <SnapshotPanel onClose={() => setSnapshotsOpen(false)} />}
 
       {/* The floating natural-language panel where you and Verlox talk and
           approve actions. It floats over the terminal and never resizes the
           shell. See AgentPanel.tsx. */}
       <AgentPanel terminalId={id} />
+    </div>
+  );
+}
+
+// Raw vs AI output toggle. Raw shows the shell's real output; AI (when its
+// pipeline is wired) explains each command's output in plain English instead,
+// leaving commands that need live interaction untouched.
+function OutputModeToggle({
+  on,
+  onChange,
+}: {
+  on: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div
+      className="flex items-center rounded-full border border-hairline bg-surface-subtle p-0.5 text-[10.5px] font-medium"
+      role="group"
+      aria-label="Output mode"
+    >
+      <button
+        type="button"
+        onClick={() => onChange(false)}
+        title="Show the shell's raw output"
+        className={`rounded-full px-2 py-0.5 transition-colors ${
+          !on ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.06)]' : 'text-ink-hint hover:text-ink'
+        }`}
+      >
+        Raw
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(true)}
+        title="Let Verlox explain output in plain English"
+        className={`flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors ${
+          on ? 'bg-card text-[#3E7A53] shadow-[0_1px_2px_rgba(0,0,0,0.06)]' : 'text-ink-hint hover:text-ink'
+        }`}
+      >
+        <span aria-hidden="true">✦</span>
+        AI
+      </button>
     </div>
   );
 }

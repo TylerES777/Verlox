@@ -75,6 +75,13 @@ const api: IpcApi = {
     ipcRenderer.invoke(IpcChannels.SnapshotRestore, id),
   snapshotSetAuto: (enabled: boolean) =>
     ipcRenderer.invoke(IpcChannels.SnapshotSetAuto, enabled),
+  snapshotUndo: () => ipcRenderer.invoke(IpcChannels.SnapshotUndo),
+  snapshotRedo: () => ipcRenderer.invoke(IpcChannels.SnapshotRedo),
+
+  sqlConnect: (id, config) =>
+    ipcRenderer.invoke(IpcChannels.SqlConnect, id, config),
+  sqlQuery: (id, sql) => ipcRenderer.invoke(IpcChannels.SqlQuery, id, sql),
+  sqlDisconnect: (id) => ipcRenderer.invoke(IpcChannels.SqlDisconnect, id),
 
   agentPlanStep: (input) =>
     ipcRenderer.invoke(IpcChannels.AgentPlanStep, input),

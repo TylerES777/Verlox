@@ -35,6 +35,15 @@ export const IpcChannels = {
   SnapshotList: 'snapshot:list',
   SnapshotRestore: 'snapshot:restore',
   SnapshotSetAuto: 'snapshot:set-auto',
+  SnapshotUndo: 'snapshot:undo',
+  SnapshotRedo: 'snapshot:redo',
+
+  // SQL console (an interactive tab kind). Main owns the database connection
+  // (node-postgres) so credentials never touch the renderer beyond the
+  // connect call; the renderer sends SQL and renders the result table.
+  SqlConnect: 'sql:connect',
+  SqlQuery: 'sql:query',
+  SqlDisconnect: 'sql:disconnect',
 
   // Agent Mode. Plan the next step toward a goal, and manage the optional
   // own-key + auto-approve settings. The AI key never crosses back over IPC
