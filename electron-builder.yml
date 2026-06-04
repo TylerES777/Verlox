@@ -14,6 +14,9 @@ publish:
   provider: github
   owner: TylerES777
   repo: Verlox
+  # Publish a real release, not a draft (electron-builder's default), so the
+  # auto-updater (which only sees non-draft "latest") picks it up immediately.
+  releaseType: release
 
 directories:
   # Installer + unpacked app land here.
