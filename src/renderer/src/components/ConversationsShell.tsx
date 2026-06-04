@@ -3,6 +3,9 @@ import { TerminalView } from './TerminalView';
 import { SqlConsoleView } from './SqlConsoleView';
 import { TabBar, type ConversationTab } from './TabBar';
 import { Sidebar } from './Sidebar';
+import { SettingsView } from './SettingsView';
+import { VaultView, VaultGlyph } from './VaultView';
+import { TimelineView, ClockGlyph } from './TimelineView';
 import { installProcessListeners } from '../hooks/useRunningProcesses';
 
 function makeTerminal(): ConversationTab {
@@ -30,6 +33,18 @@ export function ConversationsShell() {
   const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
   // Sidebar collapse. Starts open; the title-bar toggle hides/shows it.
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // The Settings page (modal). Opened by the top-bar gear, or by anything that
+  // fires the 'verlox:open-settings' event (e.g. the chat bar's "add provider").
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // The Recovery Vault page (modal), opened by its top-bar button.
+  const [vaultOpen, setVaultOpen] = useState(false);
+  // The Timeline replay page (modal), opened by its top-bar button.
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setSettingsOpen(true);
+    window.addEventListener('verlox:open-settings', open);
+    return () => window.removeEventListener('verlox:open-settings', open);
+  }, []);
 
   const handleNew = useCallback(() => {
     const t = makeTerminal();
@@ -41,6 +56,16 @@ export function ConversationsShell() {
     const t = makeSql();
     setTabs((cs) => [...cs, t]);
     setActiveId(t.id);
+  }, []);
+
+  // Rename a tab from its first command (only while still the default title).
+  const renameTab = useCallback((tabId: string, command: string) => {
+    const title = command.length > 22 ? `${command.slice(0, 21)}…` : command;
+    setTabs((cs) =>
+      cs.map((c) =>
+        c.id === tabId && c.title === 'Terminal' ? { ...c, title } : c,
+      ),
+    );
   }, []);
 
   const handleClose = useCallback(
@@ -62,7 +87,7 @@ export function ConversationsShell() {
   );
 
   return (
-    <div className="flex h-full w-full flex-col bg-[#D5D8DF]">
+    <div className="flex h-full w-full flex-col bg-canvas">
       {/* Custom title strip — replaces the hidden native title bar. It's the
           window's drag handle; the native min/max/close controls render at
           its right via titleBarOverlay (configured in the main process). The
@@ -91,6 +116,44 @@ export function ConversationsShell() {
             <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="2" />
             <line x1="6.5" y1="3.5" x2="6.5" y2="12.5" />
           </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Settings"
+          title="Settings"
+          className="ml-1 flex h-7 w-7 items-center justify-center rounded-lg text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5" />
+            <path
+              d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setVaultOpen(true)}
+          aria-label="Recovery Vault"
+          title="Recovery Vault"
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <VaultGlyph className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setTimelineOpen(true)}
+          aria-label="Timeline"
+          title="Timeline — everything Verlox has done"
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <ClockGlyph className="h-4 w-4" />
         </button>
       </div>
       {/* Body: collapsible sidebar (search, tabs, rewind, running) + the
@@ -127,7 +190,7 @@ export function ConversationsShell() {
             {/* The centered terminal board. Every terminal stays mounted;
                 inactive ones are display:none so background work survives a
                 tab switch. */}
-            <div className="min-h-0 flex-1 overflow-hidden rounded-2xl bg-card shadow-[0_4px_14px_rgba(0,0,0,0.08),0_20px_50px_-12px_rgba(0,0,0,0.22)]">
+            <div className="min-h-0 flex-1 overflow-hidden rounded-2xl bg-card">
               {tabs.map((tab) => (
                 <div
                   key={tab.id}
@@ -136,7 +199,11 @@ export function ConversationsShell() {
                   {tab.kind === 'sql' ? (
                     <SqlConsoleView id={tab.id} />
                   ) : (
-                    <TerminalView id={tab.id} isActive={tab.id === activeId} />
+                    <TerminalView
+                      id={tab.id}
+                      isActive={tab.id === activeId}
+                      onFirstCommand={(cmd) => renameTab(tab.id, cmd)}
+                    />
                   )}
                 </div>
               ))}
@@ -144,6 +211,10 @@ export function ConversationsShell() {
           </div>
         </div>
       </div>
+
+      {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
+      {vaultOpen && <VaultView onClose={() => setVaultOpen(false)} />}
+      {timelineOpen && <TimelineView onClose={() => setTimelineOpen(false)} />}
     </div>
   );
 }

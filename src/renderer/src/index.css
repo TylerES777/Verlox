@@ -75,3 +75,20 @@ body {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Hide xterm's scrollbars — TerminalView renders a custom premium scrollbar
+   that floats at the card's right edge instead of the text column. xterm 6
+   has TWO: the native viewport scrollbar AND a VS Code-derived overlay
+   scrollbar (.xterm-scrollable-element > .scrollbar) that fades in on hover.
+   Both must be hidden. */
+.xterm-viewport {
+  scrollbar-width: none !important;
+}
+.xterm-viewport::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar {
+  display: none !important;
+}

@@ -22,6 +22,53 @@ import { useTier } from './TierContext';
 
 const PRO_PRICE = '$15';
 
+// Concise, roughly equal-length feature labels so rows don't wrap mid-phrase.
+const FREE_FEATURES = [
+  'Haiku model · 15 credits / day',
+  'Approve every action first',
+  'Recovery Vault — restore deletes (24h)',
+  'Permission controls',
+  'Recent timeline + Running pane',
+];
+const PRO_FEATURES = [
+  'Sonnet + Opus · 500 credits / week',
+  'Sandbox — dry-run with before/after diffs',
+  'Full Timeline replay',
+  'Recovery Vault — keep 7 days or forever',
+  'Generous image uploads',
+  'Everything in Free',
+];
+
+function CheckRow({ children, accent }: { children: ReactNode; accent?: boolean }) {
+  return (
+    <li className="flex items-start gap-2">
+      <svg
+        viewBox="0 0 16 16"
+        className={`mt-[3px] h-3 w-3 shrink-0 ${accent ? 'text-[#3E7A53]' : 'text-ink-micro'}`}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M3 8.5l3 3 7-8" />
+      </svg>
+      <span className="text-[12.5px] leading-snug text-ink-body">{children}</span>
+    </li>
+  );
+}
+
+function YourPlanTag() {
+  return (
+    <div className="mt-auto pt-3">
+      <span className="inline-flex rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-ink-label">
+        Your plan
+      </span>
+    </div>
+  );
+}
+
 // Calm, plain-English copy for a failed billing action.
 function billingErrorMessage(code: BillingErrorCode): string {
   switch (code) {
@@ -150,10 +197,10 @@ function UpgradeModal({
       ? `${feature} is a Pro feature`
       : 'Do more with Pro';
   const subtitle = limitReached
-    ? `Your credits refill ${refillPhrase}. Upgrade to Pro for a much bigger weekly grant and unlimited Plan Mode.`
+    ? `Your credits refill ${refillPhrase}. Upgrade to Pro for a much bigger weekly grant, smarter models, and the full control suite.`
     : feature
       ? `Upgrade to unlock ${feature.toLowerCase()} and the rest of Pro.`
-      : 'A bigger credit grant and the power features, for people who live in their terminal.';
+      : 'The smartest models, a bigger credit grant, and the deepest control — simulate, diff, and undo everything the AI does.';
 
   // Escape closes the modal.
   useEffect(() => {
@@ -241,51 +288,50 @@ function UpgradeModal({
           </p>
 
           {/* Plan comparison */}
-          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="mt-6 grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2">
             {/* Free */}
-            <div className="rounded-xl border border-subtle-border bg-surface-faint p-4">
+            <div className="flex flex-col rounded-xl border border-subtle-border bg-surface-faint p-4">
               <div className="flex items-baseline justify-between">
-                <span className="font-mono text-[11px] uppercase tracking-[0.1em] text-ink-label">Free</span>
+                <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink-label">
+                  Free
+                </span>
                 <span className="text-[18px] font-semibold text-ink">$0</span>
               </div>
-              <ul className="mt-3 space-y-1.5 text-[13px] text-ink-body">
-                <li>15 credits a day</li>
-                <li>Fast Haiku model</li>
-                <li>2 image uploads a day</li>
-                <li>Timeline history</li>
-                <li>The Running pane</li>
+              <p className="mt-0.5 text-[11px] text-ink-micro">Safe by default</p>
+              <ul className="mt-3.5 space-y-2">
+                {FREE_FEATURES.map((f) => (
+                  <CheckRow key={f}>{f}</CheckRow>
+                ))}
               </ul>
-              {!isPro && (
-                <div className="mt-3 text-[11px] uppercase tracking-[0.06em] text-ink-micro">
-                  Your plan
-                </div>
-              )}
+              {!isPro && <YourPlanTag />}
             </div>
 
             {/* Pro */}
             <div
-              className="relative rounded-xl border border-ink/15 p-4"
+              className="relative flex flex-col rounded-xl border border-ink/20 p-4 shadow-[0_8px_24px_-12px_rgba(20,30,60,0.25)]"
               style={{ background: 'linear-gradient(180deg,#FFFFFF,#FAFBFD)' }}
             >
+              <span className="absolute -top-2 right-4 rounded-full bg-[#1B1B1F] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-white">
+                Recommended
+              </span>
               <div className="flex items-baseline justify-between">
-                <span className="font-mono text-[11px] uppercase tracking-[0.1em] text-ink">Pro</span>
+                <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink">
+                  Pro
+                </span>
                 <span className="text-[18px] font-semibold text-ink">
-                  {PRO_PRICE}<span className="text-[12px] font-normal text-ink-label">/mo</span>
+                  {PRO_PRICE}
+                  <span className="text-[12px] font-normal text-ink-label">/mo</span>
                 </span>
               </div>
-              <ul className="mt-3 space-y-1.5 text-[13px] text-ink-body">
-                <li className="font-medium text-ink">500 credits a week</li>
-                <li>Smarter Sonnet model, plus Opus</li>
-                <li>Generous image uploads</li>
-                <li>Unlimited Plan Mode</li>
-                <li>Show responses as diagrams</li>
-                <li>Everything in Free</li>
+              <p className="mt-0.5 text-[11px] text-ink-micro">Power + full control</p>
+              <ul className="mt-3.5 space-y-2">
+                {PRO_FEATURES.map((f, i) => (
+                  <CheckRow key={f} accent>
+                    {i === 0 ? <span className="font-medium text-ink">{f}</span> : f}
+                  </CheckRow>
+                ))}
               </ul>
-              {isPro && (
-                <div className="mt-3 text-[11px] uppercase tracking-[0.06em] text-ink-micro">
-                  Your plan
-                </div>
-              )}
+              {isPro && <YourPlanTag />}
             </div>
           </div>
 

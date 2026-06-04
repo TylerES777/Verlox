@@ -52,10 +52,23 @@ export const IpcChannels = {
   // own-key + auto-approve settings. The AI key never crosses back over IPC
   // (only whether one is saved).
   AgentPlanStep: 'agent:plan-step',
+  AgentPlanAll: 'agent:plan-all',
   SettingsGet: 'settings:get',
   SettingsAddProvider: 'settings:add-provider',
   SettingsRemoveProvider: 'settings:remove-provider',
   SettingsSetAutoApprove: 'settings:set-auto-approve',
+  SettingsSetPermission: 'settings:set-permission',
+
+  // Recovery Vault — trash-bin for AI deletions.
+  VaultCapture: 'vault:capture',
+  VaultList: 'vault:list',
+  VaultRestore: 'vault:restore',
+  VaultForget: 'vault:forget',
+  VaultSetRetention: 'vault:set-retention',
+  PreviewFile: 'fs:preview-file',
+  TimelineRecord: 'timeline:record',
+  TimelineList: 'timeline:list',
+  TimelineClear: 'timeline:clear',
 
   // Auth
   AuthSignUp: 'auth:sign-up',

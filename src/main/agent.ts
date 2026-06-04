@@ -1,5 +1,6 @@
 import type {
   AddProviderInput,
+  AgentPlanAllResult,
   AgentPlanInput,
   AgentStepResult,
   BackendErrorCode,
@@ -8,8 +9,8 @@ import type {
 } from '@shared/types';
 import { planTurn } from './backend-client';
 import { getProvider, getProviderKey } from './settings-store';
-import { planStepAnthropic, verifyAnthropic } from './agent-anthropic';
-import { planStepOpenAI, verifyOpenAI } from './agent-openai';
+import { planAllAnthropic, planStepAnthropic, verifyAnthropic } from './agent-anthropic';
+import { planAllOpenAI, planStepOpenAI, verifyOpenAI } from './agent-openai';
 
 // Routes a "what's the next step?" request to the right engine:
 //   - 'custom': call the chosen provider directly from this machine with the
@@ -117,6 +118,74 @@ export async function planStep(
       reason: step.description?.trim() || step.title?.trim() || '',
       readOnly: plan.affects.readOnly,
       risk: plan.footgunDetected ? plan.footgunDetected.reason : null,
+    },
+  };
+}
+
+// Plan-first: lay out the COMPLETE ordered plan in one call (for the approve-
+// the-whole-plan UI), instead of one step at a time.
+export async function planAll(input: AgentPlanInput): Promise<AgentPlanAllResult> {
+  // --- Custom provider path ---
+  if (input.engine === 'custom') {
+    const provider = input.providerId ? getProvider(input.providerId) : undefined;
+    if (!provider) {
+      return { ok: false, error: 'That AI provider is no longer set up. Pick another in the model menu.' };
+    }
+    const key = input.providerId ? getProviderKey(input.providerId) : null;
+    if (!key) {
+      return { ok: false, error: 'That provider has no saved key. Re-add it in settings.' };
+    }
+    try {
+      const plan =
+        provider.format === 'anthropic'
+          ? await planAllAnthropic(input, key, provider.model, provider.baseUrl)
+          : await planAllOpenAI(input, key, provider.model, provider.baseUrl);
+      return { ok: true, plan };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  // --- Verlox backend path: the planner already returns multiple steps. ---
+  const ctx = input.terminalContext
+    ? `What's currently on the user's terminal screen(s):\n${input.terminalContext}\n\n`
+    : '';
+  const res = await planTurn({
+    userInput: ctx + input.goal,
+    context: {
+      cwd: input.cwd,
+      platform: input.platform,
+      shell: input.shell,
+      focusedFile: null,
+    },
+    planMode: true,
+    model: input.model as ModelChoice,
+    history: [],
+    runningProcesses: [],
+    attachedImage: input.image ?? null,
+  });
+  if (!res.ok) return { ok: false, error: backendErrorMessage(res.code) };
+
+  const plan = res.data;
+  const summary = plan.plan?.trim() || plan.intent?.trim() || '';
+  if (plan.steps.length === 0) {
+    return {
+      ok: true,
+      plan: { done: true, message: summary || 'All done.', summary: summary || 'All done.', estimate: '', steps: [] },
+    };
+  }
+  return {
+    ok: true,
+    plan: {
+      done: false,
+      message: summary,
+      summary,
+      estimate: '',
+      steps: plan.steps.map((s) => ({
+        command: s.command,
+        reason: s.description?.trim() || s.title?.trim() || '',
+        readOnly: plan.affects.readOnly,
+      })),
     },
   };
 }

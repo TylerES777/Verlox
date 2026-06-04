@@ -92,6 +92,8 @@ const api: IpcApi = {
 
   agentPlanStep: (input) =>
     ipcRenderer.invoke(IpcChannels.AgentPlanStep, input),
+  agentPlanAll: (input) =>
+    ipcRenderer.invoke(IpcChannels.AgentPlanAll, input),
   settingsGet: () => ipcRenderer.invoke(IpcChannels.SettingsGet),
   settingsAddProvider: (input) =>
     ipcRenderer.invoke(IpcChannels.SettingsAddProvider, input),
@@ -99,6 +101,18 @@ const api: IpcApi = {
     ipcRenderer.invoke(IpcChannels.SettingsRemoveProvider, id),
   settingsSetAutoApprove: (enabled) =>
     ipcRenderer.invoke(IpcChannels.SettingsSetAutoApprove, enabled),
+  settingsSetPermission: (capability, rule) =>
+    ipcRenderer.invoke(IpcChannels.SettingsSetPermission, capability, rule),
+  vaultCapture: (input) => ipcRenderer.invoke(IpcChannels.VaultCapture, input),
+  vaultList: () => ipcRenderer.invoke(IpcChannels.VaultList),
+  vaultRestore: (id) => ipcRenderer.invoke(IpcChannels.VaultRestore, id),
+  vaultForget: (id) => ipcRenderer.invoke(IpcChannels.VaultForget, id),
+  vaultSetRetention: (id, retention) =>
+    ipcRenderer.invoke(IpcChannels.VaultSetRetention, id, retention),
+  previewFile: (path, cwd) => ipcRenderer.invoke(IpcChannels.PreviewFile, path, cwd),
+  timelineRecord: (input) => ipcRenderer.invoke(IpcChannels.TimelineRecord, input),
+  timelineList: () => ipcRenderer.invoke(IpcChannels.TimelineList),
+  timelineClear: () => ipcRenderer.invoke(IpcChannels.TimelineClear),
 
   signUp: (credentials) => ipcRenderer.invoke(IpcChannels.AuthSignUp, credentials),
   signIn: (credentials) => ipcRenderer.invoke(IpcChannels.AuthSignIn, credentials),

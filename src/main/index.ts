@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { promises as nodeFs } from 'node:fs';
 import { IpcChannels } from '@shared/ipc-channels';
 import type {
   AddProviderInput,
@@ -10,6 +11,8 @@ import type {
   CommandStartPayload,
   DiagramRequest,
   PtyInputPayload,
+  PreviewFileResult,
+  TimelineRecordInput,
   PtyResizePayload,
   PtyStartPayload,
   SettingsInfo,
@@ -17,6 +20,8 @@ import type {
   SynthesizeEvent,
   SynthesizeRequest,
   TurnInput,
+  VaultCaptureInput,
+  VaultRetention,
 } from '@shared/types';
 import { getCwd, initCwd, setCwd } from './store';
 import { listDirectory } from './directory';
@@ -46,14 +51,25 @@ import {
   sqlDisconnectAll,
   sqlQuery,
 } from './sql-manager';
-import { planStep, verifyProvider } from './agent';
+import { planAll, planStep, verifyProvider } from './agent';
+import {
+  captureDeletions,
+  forgetVault,
+  listVault,
+  restoreVault,
+  setVaultRetention,
+} from './vault-manager';
+import { clearTimeline, listTimeline, recordTimeline } from './timeline-manager';
 import {
   addProvider,
   getAutoApprove,
+  getPermissions,
   listProviders,
   removeProvider,
   setAutoApprove,
+  setPermission,
 } from './settings-store';
+import type { Capability, PermissionRule } from '@shared/risk';
 import * as backend from './backend-client';
 import { getEnvironment } from './detect-environment';
 import {
@@ -90,7 +106,9 @@ function createWindow(): void {
     // where this bar used to be (see ConversationsShell).
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#FFFFFF',
+      // Match the renderer's title strip (bg-canvas) so the native window
+      // controls blend in instead of sitting on a white block.
+      color: '#F2F3F5',
       symbolColor: '#3A3A3A',
       height: 40,
     },
@@ -251,11 +269,15 @@ function settingsInfo(): SettingsInfo {
   return {
     providers: listProviders(),
     autoApproveReadonly: getAutoApprove(),
+    permissions: getPermissions(),
   };
 }
 
 ipcMain.handle(IpcChannels.AgentPlanStep, (_e, input: AgentPlanInput) =>
   planStep(input),
+);
+ipcMain.handle(IpcChannels.AgentPlanAll, (_e, input: AgentPlanInput) =>
+  planAll(input),
 );
 ipcMain.handle(IpcChannels.SettingsGet, (): SettingsInfo => settingsInfo());
 ipcMain.handle(
@@ -300,6 +322,54 @@ ipcMain.handle(
     return settingsInfo();
   },
 );
+ipcMain.handle(
+  IpcChannels.SettingsSetPermission,
+  (_e, capability: Capability, rule: PermissionRule): SettingsInfo => {
+    setPermission(capability, rule);
+    return settingsInfo();
+  },
+);
+
+// Recovery Vault.
+ipcMain.handle(IpcChannels.VaultCapture, (_e, input: VaultCaptureInput) =>
+  captureDeletions(input),
+);
+ipcMain.handle(IpcChannels.VaultList, () => listVault());
+ipcMain.handle(IpcChannels.VaultRestore, (_e, id: string) => restoreVault(id));
+ipcMain.handle(IpcChannels.VaultForget, (_e, id: string) => forgetVault(id));
+ipcMain.handle(
+  IpcChannels.VaultSetRetention,
+  (_e, id: string, retention: VaultRetention) => setVaultRetention(id, retention),
+);
+
+// Read a file's current contents for the AI-diff "before" side.
+const PREVIEW_CAP = 60_000; // chars
+ipcMain.handle(
+  IpcChannels.PreviewFile,
+  async (_e, p: string, cwd: string): Promise<PreviewFileResult> => {
+    try {
+      const abs = isAbsolute(p) ? p : resolve(cwd || '.', p);
+      const stat = await nodeFs.stat(abs);
+      if (!stat.isFile()) return { exists: false, content: '', tooLarge: false };
+      const buf = await nodeFs.readFile(abs, 'utf8');
+      return {
+        exists: true,
+        content: buf.length > PREVIEW_CAP ? buf.slice(0, PREVIEW_CAP) : buf,
+        tooLarge: buf.length > PREVIEW_CAP,
+      };
+    } catch {
+      // Missing file → a brand-new file (no "before").
+      return { exists: false, content: '', tooLarge: false };
+    }
+  },
+);
+
+// Timeline replay.
+ipcMain.handle(IpcChannels.TimelineRecord, (_e, input: TimelineRecordInput) =>
+  recordTimeline(input),
+);
+ipcMain.handle(IpcChannels.TimelineList, () => listTimeline());
+ipcMain.handle(IpcChannels.TimelineClear, () => clearTimeline());
 
 // --- Auth handlers --------------------------------------------------------
 // All HTTP calls happen here in the main process. Token is stored in main

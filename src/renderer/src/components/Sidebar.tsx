@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { SnapshotStatus } from '@shared/types';
+import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ConversationTab } from './TabBar';
-import { Tooltip } from './Tooltip';
-import { useRunningProcesses } from '../hooks/useRunningProcesses';
+import { finalizeProcess, useRunningProcesses } from '../hooks/useRunningProcesses';
+import { readTerminalText } from '../lib/terminalRegistry';
+import { useAuth } from '../contexts/AuthContext';
+import { useUsage } from '../contexts/UsageContext';
+import { useUpgrade } from '../contexts/UpgradeContext';
 
 interface SidebarProps {
   tabs: ConversationTab[];
@@ -18,22 +21,27 @@ interface SidebarProps {
 // at the top of the board area, not here.
 export function Sidebar({ tabs, activeId, onSelect, onClose }: SidebarProps) {
   const [query, setQuery] = useState('');
+  // Hover-preview card for a tab: shows that terminal's recent output.
+  const [preview, setPreview] = useState<{
+    title: string;
+    top: number;
+    left: number;
+    text: string;
+  } | null>(null);
   const q = query.trim().toLowerCase();
   const visibleTabs = q
     ? tabs.filter((t) => t.title.toLowerCase().includes(q))
     : tabs;
 
   return (
+    <>
     <aside className="flex min-h-0 w-64 shrink-0 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-faint shadow-sm">
-      {/* Brand + Undo/Redo */}
+      {/* Brand */}
       <div className="flex items-center gap-2 px-4 pb-3 pt-4">
         <span className="text-base leading-none text-ink-label" aria-hidden="true">
           ✦
         </span>
         <span className="text-sm font-medium tracking-tight text-ink">Verlox</span>
-        <div className="ml-auto">
-          <RewindControls />
-        </div>
       </div>
 
       {/* Search */}
@@ -55,12 +63,23 @@ export function Sidebar({ tabs, activeId, onSelect, onClose }: SidebarProps) {
       <div className="px-2">
         <SectionLabel>Tabs</SectionLabel>
         <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto">
-          {visibleTabs.map((tab) => {
+          {/* Newest at the top, oldest below. */}
+          {[...visibleTabs].reverse().map((tab) => {
             const active = tab.id === activeId;
             return (
               <li key={tab.id}>
                 <div
                   onClick={() => onSelect(tab.id)}
+                  onMouseEnter={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setPreview({
+                      title: tab.title,
+                      top: Math.min(r.top, window.innerHeight - 332),
+                      left: r.right + 10,
+                      text: readTerminalText(tab.id, 80),
+                    });
+                  }}
+                  onMouseLeave={() => setPreview(null)}
                   className={`group flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] ${
                     active
                       ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.05)]'
@@ -96,87 +115,33 @@ export function Sidebar({ tabs, activeId, onSelect, onClose }: SidebarProps) {
 
       {/* Live running processes. */}
       <RunningSection onSelect={onSelect} />
+
+      {/* Account — email, usage/plan, change plan, log out. Pinned bottom. */}
+      <ProfileSection />
     </aside>
+    {preview &&
+      createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            left: preview.left,
+            top: preview.top,
+            zIndex: 100,
+          }}
+          className="pointer-events-none w-[440px] overflow-hidden rounded-xl border border-hairline bg-card p-3 shadow-xl"
+        >
+          <div className="mb-1.5 truncate text-[11px] font-medium text-ink-label">
+            {preview.title}
+          </div>
+          <pre className="max-h-[280px] overflow-hidden whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
+            {preview.text || 'No output yet.'}
+          </pre>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
-
-// --- Rewind ----------------------------------------------------------------
-
-function RewindControls() {
-  const [status, setStatus] = useState<SnapshotStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const refresh = useCallback(async () => {
-    try {
-      setStatus(await window.api.snapshotStatus());
-    } catch {
-      // Best-effort; keep the last good state on screen.
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  // Poll so the buttons reflect points the app makes on its own (file-watch /
-  // before a command) without any user action.
-  useEffect(() => {
-    const t = setInterval(() => void refresh(), 4000);
-    return () => clearInterval(t);
-  }, [refresh]);
-
-  const step = useCallback(async (dir: 'undo' | 'redo') => {
-    setBusy(true);
-    try {
-      setStatus(
-        dir === 'undo'
-          ? await window.api.snapshotUndo()
-          : await window.api.snapshotRedo(),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, []);
-
-  const canUndo = !!status?.canUndo;
-  const canRedo = !!status?.canRedo;
-  const btn =
-    'flex h-7 w-7 items-center justify-center rounded-lg text-ink-label transition-colors hover:bg-black/[0.05] hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-label';
-
-  // App-level Undo / Redo, shown at the top of the sidebar. Hover shows the
-  // change each direction would affect.
-  return (
-    <div className="flex items-center gap-0.5">
-      <Tooltip
-        label={canUndo ? `Undo · ${status?.undoSummary ?? 'last change'}` : 'Nothing to undo'}
-      >
-        <button
-          type="button"
-          aria-label="Undo"
-          onClick={() => void step('undo')}
-          disabled={busy || !canUndo}
-          className={btn}
-        >
-          <UndoGlyph />
-        </button>
-      </Tooltip>
-      <Tooltip
-        label={canRedo ? `Redo · ${status?.redoSummary ?? 'next change'}` : 'Nothing to redo'}
-      >
-        <button
-          type="button"
-          aria-label="Redo"
-          onClick={() => void step('redo')}
-          disabled={busy || !canRedo}
-          className={btn}
-        >
-          <RedoGlyph />
-        </button>
-      </Tooltip>
-    </div>
-  );
-}
-
 // --- Running ---------------------------------------------------------------
 
 function RunningSection({ onSelect }: { onSelect: (id: string) => void }) {
@@ -216,11 +181,36 @@ function RunningSection({ onSelect }: { onSelect: (id: string) => void }) {
                     {p.command}
                   </span>
                 </button>
+                {/* Where it came from: a command Verlox ran vs one you typed. */}
+                <span
+                  title={
+                    p.source === 'terminal'
+                      ? 'You started this in the terminal'
+                      : 'Verlox started this'
+                  }
+                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                    p.source === 'terminal'
+                      ? 'bg-black/[0.06] text-ink-hint'
+                      : 'bg-[#EAF3ED] text-[#3E7A53]'
+                  }`}
+                >
+                  {p.source === 'terminal' ? 'You' : 'Verlox'}
+                </span>
                 <button
                   type="button"
-                  onClick={() => window.api.stopCommand(p.stepId)}
+                  onClick={() => {
+                    if (p.source === 'terminal') {
+                      // Send Ctrl+C to that terminal's shell, and clear the row
+                      // now — the prompt-return detector only runs while that
+                      // terminal is on screen, so don't depend on it.
+                      window.api.ptyInput({ id: p.conversationId, data: '\x03' });
+                      finalizeProcess(p.stepId, { exitCode: 0, signal: 'SIGINT' });
+                    } else {
+                      window.api.stopCommand(p.stepId);
+                    }
+                  }}
                   aria-label="Stop"
-                  title="Stop"
+                  title={p.source === 'terminal' ? 'Stop (Ctrl+C)' : 'Stop'}
                   className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-label transition-colors hover:bg-[#FBF1EA] hover:text-[#B4632F]"
                 >
                   <StopGlyph />
@@ -230,6 +220,109 @@ function RunningSection({ onSelect }: { onSelect: (id: string) => void }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+// --- Profile / account -----------------------------------------------------
+
+function ProfileSection() {
+  const { user, signOut } = useAuth();
+  const { usage, openUsage } = useUsage();
+  const { openUpgrade } = useUpgrade();
+  const [open, setOpen] = useState(false);
+
+  const email = user?.email ?? 'Signed in';
+  const initial = (user?.email?.charAt(0) ?? '?').toUpperCase();
+  const tier = usage?.tier === 'pro' ? 'Pro' : 'Free';
+  const usedPct = usage
+    ? Math.min(100, Math.round((usage.used / Math.max(1, usage.limit)) * 100))
+    : 0;
+
+  return (
+    <div className="relative mt-auto shrink-0 border-t border-hairline p-2">
+      {open && (
+        <>
+          {/* Click-catcher to close the menu. */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full left-2 right-2 z-50 mb-1 overflow-hidden rounded-xl border border-hairline bg-card p-1 shadow-xl">
+            <div className="px-2.5 pb-1.5 pt-2">
+              <div className="truncate text-[12px] font-medium text-ink" title={email}>
+                {email}
+              </div>
+              <div className="mt-0.5 text-[10.5px] text-ink-hint">{tier} plan</div>
+            </div>
+            {usage && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  openUsage();
+                }}
+                className="w-full rounded-lg px-2.5 py-1.5 text-left hover:bg-black/[0.04]"
+              >
+                <div className="flex items-center justify-between text-[11px] text-ink-label">
+                  <span>Usage</span>
+                  <span className="text-ink-hint">
+                    {usage.remaining}/{usage.limit} left
+                  </span>
+                </div>
+                <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-black/[0.07]">
+                  <div
+                    className="h-full rounded-full bg-[#3E7A53]"
+                    style={{ width: `${usedPct}%` }}
+                  />
+                </div>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openUpgrade();
+              }}
+              className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12px] text-ink-label hover:bg-black/[0.04] hover:text-ink"
+            >
+              Change plan
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                void signOut();
+              }}
+              className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12px] text-[#B4632F] hover:bg-[#FBF1EA]"
+            >
+              Log out
+            </button>
+          </div>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-black/[0.04]"
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#3A3A3A] text-[11px] font-semibold text-white">
+          {initial}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12px] text-ink">{email}</span>
+          <span className="block text-[10px] text-ink-hint">
+            {tier}
+            {usage ? ` · ${usage.remaining}/${usage.limit} left` : ''}
+          </span>
+        </span>
+        <svg
+          viewBox="0 0 16 16"
+          className="h-3.5 w-3.5 shrink-0 text-ink-hint"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+        >
+          <path d="M4 10l4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -290,24 +383,6 @@ function TerminalGlyph() {
       <rect x="1" y="2.5" width="12" height="9" rx="1.5" />
       <path d="M3.5 5.5L6 7l-2.5 1.5" />
       <line x1="7.5" y1="8.5" x2="10" y2="8.5" />
-    </svg>
-  );
-}
-
-function UndoGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M6 4 3 7l3 3" />
-      <path d="M3 7h6.5a3.5 3.5 0 0 1 0 7H6" />
-    </svg>
-  );
-}
-
-function RedoGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M10 4l3 3-3 3" />
-      <path d="M13 7H6.5a3.5 3.5 0 0 0 0 7H10" />
     </svg>
   );
 }

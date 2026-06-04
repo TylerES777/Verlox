@@ -1,3 +1,10 @@
+import type {
+  Capability,
+  CapabilityPermissions,
+  PermissionRule,
+  RiskLevel,
+} from './risk';
+
 export interface CwdInfo {
   absolute: string;
   display: string;
@@ -277,11 +284,103 @@ export type AgentStepResult =
   // Plain-language failure reason shown in the panel.
   | { ok: false; error: string };
 
+// One step in a plan-first proposal: a forecast command the user reviews
+// before approving the whole plan.
+export interface AgentPlanItem {
+  command: string;
+  reason: string;
+  readOnly: boolean;
+  // If this step creates/overwrites a file with known content, the agent fills
+  // these so the UI can show a current-vs-proposed diff before it runs.
+  path?: string;
+  preview?: string;
+}
+
+// Current contents of a file, for the AI-diff "before" side.
+export interface PreviewFileResult {
+  exists: boolean;
+  content: string;
+  // True when the file was too large to preview in full (content is truncated).
+  tooLarge: boolean;
+}
+
+// A complete plan laid out upfront for a single approval. `done` means the
+// goal is already complete (or it was a pure question) — then `steps` is empty
+// and `summary` holds the answer.
+export interface AgentFullPlan {
+  done: boolean;
+  message: string;
+  summary: string;
+  estimate: string;
+  steps: AgentPlanItem[];
+}
+
+export type AgentPlanAllResult =
+  | { ok: true; plan: AgentFullPlan }
+  | { ok: false; error: string };
+
+// ---- Recovery Vault -------------------------------------------------------
+// A trash-bin for AI deletions: when the agent deletes something, Verlox first
+// copies it here so it can be restored. Each entry is kept for `retention`.
+export type VaultRetention = 'day' | 'week' | 'forever';
+
+export interface VaultEntry {
+  id: string;
+  // Display name (basename of the original path).
+  name: string;
+  // Absolute path the item was deleted from (and where Restore puts it back).
+  originalPath: string;
+  kind: 'file' | 'folder';
+  capturedAt: number; // epoch ms
+  retention: VaultRetention;
+  // epoch ms when it auto-purges, or null for 'forever'. Computed on read.
+  expiresAt: number | null;
+  sizeBytes: number;
+  // The command that deleted it (for context in the UI).
+  command: string;
+}
+
+export interface VaultCaptureInput {
+  command: string;
+  cwd: string;
+  // Candidate paths the command targets (from the risk engine). Resolved
+  // against cwd and filtered to those that actually exist.
+  paths: string[];
+  retention?: VaultRetention;
+}
+
+export type VaultRestoreResult = { ok: true } | { ok: false; error: string };
+
+// ---- Timeline replay ------------------------------------------------------
+// An append-only, chronological log of every action the agent actually ran,
+// so you can scroll back through exactly what it did and when.
+export interface TimelineEvent {
+  id: string;
+  ts: number; // epoch ms
+  command: string;
+  capability: Capability;
+  level: RiskLevel;
+  label: string; // human capability label, e.g. "Install packages"
+  files: string[];
+  exitCode: number | null;
+  cwd: string;
+}
+
+// The renderer sends just the raw bits; main classifies + timestamps.
+export interface TimelineRecordInput {
+  command: string;
+  exitCode: number | null;
+  cwd: string;
+}
+
 // Settings the user controls for Agent Mode. Only provider metadata crosses
 // IPC, never the keys.
 export interface SettingsInfo {
   providers: AgentProviderMeta[];
   autoApproveReadonly: boolean;
+  // Per-capability rules (always / ask / never). Capabilities not present here
+  // fall back to DEFAULT_PERMISSIONS (see shared/risk.ts).
+  permissions: CapabilityPermissions;
 }
 
 // Fields for adding a provider. The key is verified before being saved, so a
@@ -834,7 +933,32 @@ export interface IpcApi {
   // calls manage the optional own-key and the auto-approve-read-only switch;
   // the key value never crosses IPC, only whether one is saved.
   agentPlanStep: (input: AgentPlanInput) => Promise<AgentStepResult>;
+  // agentPlanAll lays out the COMPLETE ordered plan upfront for one approval
+  // (plan-first mode), instead of one step at a time.
+  agentPlanAll: (input: AgentPlanInput) => Promise<AgentPlanAllResult>;
   settingsGet: () => Promise<SettingsInfo>;
+  // Set one capability's permission rule (always / ask / never).
+  settingsSetPermission: (
+    capability: Capability,
+    rule: PermissionRule,
+  ) => Promise<SettingsInfo>;
+
+  // Recovery Vault. vaultCapture copies the about-to-be-deleted paths into the
+  // vault (called just before a delete step runs); the rest power the sidebar
+  // list: list current entries, restore one to its original path, forget
+  // (permanently remove) one, or change one's retention.
+  vaultCapture: (input: VaultCaptureInput) => Promise<VaultEntry[]>;
+  vaultList: () => Promise<VaultEntry[]>;
+  vaultRestore: (id: string) => Promise<VaultRestoreResult>;
+  vaultForget: (id: string) => Promise<VaultEntry[]>;
+  vaultSetRetention: (id: string, retention: VaultRetention) => Promise<VaultEntry[]>;
+  // Read a file's current contents for the AI-diff "before" side.
+  previewFile: (path: string, cwd: string) => Promise<PreviewFileResult>;
+  // Timeline replay. timelineRecord logs an executed action (main classifies +
+  // timestamps it); timelineList returns the log; timelineClear empties it.
+  timelineRecord: (input: TimelineRecordInput) => Promise<void>;
+  timelineList: () => Promise<TimelineEvent[]>;
+  timelineClear: () => Promise<void>;
   // Add a custom provider: verified (a tiny test call), then saved only if it
   // works. The key value never comes back over IPC.
   settingsAddProvider: (input: AddProviderInput) => Promise<AddProviderResult>;

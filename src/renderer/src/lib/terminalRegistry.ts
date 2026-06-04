@@ -34,6 +34,13 @@ function readBuffer(term: Terminal, maxLines: number): string {
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+// Read one terminal's recent output as plain text (for the sidebar tab-hover
+// preview). Empty string if the terminal isn't registered.
+export function readTerminalText(id: string, maxLines = 80): string {
+  const r = readers.get(id);
+  return r ? readBuffer(r.term, maxLines) : '';
+}
+
 export interface TerminalSnapshot {
   id: string;
   current: boolean;

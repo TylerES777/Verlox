@@ -12,14 +12,23 @@ import type {
   AgentStepHistory,
   AttachedImage,
   EnvironmentInfo,
-  ProviderFormat,
   SettingsInfo,
 } from '@shared/types';
+import {
+  assessCommand,
+  highestRisk,
+  permissionFor,
+  riskLabel,
+  type RiskLevel,
+} from '@shared/risk';
 import { CopyButton } from './CopyButton';
+import { lineDiff, type DiffLine } from '../lib/lineDiff';
 import { snapshotTerminals } from '../lib/terminalRegistry';
 import { registerProcess } from '../hooks/useRunningProcesses';
 import { createPortal } from 'react-dom';
 import { PathPicker, type PathSelection } from './PathPicker';
+import { useTier } from '../contexts/TierContext';
+import { useUpgrade } from '../contexts/UpgradeContext';
 
 interface AgentPanelProps {
   // The owning terminal tab's id, so the panel can flag which screen is in
@@ -78,9 +87,39 @@ const OUTPUT_CAP = 20000;
 
 type ProposalStatus = 'pending' | 'denied' | 'running' | 'done' | 'failed';
 
+// One step inside a plan-first plan, with its live execution state.
+type PlanStepUI = {
+  command: string;
+  reason: string;
+  readOnly: boolean;
+  // True when this step's capability is set to "never" — it is refused and
+  // skipped at run time rather than executed.
+  blocked: boolean;
+  status: 'idle' | 'running' | 'done' | 'failed' | 'skipped';
+  output: string;
+  exitCode: number | null;
+  // For file-writing steps: the target path + proposed content, used to show a
+  // before/after diff in simulate mode.
+  path?: string;
+  preview?: string;
+};
+
+type PlanMessage = {
+  kind: 'plan';
+  id: string;
+  summary: string;
+  estimate: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'denied';
+  steps: PlanStepUI[];
+  // Sandbox mode: the plan was generated to PREVIEW its predicted effect and
+  // nothing runs until the user clicks "Run for real".
+  simulated: boolean;
+};
+
 type AgentMessage =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string }
+  | PlanMessage
   | {
       kind: 'proposal';
       id: string;
@@ -122,16 +161,6 @@ function buildBrains(s: SettingsInfo | null): Brain[] {
   return list;
 }
 
-function defaultBaseUrl(format: ProviderFormat): string {
-  return format === 'anthropic'
-    ? 'https://api.anthropic.com'
-    : 'https://api.openai.com/v1';
-}
-
-function modelPlaceholder(format: ProviderFormat): string {
-  return format === 'anthropic' ? 'e.g. claude-sonnet-4-5' : 'e.g. gpt-4o';
-}
-
 function newId(): string {
   return crypto.randomUUID();
 }
@@ -154,6 +183,183 @@ function collectTerminalContext(currentId: string): string {
   return blocks.join('\n\n').slice(-TERMINAL_CONTEXT_CAP);
 }
 
+// Per-level colors for the risk badge — calm, muted variants of the app's
+// green / amber / red so the score reads at a glance without shouting.
+const RISK_UI: Record<RiskLevel, { dot: string; text: string; bg: string }> = {
+  low: { dot: 'bg-[#3E7A53]', text: 'text-[#3E7A53]', bg: 'bg-[#EAF3EC]' },
+  medium: { dot: 'bg-[#B07A1E]', text: 'text-[#9A7D2E]', bg: 'bg-[#FBF4E6]' },
+  high: { dot: 'bg-[#B4322B]', text: 'text-[#B4322B]', bg: 'bg-[#FBEAE8]' },
+};
+
+function RiskBadge({ level }: { level: RiskLevel }) {
+  const ui = RISK_UI[level];
+  return (
+    <span
+      className={`flex shrink-0 items-center gap-1 rounded-full ${ui.bg} px-2 py-0.5 text-[10.5px] font-semibold ${ui.text}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${ui.dot}`} />
+      {riskLabel(level)}
+    </span>
+  );
+}
+
+// The step's index badge in a plan, doubling as a status indicator: a number
+// while pending/running, a check when done, a "!" when it failed.
+function StepNumber({ index, status }: { index: number; status: PlanStepUI['status'] }) {
+  if (status === 'done')
+    return (
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#3E7A53] text-[9px] font-bold text-white">
+        ✓
+      </span>
+    );
+  if (status === 'failed')
+    return (
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#B4322B] text-[9px] font-bold text-white">
+        !
+      </span>
+    );
+  const tone =
+    status === 'running'
+      ? 'bg-[#3A3A3A] text-white'
+      : status === 'skipped'
+        ? 'bg-black/10 text-[#9A9A9A]'
+        : 'bg-black/15 text-[#6A6A6A]';
+  return (
+    <span
+      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold ${tone}`}
+    >
+      {index + 1}
+    </span>
+  );
+}
+
+// One row in a plan. Shows the capability + EITHER its risk badge OR a
+// "Blocked" tag (never both — a refused step's risk is moot), the command, an
+// optional reason, and live run status. Blocked steps get a faint red tint so
+// they read as "won't run" without piling on badges.
+function PlanStepRow({
+  index,
+  step,
+  simulated,
+  cwd,
+}: {
+  index: number;
+  step: PlanStepUI;
+  simulated: boolean;
+  cwd: string;
+}) {
+  const risk = assessCommand(step.command);
+  const [diff, setDiff] = useState<DiffLine[] | null>(null);
+  const [newFile, setNewFile] = useState(false);
+
+  // In simulate mode, fetch the target file's current content and diff it
+  // against the proposed content, so the user sees exactly what would change.
+  useEffect(() => {
+    let cancelled = false;
+    if (!simulated || step.blocked || !step.path || step.preview === undefined) {
+      setDiff(null);
+      return;
+    }
+    void window.api
+      .previewFile(step.path, cwd)
+      .then((res) => {
+        if (cancelled) return;
+        setNewFile(!res.exists);
+        setDiff(lineDiff(res.content, step.preview ?? ''));
+      })
+      .catch(() => {
+        if (!cancelled) setDiff(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [simulated, step.blocked, step.path, step.preview, cwd]);
+
+  return (
+    <li
+      className={`border-t border-black/[0.06] p-2 first:border-t-0 ${
+        step.blocked ? 'bg-[#FDF6F5]' : ''
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <StepNumber index={index} status={step.status} />
+          <span className="truncate text-[11px] font-medium text-[#6A6A6A]">
+            {risk.label}
+          </span>
+        </div>
+        {step.blocked ? (
+          <span className="shrink-0 rounded-full bg-[#FBEAE8] px-2 py-0.5 text-[10.5px] font-semibold text-[#B4322B]">
+            Blocked
+          </span>
+        ) : (
+          <RiskBadge level={risk.level} />
+        )}
+      </div>
+      <code className="mt-1.5 block break-all rounded bg-black/[0.04] px-2 py-1 font-mono text-[11px] text-[#3A3A3A]">
+        {step.command}
+      </code>
+      {step.reason && (
+        <div className="mt-1 text-[11px] text-[#9A9A9A]">{step.reason}</div>
+      )}
+      {step.blocked && (
+        <div className="mt-1 text-[11px] text-[#B4322B]">
+          Refused — “{risk.label}” is set to Never. Allow it in Settings to run this.
+        </div>
+      )}
+
+      {/* AI diff (simulate mode): current vs proposed file content. */}
+      {diff && (
+        <div className="mt-1.5 overflow-hidden rounded-md border border-hairline">
+          <div className="flex items-center justify-between border-b border-hairline bg-surface-subtle px-2 py-0.5">
+            <span className="truncate font-mono text-[10px] text-ink-label" title={step.path}>
+              {step.path}
+            </span>
+            <span className="shrink-0 text-[9.5px] uppercase tracking-wide text-ink-micro">
+              {newFile ? 'new file' : 'diff'}
+            </span>
+          </div>
+          <pre className="max-h-44 overflow-auto bg-white font-mono text-[10.5px] leading-relaxed">
+            {diff.map((d, k) => (
+              <div
+                key={k}
+                className={
+                  d.type === 'add'
+                    ? 'bg-[#EAF3EC] text-[#2E6B45]'
+                    : d.type === 'del'
+                      ? 'bg-[#FBEAE8] text-[#9c2b25]'
+                      : 'text-[#6A6A6A]'
+                }
+              >
+                <span className="select-none px-1 text-ink-micro">
+                  {d.type === 'add' ? '+' : d.type === 'del' ? '-' : ' '}
+                </span>
+                {d.text || ' '}
+              </div>
+            ))}
+          </pre>
+        </div>
+      )}
+
+      {step.status === 'running' && (
+        <div className="mt-1 text-[11px] text-[#9A9A9A]">Running…</div>
+      )}
+      {(step.status === 'done' || step.status === 'failed') &&
+        step.output.trim() !== '' && (
+          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded border border-hairline bg-surface-subtle px-2 py-1 font-mono text-[10.5px] leading-relaxed text-[#3A3A3A]">
+            {step.output}
+          </pre>
+        )}
+      {step.status === 'failed' && (
+        <div className="mt-1 text-[11px] text-[#B4632F]">Failed (exit {step.exitCode}).</div>
+      )}
+      {step.status === 'skipped' && !step.blocked && (
+        <div className="mt-1 text-[11px] text-[#9A9A9A]">Skipped.</div>
+      )}
+    </li>
+  );
+}
+
 export function AgentPanel({ terminalId }: AgentPanelProps) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [input, setInput] = useState('');
@@ -161,20 +367,15 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   const [thinking, setThinking] = useState(false);
   // Hover/focus drive the bar open; otherwise it sits closed (compact).
   const [hovered, setHovered] = useState(false);
-  const [focused, setFocused] = useState(false);
   const [workDir, setWorkDir] = useState('');
 
+  // The agent panel only READS settings now (provider list for the brain
+  // switcher, auto-approve, permission enforcement). Editing them lives in the
+  // Settings page; this copy refreshes via the 'verlox:settings-changed' event.
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
-  // Add-provider form.
-  const [formName, setFormName] = useState('');
-  const [formFormat, setFormFormat] = useState<ProviderFormat>('openai');
-  const [formUrl, setFormUrl] = useState(defaultBaseUrl('openai'));
-  const [formModel, setFormModel] = useState('');
-  const [formKey, setFormKey] = useState('');
-  const [addMsg, setAddMsg] = useState<string | null>(null);
-  const [addBusy, setAddBusy] = useState(false);
+  // Billing tier gates the power features (Sandbox, long vault retention).
+  const { isPro } = useTier();
+  const { openUpgrade } = useUpgrade();
 
   // Model switcher.
   const [brainId, setBrainId] = useState<string>('sonnet');
@@ -207,6 +408,8 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   const envRef = useRef<EnvironmentInfo | null>(null);
   const workDirRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const msgListRef = useRef<HTMLDivElement | null>(null);
+  const prevMsgLenRef = useRef(0);
 
   const goalRef = useRef<string>('');
   const priorStepsRef = useRef<AgentStepHistory[]>([]);
@@ -246,6 +449,37 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
       }
     })();
   }, []);
+
+  // Re-read settings whenever the Settings page changes them, so the brain
+  // switcher, auto-approve, and permission enforcement stay current.
+  useEffect(() => {
+    const refresh = async () => {
+      try {
+        const s = await window.api.settingsGet();
+        setSettings(s);
+        autoApproveRef.current = s.autoApproveReadonly;
+      } catch {
+        // Keep current.
+      }
+    };
+    window.addEventListener('verlox:settings-changed', refresh);
+    return () => window.removeEventListener('verlox:settings-changed', refresh);
+  }, []);
+
+  // Follow the raw terminal's directory: when the user `cd`s in the shell,
+  // TerminalView emits the new cwd and the agent's working folder tracks it,
+  // so both stay pointed at the same place.
+  useEffect(() => {
+    const onCwd = (e: Event) => {
+      const detail = (e as CustomEvent<{ id: string; cwd: string }>).detail;
+      if (!detail || detail.id !== terminalId || !detail.cwd) return;
+      pickedFolderRef.current = detail.cwd;
+      workDirRef.current = detail.cwd;
+      setWorkDir(detail.cwd);
+    };
+    window.addEventListener('verlox:cwd-changed', onCwd);
+    return () => window.removeEventListener('verlox:cwd-changed', onCwd);
+  }, [terminalId]);
 
   useEffect(() => {
     if (!brainMenuOpen) return;
@@ -287,9 +521,28 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     };
   }, [pickerOpen]);
 
+  // Keep the thread readable without yanking the user's scroll position:
+  //  - a NEW message scrolls to show ITS TOP (so you read a long reply from the
+  //    start, not dumped at the bottom),
+  //  - in-place updates / the thinking indicator only stick to the bottom if
+  //    you were already near it (if you scrolled up to read, you stay put).
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const grew = messages.length > prevMsgLenRef.current;
+    prevMsgLenRef.current = messages.length;
+    const list = msgListRef.current;
+    if (grew && list) {
+      const last = list.children[messages.length - 1] as HTMLElement | undefined;
+      if (last) {
+        const top =
+          last.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+        el.scrollTop = Math.max(0, top - 8);
+        return;
+      }
+    }
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [messages, thinking]);
 
   const addUser = (text: string) =>
@@ -313,6 +566,82 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   const runProposalRef = useRef<(id: string, command: string) => Promise<void>>(
     async () => {},
   );
+  // Plan-first: generate the whole plan upfront, then run its steps in order.
+  const startPlanRef = useRef<() => Promise<void>>(async () => {});
+  const runPlanRef = useRef<
+    (planId: string, steps: { command: string; blocked: boolean }[]) => Promise<void>
+  >(async () => {});
+
+  const updatePlanStep = (planId: string, idx: number, patch: Partial<PlanStepUI>) =>
+    setMessages((p) =>
+      p.map((m) =>
+        m.id === planId && m.kind === 'plan'
+          ? { ...m, steps: m.steps.map((s, i) => (i === idx ? { ...s, ...patch } : s)) }
+          : m,
+      ),
+    );
+  const markRemainingSkipped = (planId: string, from: number) =>
+    setMessages((p) =>
+      p.map((m) =>
+        m.id === planId && m.kind === 'plan'
+          ? {
+              ...m,
+              steps: m.steps.map((s, i) =>
+                i >= from && s.status === 'idle' ? { ...s, status: 'skipped' } : s,
+              ),
+            }
+          : m,
+      ),
+    );
+
+  // One-shot command on the side bench (same path the single-step flow uses),
+  // resolving with the exit code. Output is streamed back via onOutput.
+  const runOneCommand = (
+    command: string,
+    cwd: string,
+    shell: EnvironmentInfo['shell'],
+    onOutput: (out: string) => void,
+  ): Promise<number | null> =>
+    new Promise((resolve) => {
+      const runId = `agent-${newId()}`;
+      currentRunIdRef.current = runId;
+      let output = '';
+      const offOutput = window.api.onCommandOutput(({ id, data }) => {
+        if (id !== runId) return;
+        output += data;
+        if (output.length > OUTPUT_CAP) output = output.slice(-OUTPUT_CAP);
+        onOutput(output);
+      });
+      const offExit = window.api.onCommandExit(({ id, code }) => {
+        if (id !== runId) return;
+        offOutput();
+        offExit();
+        currentRunIdRef.current = null;
+        resolve(code);
+      });
+      window.api.startCommand({ id: runId, command, cwd, shell });
+      registerProcess({ stepId: runId, conversationId: terminalId, command, cwd, shell });
+    });
+
+  const approvePlan = (plan: PlanMessage) => {
+    update(plan.id, { status: 'running' } as Partial<AgentMessage>);
+    runningRef.current = true;
+    setRunning(true);
+    void runPlanRef.current(
+      plan.id,
+      plan.steps.map((s) => ({ command: s.command, blocked: s.blocked })),
+    );
+  };
+  const denyPlan = (planId: string) => {
+    update(planId, { status: 'denied' } as Partial<AgentMessage>);
+    addAssistant('Okay, I discarded that plan. What would you like instead?');
+    endLoop();
+  };
+  // Promote a simulation to a real run: drop the preview flag and execute.
+  const runForReal = (plan: PlanMessage) => {
+    update(plan.id, { simulated: false } as Partial<AgentMessage>);
+    approvePlan(plan);
+  };
 
   planNextRef.current = async () => {
     const env = envRef.current;
@@ -478,6 +807,183 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     });
   };
 
+  startPlanRef.current = async () => {
+    const env = envRef.current;
+    if (!env) {
+      addAssistant('I could not detect your shell yet. Try reopening the app.');
+      endLoop();
+      return;
+    }
+    setThinking(true);
+    let result;
+    try {
+      result = await window.api.agentPlanAll({
+        goal: goalRef.current,
+        // Carry recent executed steps so follow-up questions/goals have context.
+        priorSteps: priorStepsRef.current.slice(-10),
+        cwd: workDirRef.current || env.homeDir,
+        platform: env.platform,
+        shell: env.shell,
+        engine: engineRef.current,
+        model: modelRef.current,
+        providerId: providerIdRef.current,
+        image: imageRef.current,
+        terminalContext: collectTerminalContext(terminalId),
+      });
+    } catch {
+      addAssistant('Something went wrong reaching the AI. Please try again.');
+      endLoop();
+      return;
+    }
+    setThinking(false);
+    if (stopRef.current) {
+      endLoop();
+      return;
+    }
+    if (!result.ok) {
+      addAssistant(result.error);
+      endLoop();
+      return;
+    }
+    const plan = result.plan;
+    if (plan.done || plan.steps.length === 0) {
+      // Goal already complete, or a pure question answered from the snapshot.
+      addAssistant(plan.summary || plan.message || 'All done.');
+      endLoop();
+      return;
+    }
+    // Apply the per-capability permission rules: mark "never" steps blocked,
+    // and — when every step is "always" and auto-approve is on — run the plan
+    // immediately without waiting for the Approve click.
+    const perms = settings?.permissions;
+    const autoOk = settings?.autoApproveReadonly ?? true;
+    const planId = newId();
+    const steps: PlanStepUI[] = plan.steps.map((s) => ({
+      command: s.command,
+      reason: s.reason,
+      readOnly: s.readOnly,
+      blocked: permissionFor(perms, assessCommand(s.command).capability) === 'never',
+      status: 'idle',
+      output: '',
+      exitCode: null,
+      path: s.path,
+      preview: s.preview,
+    }));
+    const simulated = simulateRef.current;
+    const allAlways =
+      plan.steps.length > 0 &&
+      plan.steps.every(
+        (s) => permissionFor(perms, assessCommand(s.command).capability) === 'always',
+      );
+    // A simulation never runs on its own — it's a preview.
+    const autoRun = autoOk && allAlways && !simulated;
+
+    setMessages((p) => [
+      ...p,
+      {
+        kind: 'plan',
+        id: planId,
+        summary: plan.summary,
+        estimate: plan.estimate,
+        status: autoRun ? 'running' : 'pending',
+        steps,
+        simulated,
+      },
+    ]);
+    if (autoRun) {
+      void runPlanRef.current(
+        planId,
+        steps.map((s) => ({ command: s.command, blocked: s.blocked })),
+      );
+    }
+  };
+
+  runPlanRef.current = async (planId, steps) => {
+    const env = envRef.current;
+    const cwd = workDirRef.current;
+    if (!env) {
+      update(planId, { status: 'failed' } as Partial<AgentMessage>);
+      addAssistant('Could not detect your shell.');
+      endLoop();
+      return;
+    }
+    let blockedCount = 0;
+    for (let i = 0; i < steps.length; i++) {
+      if (stopRef.current) {
+        markRemainingSkipped(planId, i);
+        update(planId, { status: 'failed' } as Partial<AgentMessage>);
+        endLoop();
+        return;
+      }
+      // A step whose capability is set to "never" is refused, not run.
+      if (steps[i].blocked) {
+        blockedCount += 1;
+        updatePlanStep(planId, i, { status: 'skipped' });
+        continue;
+      }
+      const command = steps[i].command;
+      // Recovery Vault: before a delete runs, copy its targets into the vault
+      // so the deletion is reversible. Non-fatal — a failed capture must not
+      // block the command (the OS Recycle Bin is still the fallback).
+      const assessment = assessCommand(command);
+      if (assessment.capability === 'delete' && assessment.files.length > 0) {
+        try {
+          // Free keeps deletes 24h; Pro defaults to a week (extendable to forever).
+          await window.api.vaultCapture({
+            command,
+            cwd,
+            paths: assessment.files,
+            retention: isPro ? 'week' : 'day',
+          });
+          window.dispatchEvent(new Event('verlox:vault-changed'));
+        } catch {
+          // ignore
+        }
+      }
+      // Save a restore point before each changing step (best-effort).
+      try {
+        await window.api.snapshotCheckpoint(`Before: ${command}`);
+      } catch {
+        // No restore point available; proceed.
+      }
+      updatePlanStep(planId, i, { status: 'running', output: '' });
+      let stepOutput = '';
+      const code = await runOneCommand(command, cwd, env.shell, (out) => {
+        stepOutput = out;
+        updatePlanStep(planId, i, { output: out });
+      });
+      const failed = code !== 0 && code !== null;
+      updatePlanStep(planId, i, { status: failed ? 'failed' : 'done', exitCode: code });
+      // Remember what ran so later turns have conversation context (e.g. a
+      // follow-up "where's the file I just made?"). The agent's commands run on
+      // a side bench invisible to the terminal snapshot, so this history is the
+      // only record it gets.
+      priorStepsRef.current.push({ command, exitCode: code, output: stepOutput });
+      lastCommandRef.current = command;
+      // Timeline replay: log the executed action (main timestamps + classifies).
+      void window.api
+        .timelineRecord({ command, exitCode: code, cwd })
+        .then(() => window.dispatchEvent(new Event('verlox:timeline-changed')))
+        .catch(() => {});
+      if (failed) {
+        markRemainingSkipped(planId, i + 1);
+        update(planId, { status: 'failed' } as Partial<AgentMessage>);
+        addAssistant(
+          `Step ${i + 1} failed (exit ${code}). I stopped the plan — tell me how you’d like to proceed.`,
+        );
+        endLoop();
+        return;
+      }
+    }
+    update(planId, { status: 'done' } as Partial<AgentMessage>);
+    addAssistant(
+      blockedCount > 0
+        ? `Plan complete. ✓ (${blockedCount} step${blockedCount > 1 ? 's' : ''} blocked by your permission settings.)`
+        : 'Plan complete. ✓',
+    );
+    endLoop();
+  };
+
   const approve = (id: string, command: string) => {
     void runProposalRef.current(id, command);
   };
@@ -495,11 +1001,16 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     endLoop();
   };
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  // True while a simulate run is being set up, so startPlanRef marks the plan
+  // as a preview (predicted outcome, nothing runs until "Run for real").
+  const simulateRef = useRef(false);
+
+  const submit = async (e?: FormEvent, simulate = false) => {
+    e?.preventDefault();
     const text = input.trim();
     // Allow an image-only goal (e.g. "what's this?" with a screenshot).
     if ((!text && !attachment) || runningRef.current) return;
+    simulateRef.current = simulate;
 
     addUser(attachment ? `${text || 'Take a look at this image.'} 📎` : text);
     setInput('');
@@ -534,7 +1045,8 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     setAttachmentError(null);
 
     goalRef.current = text || 'Take a look at this image and help.';
-    priorStepsRef.current = [];
+    // NOTE: priorStepsRef is intentionally NOT cleared here — it accumulates
+    // across the conversation so follow-ups ("where's that file?") have context.
     stepCountRef.current = 0;
     consecutiveFailuresRef.current = 0;
     lastCommandRef.current = null;
@@ -545,7 +1057,8 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     runningRef.current = true;
     setRunning(true);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    await planNextRef.current();
+    // Plan-first: lay out the whole plan, then run it on approval.
+    await startPlanRef.current();
   };
 
   // --- folder + image handlers ---
@@ -555,6 +1068,8 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     setWorkDir(sel.dir);
     setFolderLocked(true);
     setPickerOpen(false);
+    // Keep the raw terminal in sync — cd it to the same folder.
+    window.api.ptyInput({ id: terminalId, data: `cd "${sel.dir}"\r` });
   };
 
   const acceptFile = async (file: File) => {
@@ -632,59 +1147,28 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     ta.style.height = `${Math.min(ta.scrollHeight, 96)}px`;
   };
 
-  // --- settings actions ---
-  const submitProvider = async (e: FormEvent) => {
-    e.preventDefault();
-    setAddBusy(true);
-    setAddMsg('Checking…');
-    const res = await window.api.settingsAddProvider({
-      name: formName.trim(),
-      format: formFormat,
-      baseUrl: formUrl.trim(),
-      model: formModel.trim(),
-      key: formKey.trim(),
-    });
-    setSettings(res.settings);
-    if (res.ok) {
-      setAddMsg('Added.');
-      setFormName('');
-      setFormModel('');
-      setFormKey('');
-    } else {
-      setAddMsg(res.error ?? 'Could not add it.');
-    }
-    setAddBusy(false);
-  };
-  const removeProvider = async (id: string) => {
-    const s = await window.api.settingsRemoveProvider(id);
-    setSettings(s);
-    if (brainId === `custom:${id}`) setBrainId('sonnet');
-  };
-  const toggleAuto = async () => {
-    if (!settings) return;
-    const s = await window.api.settingsSetAutoApprove(!settings.autoApproveReadonly);
-    setSettings(s);
-    autoApproveRef.current = s.autoApproveReadonly;
-  };
-
   const pickBrain = (b: Brain) => {
     setBrainId(b.id);
     setBrainMenuOpen(false);
   };
 
-  const hasProviders = (settings?.providers.length ?? 0) > 0;
   const groups = Array.from(new Set(brains.map((b) => b.group)));
   // Show the conversation thread only when there's something to show, so the
   // panel stays a clean, calm input bar when idle (no manual collapse).
   const showThread = messages.length > 0 || thinking;
   // The bar opens on hover or focus, and stays open while there's a reason to:
   // typing, a turn running, the model/settings menus, a thread, or an image.
+  // Hover/focus drive open/close. Note: a conversation thread does NOT keep it
+  // open — so it always collapses on mouse-out and re-opens on hover, even with
+  // content. It stays open only during active use (typing, a running turn, an
+  // open menu/picker, a pending attachment) so it can't collapse mid-action.
+  // Hover, an active turn, an open menu/picker, a staged attachment, or text in
+  // the box keep the thread expanded. NOTE: textarea focus alone does NOT —
+  // the collapsed state IS the input bar, so focus needn't pin it open. This is
+  // what lets the panel reliably collapse when you mouse away.
   const open =
     hovered ||
-    focused ||
     running ||
-    settingsOpen ||
-    showThread ||
     brainMenuOpen ||
     pickerOpen ||
     !!attachment ||
@@ -697,11 +1181,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
       onMouseLeave={() => setHovered(false)}
       className="absolute bottom-4 left-1/2 z-10 flex w-[min(92%,680px)] -translate-x-1/2 flex-col overflow-hidden rounded-3xl border border-black/10 bg-white/95 shadow-xl backdrop-blur"
       style={
-        settingsOpen
-          ? { height: 'min(80%, 32rem)' }
-          : showThread
-            ? { height: 'min(42%, 19rem)' }
-            : undefined
+        !open ? undefined : showThread ? { height: 'min(42%, 19rem)' } : undefined
       }
     >
       {/* Header (no `relative` so the settings overlay below anchors to the
@@ -752,170 +1232,17 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
               Stop
             </button>
           )}
-          <button
-            onClick={() => setSettingsOpen((v) => !v)}
-            className={`rounded p-1 hover:bg-black/5 ${
-              hasProviders ? 'text-[#3E7A53]' : 'text-[#9A9A9A]'
-            } hover:text-[#3A3A3A]`}
-            aria-label="Agent settings"
-            title="Settings"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
-              <path
-                d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
         </div>
             </div>
           </div>
         </div>
 
-        {/* Settings overlay — covers the whole panel and scrolls inside it,
-            so the full form is reachable and never clipped. */}
-        {settingsOpen && (
-          <div className="absolute inset-0 z-40 overflow-y-auto rounded-3xl bg-white p-3">
-            <div className="mb-1 flex items-center justify-between">
-              <span className="text-xs font-medium text-[#3A3A3A]">AI providers</span>
-              <button
-                onClick={() => setSettingsOpen(false)}
-                className="rounded px-1.5 py-0.5 text-xs text-[#8A8A8A] hover:bg-black/5 hover:text-[#3A3A3A]"
-                aria-label="Close settings"
-              >
-                ✕
-              </button>
-            </div>
-            <p className="mt-1 text-[11px] leading-relaxed text-[#9A9A9A]">
-              Add any AI provider with an API key. Its model then shows up in the
-              switcher and is called directly from your computer (no Verlox
-              credits used). Works with OpenAI, OpenRouter, Groq, local models,
-              Anthropic, and more.
-            </p>
-
-            {/* Existing providers */}
-            {hasProviders && (
-              <div className="mt-2 space-y-1">
-                {settings?.providers.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center justify-between rounded-lg border border-black/10 px-2 py-1"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-[#3A3A3A]">
-                        {p.name}
-                      </div>
-                      <div className="truncate text-[11px] text-[#9A9A9A]">
-                        {p.model}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => removeProvider(p.id)}
-                      className="shrink-0 text-[11px] text-[#B4632F] hover:underline"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Add a provider */}
-            <form onSubmit={submitProvider} className="mt-3 space-y-1.5">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-[#9A9A9A]">
-                Add a provider
-              </div>
-              <input
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-                placeholder="Name (e.g. GPT-4o)"
-                className="w-full rounded-lg border border-black/10 px-2 py-1 text-xs text-[#3A3A3A] focus:outline-none focus:ring-1 focus:ring-black/20"
-              />
-              <select
-                value={formFormat}
-                onChange={(e) => {
-                  const f = e.target.value as ProviderFormat;
-                  setFormFormat(f);
-                  setFormUrl(defaultBaseUrl(f));
-                }}
-                className="w-full rounded-lg border border-black/10 px-2 py-1 text-xs text-[#3A3A3A] focus:outline-none focus:ring-1 focus:ring-black/20"
-              >
-                <option value="openai">OpenAI-compatible (most providers)</option>
-                <option value="anthropic">Anthropic (Claude)</option>
-              </select>
-              <input
-                value={formUrl}
-                onChange={(e) => setFormUrl(e.target.value)}
-                placeholder="Endpoint URL"
-                className="w-full rounded-lg border border-black/10 px-2 py-1 text-xs text-[#3A3A3A] focus:outline-none focus:ring-1 focus:ring-black/20"
-              />
-              <input
-                value={formModel}
-                onChange={(e) => setFormModel(e.target.value)}
-                placeholder={modelPlaceholder(formFormat)}
-                className="w-full rounded-lg border border-black/10 px-2 py-1 text-xs text-[#3A3A3A] focus:outline-none focus:ring-1 focus:ring-black/20"
-              />
-              <input
-                type="password"
-                value={formKey}
-                onChange={(e) => setFormKey(e.target.value)}
-                placeholder="API key"
-                className="w-full rounded-lg border border-black/10 px-2 py-1 text-xs text-[#3A3A3A] focus:outline-none focus:ring-1 focus:ring-black/20"
-              />
-              <button
-                type="submit"
-                disabled={addBusy}
-                className="w-full rounded-lg bg-[#3A3A3A] px-2.5 py-1 text-xs font-medium text-white hover:bg-black disabled:opacity-50"
-              >
-                {addBusy ? 'Checking…' : 'Add & verify'}
-              </button>
-              {addMsg && (
-                <div
-                  className={`break-words text-[11px] ${
-                    addMsg === 'Added.' || addMsg === 'Checking…'
-                      ? 'text-[#3E7A53]'
-                      : 'text-[#B4632F]'
-                  }`}
-                >
-                  {addMsg}
-                </div>
-              )}
-            </form>
-
-            <button
-              onClick={toggleAuto}
-              disabled={!settings}
-              className="mt-3 flex w-full items-center justify-between rounded-lg px-1 py-1 text-left hover:bg-black/5 disabled:opacity-50"
-            >
-              <div className="min-w-0 pr-2">
-                <div className="text-xs text-[#3A3A3A]">Run read-only steps automatically</div>
-                <div className="text-[11px] text-[#9A9A9A]">
-                  {settings?.autoApproveReadonly
-                    ? 'Listing/reading runs without asking'
-                    : 'Ask before every step'}
-                </div>
-              </div>
-              <span
-                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
-                  settings?.autoApproveReadonly ? 'bg-[#3A3A3A]' : 'bg-black/15'
-                }`}
-              >
-                <span
-                  className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                    settings?.autoApproveReadonly ? 'translate-x-3.5' : 'translate-x-0.5'
-                  }`}
-                />
-              </span>
-            </button>
-          </div>
-        )}
+        {/* Settings now live in a dedicated page (SettingsView), opened from
+            the top-bar gear — no longer an overlay inside this panel. */}
       </div>
 
       {/* Conversation area */}
-      {showThread && (
+      {open && showThread && (
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {messages.length === 0 && !thinking ? (
             <div className="mx-auto max-w-md py-6 text-center text-sm leading-relaxed text-[#9A9A9A]">
@@ -924,102 +1251,325 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
               restore point so you can always undo.
             </div>
           ) : (
-            <div className="flex flex-col gap-3">
-              {messages.map((m) => {
-                if (m.kind === 'user') {
-                  return (
-                    <div key={m.id} className="flex justify-end">
-                      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-[#EFEFED] px-3 py-1.5 text-sm text-[#3A3A3A]">
-                        {m.text}
+            <div ref={msgListRef} className="flex flex-col gap-3">
+              {(() => {
+                // Number the proposal cards in order so the run reads as
+                // sequential steps, even though the agent proposes one at a
+                // time today. (Plan-first multi-step is the next iteration.)
+                let stepCounter = 0;
+                const stepOf = new Map<string, number>();
+                for (const mm of messages)
+                  if (mm.kind === 'proposal') stepOf.set(mm.id, ++stepCounter);
+                return messages.map((m) => {
+                  if (m.kind === 'user') {
+                    return (
+                      <div key={m.id} className="flex justify-end">
+                        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-[#EFEFED] px-3 py-1.5 text-sm text-[#3A3A3A]">
+                          {m.text}
+                        </div>
                       </div>
-                    </div>
-                  );
-                }
-                if (m.kind === 'assistant') {
-                  return (
-                    <div key={m.id} className="group max-w-[90%]">
-                      <div className="text-sm leading-relaxed text-[#3A3A3A]">
-                        {m.text}
+                    );
+                  }
+                  if (m.kind === 'assistant') {
+                    return (
+                      <div key={m.id} className="group max-w-[90%]">
+                        <div className="text-sm leading-relaxed text-[#3A3A3A]">
+                          {m.text}
+                        </div>
+                        <div className="mt-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                          <CopyButton text={m.text} variant="inline" label="Copy" />
+                        </div>
                       </div>
-                      <div className="mt-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                        <CopyButton text={m.text} variant="inline" label="Copy" />
-                      </div>
-                    </div>
-                  );
-                }
-                return (
-                  <div
-                    key={m.id}
-                    className="rounded-xl border border-black/10 bg-[#FBFBFA] p-2.5"
-                  >
-                    <div className="text-[11px] uppercase tracking-wide text-[#9A9A9A]">
-                      Proposed command
-                    </div>
-                    <code className="mt-1 block break-all rounded bg-black/5 px-2 py-1 font-mono text-xs text-[#3A3A3A]">
-                      {m.command}
-                    </code>
-                    {m.reason && (
-                      <div className="mt-1.5 text-xs text-[#6A6A6A]">{m.reason}</div>
-                    )}
-                    <div className="mt-1 text-[11px] text-[#9A9A9A]">
-                      {m.readOnly ? 'Reads only, changes nothing.' : 'Makes changes on your computer.'}
-                    </div>
-                    {m.warn && (
-                      <div className="mt-1.5 rounded bg-[#FBF1EA] px-2 py-1 text-[11px] text-[#B4632F]">
-                        Heads up: {m.warn}
-                      </div>
-                    )}
-
-                    {m.status === 'pending' && (
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          onClick={() => approve(m.id, m.command)}
-                          className="rounded-lg bg-[#3A3A3A] px-3 py-1 text-xs font-medium text-white hover:bg-black"
-                        >
-                          Approve & run
-                        </button>
-                        <button
-                          onClick={() => deny(m.id)}
-                          className="rounded-lg border border-black/10 px-3 py-1 text-xs text-[#6A6A6A] hover:bg-black/5"
-                        >
-                          Deny
-                        </button>
-                      </div>
-                    )}
-
-                    {m.status === 'running' && (
-                      <div className="mt-2 text-[11px] text-[#9A9A9A]">Running…</div>
-                    )}
-                    {m.status === 'denied' && (
-                      <div className="mt-2 text-[11px] text-[#9A9A9A]">Skipped.</div>
-                    )}
-                    {(m.status === 'done' || m.status === 'failed') && (
+                    );
+                  }
+                  // Plan → the whole forecast as one numbered, scored card.
+                  if (m.kind === 'plan') {
+                    const stepRisks = m.steps.map((s) => assessCommand(s.command));
+                    const overall = highestRisk(stepRisks.map((r) => r.level));
+                    // Only count files from steps that will actually run — a
+                    // blocked (never-allowed) step is refused, so it touches
+                    // nothing and shouldn't appear in "Files it will touch".
+                    const allFiles = Array.from(
+                      new Set(
+                        m.steps.flatMap((s, i) => (s.blocked ? [] : stepRisks[i].files)),
+                      ),
+                    ).slice(0, 12);
+                    // Sandbox: aggregate the plan's predicted effect for the
+                    // simulation summary (nothing actually runs).
+                    const outcome: string[] = [];
+                    if (m.simulated) {
+                      const cnt = (cap: string) =>
+                        m.steps.reduce(
+                          (n, s, i) =>
+                            n + (!s.blocked && stepRisks[i].capability === cap ? 1 : 0),
+                          0,
+                        );
+                      if (allFiles.length)
+                        outcome.push(
+                          `${allFiles.length} file${allFiles.length > 1 ? 's' : ''} affected`,
+                        );
+                      const add = (cap: string, noun: string) => {
+                        const n = cnt(cap);
+                        if (n) outcome.push(`${n} ${noun}${n > 1 ? 's' : ''}`);
+                      };
+                      add('install', 'package install');
+                      add('delete', 'deletion');
+                      add('build', 'build/test run');
+                      add('network', 'network request');
+                      add('deploy', 'deployment');
+                      add('database', 'database change');
+                      if (outcome.length === 0) outcome.push('No changes — read-only.');
+                    }
+                    return (
                       <div
-                        className={`mt-2 text-[11px] ${
-                          m.status === 'done' ? 'text-[#3E7A53]' : 'text-[#B4632F]'
-                        }`}
+                        key={m.id}
+                        className="overflow-hidden rounded-xl border border-black/10 bg-[#FBFBFA]"
                       >
-                        {m.status === 'done'
-                          ? 'Done.'
-                          : `Finished with an error (code ${m.exitCode}).`}
+                        <div className="flex items-center justify-between gap-2 border-b border-black/[0.06] px-3 py-2">
+                          <span className="text-[11px] font-semibold text-[#6A6A6A]">
+                            {m.simulated ? 'Simulation' : 'Plan'} · {m.steps.length} step
+                            {m.steps.length > 1 ? 's' : ''}
+                          </span>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {m.simulated && (
+                              <span className="rounded-full bg-[#EAF1F6] px-2 py-0.5 text-[10.5px] font-semibold text-[#2E5FA3]">
+                                Preview · nothing ran
+                              </span>
+                            )}
+                            {/* Overall risk is a roll-up — only when multi-step
+                                (a single step shows its own badge below). */}
+                            {m.steps.length > 1 && <RiskBadge level={overall} />}
+                          </div>
+                        </div>
+                        <div className="p-3">
+                          {m.summary && (
+                            <div className="text-xs leading-relaxed text-[#4A4A4A]">
+                              {m.summary}
+                            </div>
+                          )}
+                          {m.estimate && (
+                            <div className="mt-1.5 inline-block rounded-md bg-black/[0.04] px-2 py-0.5 text-[11px] text-[#6A6A6A]">
+                              Estimated changes: {m.estimate}
+                            </div>
+                          )}
+                          {m.simulated && (
+                            <div className="mt-2 rounded-lg border border-[#2E5FA3]/20 bg-[#F2F7FB] p-2">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-[#2E5FA3]">
+                                Predicted outcome
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {outcome.map((o) => (
+                                  <span
+                                    key={o}
+                                    className="rounded-md border border-[#2E5FA3]/15 bg-white px-1.5 py-0.5 text-[10.5px] text-[#3A5A82]"
+                                  >
+                                    {o}
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="mt-1 text-[10px] text-[#6A8FB5]">
+                                Forecast from the plan — nothing has run.
+                              </div>
+                            </div>
+                          )}
+                          <ol className="mt-2.5 overflow-hidden rounded-lg border border-black/[0.06] bg-white">
+                            {m.steps.map((s, i) => (
+                              <PlanStepRow
+                                key={i}
+                                index={i}
+                                step={s}
+                                simulated={m.simulated}
+                                cwd={workDir}
+                              />
+                            ))}
+                          </ol>
+                          {allFiles.length > 0 && (
+                            <div className="mt-2.5">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-[#A8A8A8]">
+                                Files it will touch
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {allFiles.map((f) => (
+                                  <span
+                                    key={f}
+                                    className="max-w-full truncate rounded bg-black/[0.05] px-1.5 py-0.5 font-mono text-[10.5px] text-[#6A6A6A]"
+                                  >
+                                    {f}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {m.status === 'pending' && (
+                            <div className="mt-3 flex gap-2">
+                              {m.simulated ? (
+                                <>
+                                  <button
+                                    onClick={() => runForReal(m)}
+                                    className="rounded-lg bg-[#3A3A3A] px-3 py-1 text-xs font-medium text-white hover:bg-black"
+                                  >
+                                    Run for real
+                                  </button>
+                                  <button
+                                    onClick={() => denyPlan(m.id)}
+                                    className="rounded-lg border border-black/10 px-3 py-1 text-xs text-[#6A6A6A] hover:bg-black/5"
+                                  >
+                                    Dismiss
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    onClick={() => approvePlan(m)}
+                                    className="rounded-lg bg-[#3A3A3A] px-3 py-1 text-xs font-medium text-white hover:bg-black"
+                                  >
+                                    Approve plan & run
+                                  </button>
+                                  <button
+                                    onClick={() => denyPlan(m.id)}
+                                    className="rounded-lg border border-black/10 px-3 py-1 text-xs text-[#6A6A6A] hover:bg-black/5"
+                                  >
+                                    Deny
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                          {m.status === 'running' && (
+                            <div className="mt-2 text-[11px] text-[#9A9A9A]">
+                              Running the plan…
+                            </div>
+                          )}
+                          {m.status === 'done' && (
+                            <div className="mt-2 text-[11px] text-[#3E7A53]">Plan complete.</div>
+                          )}
+                          {m.status === 'failed' && (
+                            <div className="mt-2 text-[11px] text-[#B4632F]">Plan stopped.</div>
+                          )}
+                          {m.status === 'denied' && (
+                            <div className="mt-2 text-[11px] text-[#9A9A9A]">Discarded.</div>
+                          )}
+                        </div>
                       </div>
-                    )}
+                    );
+                  }
 
-                    {(m.status === 'running' ||
-                      m.status === 'done' ||
-                      m.status === 'failed') &&
-                      m.output.trim() !== '' && (
-                        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-[#2A2A28] px-2 py-1.5 font-mono text-[11px] leading-relaxed text-[#E8E8E6]">
-                          {m.output}
-                        </pre>
-                      )}
+                  // Proposal → a risk-scored step card. The risk engine
+                  // (shared/risk.ts) classifies the command; the card shows the
+                  // score, what it does, and the files it will touch — so the
+                  // action is understandable before it runs.
+                  const risk = assessCommand(m.command);
+                  return (
+                    <div
+                      key={m.id}
+                      className="overflow-hidden rounded-xl border border-black/10 bg-[#FBFBFA]"
+                    >
+                      {/* Header: step number + capability + risk badge */}
+                      <div className="flex items-center justify-between gap-2 border-b border-black/[0.06] px-3 py-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#3A3A3A] text-[9px] font-semibold text-white">
+                            {stepOf.get(m.id)}
+                          </span>
+                          <span className="truncate text-[11px] font-medium text-[#6A6A6A]">
+                            {risk.label}
+                          </span>
+                        </div>
+                        <RiskBadge level={risk.level} />
+                      </div>
 
-                    {m.note && (
-                      <div className="mt-1.5 text-[11px] text-[#9A9A9A]">{m.note}</div>
-                    )}
-                  </div>
-                );
-              })}
+                      <div className="p-3">
+                        {m.reason && (
+                          <div className="text-xs leading-relaxed text-[#4A4A4A]">
+                            {m.reason}
+                          </div>
+                        )}
+                        <code className="mt-2 block break-all rounded-lg bg-black/[0.04] px-2.5 py-1.5 font-mono text-xs text-[#3A3A3A]">
+                          {m.command}
+                        </code>
+                        <div className="mt-2 text-[11px] text-[#9A9A9A]">{risk.reason}</div>
+
+                        {risk.files.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-[10px] font-medium uppercase tracking-wide text-[#A8A8A8]">
+                              Files it will touch
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {risk.files.map((f) => (
+                                <span
+                                  key={f}
+                                  className="max-w-full truncate rounded bg-black/[0.05] px-1.5 py-0.5 font-mono text-[10.5px] text-[#6A6A6A]"
+                                >
+                                  {f}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="mt-2 text-[11px] text-[#9A9A9A]">
+                          {m.readOnly
+                            ? 'Reads only, changes nothing.'
+                            : 'Makes changes on your computer.'}
+                        </div>
+
+                        {m.warn && (
+                          <div className="mt-2 rounded-lg bg-[#FBF1EA] px-2 py-1 text-[11px] text-[#B4632F]">
+                            Heads up: {m.warn}
+                          </div>
+                        )}
+
+                        {m.status === 'pending' && (
+                          <div className="mt-2.5 flex gap-2">
+                            <button
+                              onClick={() => approve(m.id, m.command)}
+                              className="rounded-lg bg-[#3A3A3A] px-3 py-1 text-xs font-medium text-white hover:bg-black"
+                            >
+                              Approve & run
+                            </button>
+                            <button
+                              onClick={() => deny(m.id)}
+                              className="rounded-lg border border-black/10 px-3 py-1 text-xs text-[#6A6A6A] hover:bg-black/5"
+                            >
+                              Deny
+                            </button>
+                          </div>
+                        )}
+
+                        {m.status === 'running' && (
+                          <div className="mt-2 text-[11px] text-[#9A9A9A]">Running…</div>
+                        )}
+                        {m.status === 'denied' && (
+                          <div className="mt-2 text-[11px] text-[#9A9A9A]">Skipped.</div>
+                        )}
+                        {(m.status === 'done' || m.status === 'failed') && (
+                          <div
+                            className={`mt-2 text-[11px] ${
+                              m.status === 'done' ? 'text-[#3E7A53]' : 'text-[#B4632F]'
+                            }`}
+                          >
+                            {m.status === 'done'
+                              ? 'Done.'
+                              : `Finished with an error (code ${m.exitCode}).`}
+                          </div>
+                        )}
+
+                        {(m.status === 'running' ||
+                          m.status === 'done' ||
+                          m.status === 'failed') &&
+                          m.output.trim() !== '' && (
+                            <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-hairline bg-surface-subtle px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[#3A3A3A]">
+                              {m.output}
+                            </pre>
+                          )}
+
+                        {m.note && (
+                          <div className="mt-1.5 text-[11px] text-[#9A9A9A]">{m.note}</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
               {thinking && (
                 <div className="text-[11px] italic text-[#9A9A9A]">
                   Verlox is thinking…
@@ -1077,8 +1627,6 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
             onChange={onTextareaInput}
             onKeyDown={onTextareaKeyDown}
             onPaste={onPaste}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
             disabled={running}
             rows={1}
             placeholder={
@@ -1235,7 +1783,9 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                     type="button"
                     onClick={() => {
                       setBrainMenuOpen(false);
-                      setSettingsOpen(true);
+                      // Open the app-level Settings page (the chat bar no longer
+                      // hosts settings itself).
+                      window.dispatchEvent(new Event('verlox:open-settings'));
                     }}
                     className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] text-[#6A6A6A] hover:bg-black/[0.035]"
                   >
@@ -1263,6 +1813,40 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
 
             {/* Spacer pushes send to the right edge, mockup-style. */}
             <div className="flex-1" />
+
+            {/* Simulate — preview the plan's predicted outcome without running. */}
+            <button
+              type="button"
+              onClick={() =>
+                isPro
+                  ? void submit(undefined, true)
+                  : openUpgrade({ feature: 'Sandbox' })
+              }
+              disabled={(!input.trim() && !attachment) || running}
+              title={
+                isPro
+                  ? 'Simulate — preview the predicted outcome without running anything'
+                  : 'Sandbox is a Pro feature — simulate plans with before/after diffs'
+              }
+              aria-label="Simulate"
+              className="mr-1.5 flex h-9 shrink-0 items-center gap-1 rounded-full border border-hairline px-3 text-[11px] font-medium text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink disabled:opacity-30"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M9 3h6M10 3v6.5L5.5 18A1.5 1.5 0 0 0 7 20h10a1.5 1.5 0 0 0 1.5-2L14 9.5V3"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Simulate
+              {!isPro && (
+                <span className="ml-0.5 rounded bg-[#EAF1F6] px-1 py-px text-[8.5px] font-semibold text-[#2E5FA3]">
+                  PRO
+                </span>
+              )}
+            </button>
 
             {/* Send */}
             <button

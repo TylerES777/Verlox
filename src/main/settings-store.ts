@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { safeStorage } from 'electron';
 import Store from 'electron-store';
 import type { AgentProviderMeta, ProviderFormat } from '@shared/types';
+import type { Capability, CapabilityPermissions, PermissionRule } from '@shared/risk';
 
 // Agent Mode settings: a list of user-added AI providers plus the
 // auto-approve toggle. Each provider's API key is encrypted at rest with the
@@ -13,11 +14,19 @@ interface SettingsSchema {
   // provider id -> base64 of the OS-encrypted key
   encryptedKeys: Record<string, string>;
   autoApproveReadonly: boolean;
+  // Per-capability permission rules. Absent capabilities fall back to
+  // DEFAULT_PERMISSIONS in the renderer (see shared/risk.ts).
+  permissions: CapabilityPermissions;
 }
 
 const store = new Store<SettingsSchema>({
   name: 'settings',
-  defaults: { providers: [], encryptedKeys: {}, autoApproveReadonly: true },
+  defaults: {
+    providers: [],
+    encryptedKeys: {},
+    autoApproveReadonly: true,
+    permissions: {},
+  },
 });
 
 export function listProviders(): AgentProviderMeta[] {
@@ -75,6 +84,14 @@ export function getAutoApprove(): boolean {
 
 export function setAutoApprove(enabled: boolean): void {
   store.set('autoApproveReadonly', enabled);
+}
+
+export function getPermissions(): CapabilityPermissions {
+  return store.get('permissions');
+}
+
+export function setPermission(capability: Capability, rule: PermissionRule): void {
+  store.set('permissions', { ...store.get('permissions'), [capability]: rule });
 }
 
 // Sensible default base URL for a freshly-chosen format (used to prefill the

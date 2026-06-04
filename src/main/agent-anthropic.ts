@@ -1,10 +1,15 @@
-import type { AgentPlanInput, AgentStep } from '@shared/types';
+import type { AgentFullPlan, AgentPlanInput, AgentStep } from '@shared/types';
 import {
+  PLAN_PARAMETERS,
+  PLAN_TOOL_DESCRIPTION,
+  PLAN_TOOL_NAME,
   STEP_PARAMETERS,
   STEP_TOOL_DESCRIPTION,
   STEP_TOOL_NAME,
+  buildPlanSystem,
   buildSystem,
   buildUserContent,
+  normalizePlan,
   normalizeStep,
 } from './agent-shared';
 
@@ -84,6 +89,62 @@ export async function planStepAnthropic(
   const toolUse = data.content?.find((b) => b.type === 'tool_use');
   if (!toolUse?.input) throw new Error('Anthropic did not return a structured step.');
   return normalizeStep(toolUse.input);
+}
+
+// Plan-first variant: ask for the COMPLETE ordered plan in one call.
+export async function planAllAnthropic(
+  input: AgentPlanInput,
+  apiKey: string,
+  model: string,
+  baseUrl: string,
+): Promise<AgentFullPlan> {
+  const res = await fetch(messagesUrl(baseUrl), {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': VERSION,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: MAX_TOKENS,
+      system: buildPlanSystem(input),
+      messages: [
+        {
+          role: 'user',
+          content: input.image
+            ? [
+                { type: 'text', text: buildUserContent(input) },
+                {
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: input.image.mediaType,
+                    data: input.image.base64Data,
+                  },
+                },
+              ]
+            : buildUserContent(input),
+        },
+      ],
+      tools: [
+        {
+          name: PLAN_TOOL_NAME,
+          description: PLAN_TOOL_DESCRIPTION,
+          input_schema: PLAN_PARAMETERS,
+        },
+      ],
+      tool_choice: { type: 'tool', name: PLAN_TOOL_NAME },
+    }),
+  });
+  if (!res.ok) throw new Error(await errorText(res));
+
+  const data = (await res.json()) as {
+    content?: Array<{ type: string; input?: Record<string, unknown> }>;
+  };
+  const toolUse = data.content?.find((b) => b.type === 'tool_use');
+  if (!toolUse?.input) throw new Error('Anthropic did not return a structured plan.');
+  return normalizePlan(toolUse.input);
 }
 
 // Validate key + URL + model with a tiny generation.

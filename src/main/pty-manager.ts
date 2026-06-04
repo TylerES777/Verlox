@@ -161,13 +161,12 @@ export function ptyStart(
     rows: rows > 0 ? rows : 24,
     cwd: cwd && cwd.length > 0 ? cwd : homedir(),
     env: process.env as Record<string, string>,
-    // ConPTY (not WinPTY). Required for shell integration: WinPTY rebuilds the
-    // screen from the Windows console buffer and DROPS invisible OSC sequences,
-    // so the OSC 133 command-block markers never arrive. ConPTY passes them
-    // through faithfully. It was previously disabled over an "AttachConsole
-    // failed" crash; that no longer reproduces here, but interactive CLIs
-    // (vim, REPLs, Claude Code) should be re-verified on ConPTY before ship.
-    useConpty: true,
+    // Force the older WinPTY backend on Windows — ConPTY logs "AttachConsole
+    // failed" under Electron here and is unstable. NOTE: WinPTY also strips the
+    // invisible OSC 133 markers the shell emits, so command-block detection
+    // (Phase 1, see shell-safety.ts) is dormant on this backend. Visual
+    // command blocks need ConPTY stabilized first.
+    useConpty: false,
   });
 
   sessions.set(id, { pty, sender, block: newBlockState() });

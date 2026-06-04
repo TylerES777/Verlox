@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import type { Shell } from '@shared/types';
 import { AgentPanel } from './AgentPanel';
 import { registerTerminal, unregisterTerminal } from '../lib/terminalRegistry';
+import { finalizeProcess, registerProcess } from '../hooks/useRunningProcesses';
 
 interface TerminalViewProps {
   // The owning tab's id. Doubles as the PTY session key, so input, output,
@@ -14,6 +16,9 @@ interface TerminalViewProps {
   // we defer the first fit (and re-fit on show) until it's actually on
   // screen — otherwise the PTY would be sized to nothing.
   isActive: boolean;
+  // Called once with the first command the user runs, so the tab can be
+  // renamed from "Terminal" to that command.
+  onFirstCommand?: (command: string) => void;
 }
 
 // In dev, React StrictMode mounts → unmounts → remounts each component in
@@ -33,16 +38,65 @@ const pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
 // CLIs (Claude Code, vim, REPLs) work exactly as they would in any
 // terminal. The approve-before-run layer sits on top of this, not inside it.
 // Rewind / restore points now live in the sidebar, not over the terminal.
-export function TerminalView({ id, isActive }: TerminalViewProps) {
+export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   // Becomes true once the PTY has been spawned, so a deferred first fit
   // (for a tab that mounts while hidden) knows whether to start it.
   const startedRef = useRef(false);
-  // Output mode: false = raw shell output (default), true = AI explains each
-  // command's output instead. (The translation pipeline is wired separately.)
-  const [aiMode, setAiMode] = useState(false);
+  // Title the tab from the first command run; ref so the once-only check and
+  // latest callback survive across renders without re-running the mount effect.
+  const titledRef = useRef(false);
+  const onFirstCommandRef = useRef(onFirstCommand);
+  onFirstCommandRef.current = onFirstCommand;
+  // For surfacing long-running commands the user types directly (not just
+  // agent-run ones) in the sidebar's Running section.
+  const envShellRef = useRef<Shell>('powershell');
+  const envHomeRef = useRef('');
+  const termRunRef = useRef<{
+    runId: string;
+    timer: ReturnType<typeof setTimeout> | null;
+    registered: boolean;
+  } | null>(null);
+  // Last cwd parsed from the prompt, so we only emit on an actual change.
+  const lastCwdRef = useRef('');
+  // Custom scrollbar that floats at the card's right edge (xterm's native one
+  // is hidden via CSS, since it would sit at the narrow text-column edge). The
+  // thumb's size/position mirror the terminal's scroll; dragging it scrolls.
+  const scrollbarTrackRef = useRef<HTMLDivElement | null>(null);
+  const lastSbRef = useRef('');
+  const [sb, setSb] = useState<{ visible: boolean; topPct: number; heightPct: number }>({
+    visible: false,
+    topPct: 0,
+    heightPct: 0,
+  });
+
+  const onScrollbarThumbDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const t = termRef.current;
+    const track = scrollbarTrackRef.current;
+    if (!t || !track) return;
+    const startY = e.clientY;
+    const startViewportY = t.buffer.active.viewportY;
+    const maxScroll = t.buffer.active.baseY;
+    const heightFrac = Math.max(t.rows / t.buffer.active.length, 0.05);
+    const travelPx = track.clientHeight * (1 - heightFrac);
+    const onMove = (ev: MouseEvent) => {
+      const tt = termRef.current;
+      if (!tt) return;
+      const dy = ev.clientY - startY;
+      const dLines = travelPx > 0 ? (dy / travelPx) * maxScroll : 0;
+      const target = Math.max(0, Math.min(maxScroll, Math.round(startViewportY + dLines)));
+      tt.scrollLines(target - tt.buffer.active.viewportY);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   // Mount the terminal once. Tabs stay mounted across switches (so a
   // long-running shell survives), so this effect runs a single time per
@@ -63,7 +117,7 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
     const term = new Terminal({
       fontFamily:
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      fontSize: 13,
+      fontSize: 15,
       lineHeight: 1.2,
       cursorBlink: true,
       // A calm, light terminal that belongs to the white app surface
@@ -105,6 +159,108 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
     // content (always-on terminal awareness, across tabs).
     registerTerminal(id, term);
 
+    // Keep the custom scrollbar in sync with the terminal's scroll position
+    // and content height. Throttled to one update per frame; only commits to
+    // state when the values actually change, so heavy output / cursor blinks
+    // don't cause a flood of re-renders.
+    let sbRaf = 0;
+    const updateSb = () => {
+      if (sbRaf) return;
+      sbRaf = requestAnimationFrame(() => {
+        sbRaf = 0;
+        const b = term.buffer.active;
+        let next: { visible: boolean; topPct: number; heightPct: number };
+        if (b.length <= term.rows) {
+          next = { visible: false, topPct: 0, heightPct: 0 };
+        } else {
+          const heightFrac = Math.max(term.rows / b.length, 0.05);
+          const posFrac = b.baseY > 0 ? b.viewportY / b.baseY : 1;
+          next = {
+            visible: true,
+            topPct: posFrac * (1 - heightFrac) * 100,
+            heightPct: heightFrac * 100,
+          };
+        }
+        const key = `${next.visible}|${next.topPct.toFixed(2)}|${next.heightPct.toFixed(2)}`;
+        if (key !== lastSbRef.current) {
+          lastSbRef.current = key;
+          setSb(next);
+        }
+      });
+    };
+    // Know the shell/home for labelling user-typed running commands.
+    void window.api
+      .getEnvironment()
+      .then((e) => {
+        envShellRef.current = e.shell;
+        envHomeRef.current = e.homeDir;
+      })
+      .catch(() => {});
+
+    // Surface a command the user TYPES (not just agent-run ones) in the
+    // Running board — but only if it's still going after a beat, so quick
+    // commands (ls, cd) never flash in. Completion is detected by the shell
+    // prompt returning (see checkTermDone), so dev servers / watchers persist.
+    const beginTermRun = (command: string) => {
+      if (termRunRef.current?.timer) clearTimeout(termRunRef.current.timer);
+      const runId = `term-${id}-${crypto.randomUUID()}`;
+      const entry = {
+        runId,
+        timer: null as ReturnType<typeof setTimeout> | null,
+        registered: false,
+      };
+      termRunRef.current = entry;
+      entry.timer = setTimeout(() => {
+        if (termRunRef.current === entry && !entry.registered) {
+          entry.registered = true;
+          registerProcess({
+            stepId: runId,
+            conversationId: id,
+            command,
+            cwd: envHomeRef.current,
+            shell: envShellRef.current,
+            source: 'terminal',
+          });
+        }
+      }, 1500);
+    };
+    const checkTermDone = () => {
+      const entry = termRunRef.current;
+      if (!entry) return;
+      const buf = term.buffer.active;
+      const cursorLine =
+        buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true)?.trim() ?? '';
+      // A fresh PowerShell prompt with nothing typed after it = shell is idle,
+      // so the typed command has finished.
+      if (/^PS .*>$/.test(cursorLine)) {
+        if (entry.timer) clearTimeout(entry.timer);
+        if (entry.registered) finalizeProcess(entry.runId, { exitCode: 0, signal: null });
+        termRunRef.current = null;
+      }
+    };
+
+    // Track the shell's directory from the prompt (PS <path>>), and tell the
+    // agent panel when it changes so its working folder follows the terminal.
+    const checkCwd = () => {
+      const buf = term.buffer.active;
+      const cursorLine =
+        buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true)?.trim() ?? '';
+      const m = cursorLine.match(/^PS (.+?)>$/);
+      if (!m) return;
+      const cwd = m[1].trim();
+      if (cwd && cwd !== lastCwdRef.current) {
+        lastCwdRef.current = cwd;
+        window.dispatchEvent(new CustomEvent('verlox:cwd-changed', { detail: { id, cwd } }));
+      }
+    };
+
+    const sbScroll = term.onScroll(() => updateSb());
+    const sbRender = term.onRender(() => {
+      updateSb();
+      checkTermDone();
+      checkCwd();
+    });
+
     const start = () => {
       if (startedRef.current) return;
       try {
@@ -125,6 +281,21 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
     // Forward keystrokes / pastes straight to the PTY.
     const dataSub = term.onData((data) => {
       window.api.ptyInput({ id, data });
+      // On Enter, read the command on the prompt line. First one names the tab;
+      // every one feeds the long-running-command detector.
+      if (data.includes('\r')) {
+        const buf = term.buffer.active;
+        const line =
+          buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true) ?? '';
+        const cmd = line.split('> ').pop()?.trim() ?? '';
+        if (cmd) {
+          if (!titledRef.current) {
+            titledRef.current = true;
+            onFirstCommandRef.current?.(cmd);
+          }
+          beginTermRun(cmd);
+        }
+      }
     });
 
     // PTY output → screen. Filter by id so each terminal only renders
@@ -164,6 +335,15 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
     return () => {
       observer.disconnect();
       dataSub.dispose();
+      sbScroll.dispose();
+      sbRender.dispose();
+      if (sbRaf) cancelAnimationFrame(sbRaf);
+      // Clear any pending/registered terminal-run tracking for this tab.
+      if (termRunRef.current?.timer) clearTimeout(termRunRef.current.timer);
+      if (termRunRef.current?.registered) {
+        finalizeProcess(termRunRef.current.runId, { exitCode: null, signal: 'closed' });
+      }
+      termRunRef.current = null;
       offData();
       offExit();
       unregisterTerminal(id);
@@ -225,14 +405,36 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
           </span>
           <span className="text-[11px] font-medium text-ink-hint">Terminal</span>
         </div>
-        <OutputModeToggle on={aiMode} onChange={setAiMode} />
+        <OutputModeToggle />
       </div>
 
-      <div
-        ref={hostRef}
-        onMouseDown={() => termRef.current?.focus()}
-        className="min-h-0 flex-1 overflow-hidden px-4 pb-3 pt-3"
-      />
+      {/* The outer box owns the padding + width cap; the INNER box is the
+          xterm mount and carries NO padding, so FitAddon measures a clean box
+          and fits the rows exactly — no clipped/unreachable last line. The
+          large bottom padding keeps the live prompt above the floating chat
+          panel (collapsed), so what you type is never cut off by it. */}
+      <div className="min-h-0 w-full max-w-[900px] flex-1 overflow-hidden px-4 pb-24 pt-3">
+        <div
+          ref={hostRef}
+          onMouseDown={() => termRef.current?.focus()}
+          className="h-full w-full overflow-hidden"
+        />
+      </div>
+
+      {/* Custom premium scrollbar — floats at the card's right edge (not the
+          text-column edge) and mirrors the terminal's scroll. */}
+      {sb.visible && (
+        <div
+          ref={scrollbarTrackRef}
+          className="absolute right-1.5 top-11 bottom-3 z-[7] w-1.5"
+        >
+          <div
+            onMouseDown={onScrollbarThumbDown}
+            className="absolute left-0 w-full cursor-pointer rounded-full bg-black/15 transition-colors hover:bg-black/30"
+            style={{ top: `${sb.topPct}%`, height: `${sb.heightPct}%` }}
+          />
+        </div>
+      )}
 
       {/* The floating natural-language panel where you and Verlox talk and
           approve actions. It floats over the terminal and never resizes the
@@ -245,40 +447,26 @@ export function TerminalView({ id, isActive }: TerminalViewProps) {
 // Raw vs AI output toggle. Raw shows the shell's real output; AI (when its
 // pipeline is wired) explains each command's output in plain English instead,
 // leaving commands that need live interaction untouched.
-function OutputModeToggle({
-  on,
-  onChange,
-}: {
-  on: boolean;
-  onChange: (v: boolean) => void;
-}) {
+// Raw vs AI output. The AI-explains-output pipeline isn't wired yet, so the
+// whole control is locked with a "Soon" tag until it ships.
+function OutputModeToggle() {
   return (
     <div
-      className="flex items-center rounded-full border border-hairline bg-surface-subtle p-0.5 text-[10.5px] font-medium"
+      className="flex cursor-default select-none items-center gap-1.5 rounded-full border border-hairline bg-surface-subtle px-2.5 py-0.5 text-[10.5px] font-medium text-ink-hint"
       role="group"
-      aria-label="Output mode"
+      aria-label="Output mode (coming soon)"
+      title="Raw / AI output — coming soon"
     >
-      <button
-        type="button"
-        onClick={() => onChange(false)}
-        title="Show the shell's raw output"
-        className={`rounded-full px-2 py-0.5 transition-colors ${
-          !on ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.06)]' : 'text-ink-hint hover:text-ink'
-        }`}
-      >
-        Raw
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange(true)}
-        title="Let Verlox explain output in plain English"
-        className={`flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors ${
-          on ? 'bg-card text-[#3E7A53] shadow-[0_1px_2px_rgba(0,0,0,0.06)]' : 'text-ink-hint hover:text-ink'
-        }`}
-      >
-        <span aria-hidden="true">✦</span>
-        AI
-      </button>
+      <span>Raw</span>
+      <span aria-hidden="true" className="text-ink-micro">
+        ·
+      </span>
+      <span className="flex items-center gap-0.5">
+        <span aria-hidden="true">✦</span>AI
+      </span>
+      <span className="ml-0.5 rounded-full bg-black/[0.06] px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wide text-ink-micro">
+        Soon
+      </span>
     </div>
   );
 }

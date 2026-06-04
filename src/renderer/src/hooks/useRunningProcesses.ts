@@ -35,6 +35,10 @@ export interface RunningProcess {
   // Epoch ms.
   startedAt: number;
   endedAt: number | null;
+  // Where this process came from: 'agent' = a command Verlox ran (controlled
+  // via stopCommand); 'terminal' = a long-running command the user typed in
+  // the raw shell (stopped by sending Ctrl+C to that terminal's PTY).
+  source: 'agent' | 'terminal';
   // First localhost URL detected in stdout, if any. Surfaces an
   // "Open" button on the row.
   detectedUrl: string | null;
@@ -94,6 +98,7 @@ export function registerProcess(input: {
   command: string;
   cwd: string;
   shell: Shell;
+  source?: 'agent' | 'terminal';
 }): void {
   registry.set(input.stepId, {
     stepId: input.stepId,
@@ -105,6 +110,7 @@ export function registerProcess(input: {
     exitCode: null,
     startedAt: Date.now(),
     endedAt: null,
+    source: input.source ?? 'agent',
     detectedUrl: null,
     tailOutput: '',
   });
