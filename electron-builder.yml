@@ -34,6 +34,13 @@ files:
 # userData (token, settings) lives outside the asar, so this is safe.
 asar: true
 
+# node-pty here is @homebridge/node-pty-prebuilt-multiarch, which ships
+# prebuilt binaries for Node AND Electron and picks the right one at runtime
+# (this is why dev works without a compile step). So skip electron-builder's
+# native rebuild — it would invoke node-gyp, which fails outright on a project
+# path containing a space ("Vorlox v2").
+npmRebuild: false
+
 win:
   target:
     - nsis
