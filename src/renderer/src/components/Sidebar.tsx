@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ConversationTab } from './TabBar';
 import { finalizeProcess, useRunningProcesses } from '../hooks/useRunningProcesses';
@@ -6,6 +6,7 @@ import { readTerminalText } from '../lib/terminalRegistry';
 import { useAuth } from '../contexts/AuthContext';
 import { useUsage } from '../contexts/UsageContext';
 import { useUpgrade } from '../contexts/UpgradeContext';
+import { useUpdateStatus } from '../hooks/useUpdateStatus';
 
 interface SidebarProps {
   tabs: ConversationTab[];
@@ -230,7 +231,12 @@ function ProfileSection() {
   const { user, signOut } = useAuth();
   const { usage, openUsage } = useUsage();
   const { openUpgrade } = useUpgrade();
+  const update = useUpdateStatus();
   const [open, setOpen] = useState(false);
+  const [version, setVersion] = useState('');
+  useEffect(() => {
+    void window.api.getAppVersion().then(setVersion).catch(() => {});
+  }, []);
 
   const email = user?.email ?? 'Signed in';
   const initial = (user?.email?.charAt(0) ?? '?').toUpperCase();
@@ -295,6 +301,25 @@ function ProfileSection() {
             >
               Log out
             </button>
+            {/* Update affordance — appears once a new version has downloaded
+                in the background. Otherwise just shows the current version. */}
+            {update.state === 'downloaded' ? (
+              <button
+                type="button"
+                onClick={() => window.api.installUpdate()}
+                className="mt-1 w-full rounded-lg bg-[#EAF3ED] px-2.5 py-1.5 text-left text-[12px] font-medium text-[#3E7A53] hover:bg-[#DCEEDF]"
+              >
+                Restart to update{update.version ? ` · v${update.version}` : ''}
+              </button>
+            ) : update.state === 'downloading' ? (
+              <div className="px-2.5 py-1.5 text-[11px] text-ink-hint">
+                Downloading update…
+                {update.percent != null ? ` ${update.percent}%` : ''}
+              </div>
+            ) : null}
+            <div className="mt-1 border-t border-hairline px-2.5 pb-1 pt-1.5 text-[10px] text-ink-micro">
+              Verlox v{version || '—'}
+            </div>
           </div>
         </>
       )}
