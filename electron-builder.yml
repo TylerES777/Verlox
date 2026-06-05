@@ -36,13 +36,11 @@ files:
 # Pack the app source into an asar archive (default, but explicit).
 # userData (token, settings) lives outside the asar, so this is safe.
 asar: true
-
-# node-pty here is @homebridge/node-pty-prebuilt-multiarch, which ships
-# prebuilt binaries for Node AND Electron and picks the right one at runtime
-# (this is why dev works without a compile step). So skip electron-builder's
-# native rebuild — it would invoke node-gyp, which fails outright on a project
-# path containing a space ("Vorlox v2").
-npmRebuild: false
+# Leave npmRebuild ON (default): electron-builder must compile node-pty for the
+# Electron ABI and unpack the .node from the asar. This requires the C++
+# toolchain + a space-free path — which CI provides (see .github/workflows).
+# Do NOT set npmRebuild:false: it ships an app with no pty.node and crashes on
+# the first terminal.
 
 win:
   target:
