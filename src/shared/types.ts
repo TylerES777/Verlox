@@ -634,10 +634,18 @@ export interface AttachedImage {
   base64Data: string;
 }
 
-// Which Anthropic model serves a turn. Free users are pinned to 'haiku'
-// server-side regardless of selection; only Pro can pick 'sonnet' (the
-// default) or 'opus'. Kept in sync with the backend ModelChoice.
-export type ModelChoice = 'haiku' | 'sonnet' | 'opus';
+// Which hosted model serves a turn. Anthropic models (haiku/sonnet/opus)
+// run direct; the OpenAI models (gpt = flagship, gpt-mini, gpt-reasoning)
+// are served via OpenRouter. Tier gating is enforced server-side
+// (resolveModel): a free user requesting a Pro-only model is served Haiku.
+// Kept in sync with the backend ModelChoice (tier.ts / anthropic.ts).
+export type ModelChoice =
+  | 'haiku'
+  | 'sonnet'
+  | 'opus'
+  | 'gpt'
+  | 'gpt-mini'
+  | 'gpt-reasoning';
 
 export interface TurnInput {
   userInput: string;

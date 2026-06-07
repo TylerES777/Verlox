@@ -34,9 +34,10 @@ export interface CreditCostRow {
 }
 
 export const CREDIT_COSTS: CreditCostRow[] = [
-  { label: 'A request on Free (Haiku)', cost: '1 credit' },
-  { label: 'A request on Pro (Sonnet)', cost: '4 credits' },
+  { label: 'A request with Haiku or GPT-4o mini', cost: '1 credit' },
+  { label: 'A request with Sonnet or GPT-4o', cost: '4 credits' },
   { label: 'A request with Opus', cost: '6 credits' },
+  { label: 'A request with o3 (reasoning)', cost: '8 credits' },
   { label: 'Attaching an image', cost: '+2 credits' },
   { label: 'Showing a reply as a diagram', cost: '+3 credits' },
 ];

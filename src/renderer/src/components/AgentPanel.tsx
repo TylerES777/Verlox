@@ -143,10 +143,18 @@ interface Brain {
 }
 
 function buildBrains(s: SettingsInfo | null): Brain[] {
+  // Hosted models (credit-based). Anthropic runs direct; the GPT models are
+  // served via OpenRouter. The `model` value is the backend ModelChoice; the
+  // labels match the default OpenRouter model ids (swappable on the backend).
+  // Tier gating is enforced server-side: a free user who picks a Pro-only
+  // model (Sonnet, Opus, GPT reasoning) is served Haiku.
   const list: Brain[] = [
     { id: 'haiku', label: 'Haiku', group: 'Verlox', engine: 'verlox', model: 'haiku' },
     { id: 'sonnet', label: 'Sonnet', group: 'Verlox', engine: 'verlox', model: 'sonnet' },
     { id: 'opus', label: 'Opus', group: 'Verlox', engine: 'verlox', model: 'opus' },
+    { id: 'gpt-mini', label: 'GPT-4o mini', group: 'Verlox', engine: 'verlox', model: 'gpt-mini' },
+    { id: 'gpt', label: 'GPT-4o', group: 'Verlox', engine: 'verlox', model: 'gpt' },
+    { id: 'gpt-reasoning', label: 'o3 (reasoning)', group: 'Verlox', engine: 'verlox', model: 'gpt-reasoning' },
   ];
   for (const p of s?.providers ?? []) {
     list.push({
