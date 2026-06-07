@@ -4,6 +4,7 @@ import type {
   AgentPlanInput,
   AgentStepResult,
   BackendErrorCode,
+  FeatureCap,
   ModelChoice,
   TurnHistoryEntry,
 } from '@shared/types';
@@ -91,7 +92,13 @@ export async function planStep(
     attachedImage: input.image ?? null,
   });
 
-  if (!res.ok) return { ok: false, error: backendErrorMessage(res.code) };
+  if (!res.ok)
+    return {
+      ok: false,
+      error: backendErrorMessage(res.code),
+      code: res.code,
+      cap: (res as { cap?: FeatureCap }).cap,
+    };
 
   const plan = res.data;
   if (plan.steps.length === 0) {
@@ -164,7 +171,13 @@ export async function planAll(input: AgentPlanInput): Promise<AgentPlanAllResult
     runningProcesses: [],
     attachedImage: input.image ?? null,
   });
-  if (!res.ok) return { ok: false, error: backendErrorMessage(res.code) };
+  if (!res.ok)
+    return {
+      ok: false,
+      error: backendErrorMessage(res.code),
+      code: res.code,
+      cap: (res as { cap?: FeatureCap }).cap,
+    };
 
   const plan = res.data;
   const summary = plan.plan?.trim() || plan.intent?.trim() || '';

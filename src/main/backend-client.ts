@@ -200,12 +200,13 @@ export async function planTurn(input: TurnInput): Promise<TurnResultWire> {
   // 402 Payment Required = out of credits for the current period. Distinct
   // code so the renderer shows the run-out popup, not a generic error.
   if (result.status === 402) return { ok: false, code: 'limit_reached' };
-  // 403 = a free-tier feature cap (daily images or monthly Plan Mode). The
-  // body carries `cap` so the UI can name the exact limit that was hit.
+  // 403 = a free-tier feature cap (daily images, monthly Plan Mode, or the
+  // daily Pro-model trial). The body carries `cap` so the UI can name the
+  // exact limit that was hit.
   if (result.status === 403) {
     const body = result.json as { cap?: unknown } | null;
     const cap =
-      body?.cap === 'images' || body?.cap === 'thinkMode'
+      body?.cap === 'images' || body?.cap === 'thinkMode' || body?.cap === 'proTrial'
         ? body.cap
         : undefined;
     return { ok: false, code: 'feature_capped', cap };

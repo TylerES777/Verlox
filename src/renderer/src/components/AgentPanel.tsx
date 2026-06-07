@@ -29,6 +29,7 @@ import { createPortal } from 'react-dom';
 import { PathPicker, type PathSelection } from './PathPicker';
 import { useTier } from '../contexts/TierContext';
 import { useUpgrade } from '../contexts/UpgradeContext';
+import { useUsage } from '../contexts/UsageContext';
 
 interface AgentPanelProps {
   // The owning terminal tab's id, so the panel can flag which screen is in
@@ -119,6 +120,10 @@ type PlanMessage = {
 type AgentMessage =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string }
+  // A billing limit was hit: show an upgrade card instead of plain text.
+  // 'credits' = out of credits this period; 'proTrial' = the daily free
+  // allowance of Pro-model messages is used up (model reverted to default).
+  | { kind: 'limit'; id: string; reason: 'credits' | 'proTrial' }
   | PlanMessage
   | {
       kind: 'proposal';
@@ -167,6 +172,16 @@ function buildBrains(s: SettingsInfo | null): Brain[] {
     });
   }
   return list;
+}
+
+// The hosted model choices that are Pro-only: free users get a small daily
+// trial of these, then they lock and selection reverts to the default. Keep
+// in sync with the backend registry (tier.ts, minTier === 'pro').
+const PRO_MODELS = new Set(['sonnet', 'opus', 'gpt-reasoning']);
+// The free default model selection reverts to when the Pro trial is spent.
+const DEFAULT_FREE_BRAIN = 'haiku';
+function isProBrain(b: Brain): boolean {
+  return b.engine === 'verlox' && PRO_MODELS.has(b.model);
 }
 
 function newId(): string {
@@ -384,9 +399,35 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   // Billing tier gates the power features (Sandbox, long vault retention).
   const { isPro } = useTier();
   const { openUpgrade } = useUpgrade();
+  const { usage, refresh: refreshUsage } = useUsage();
+
+  // Pro models (locked for free users beyond the daily trial). The free
+  // default model that selection reverts to once the trial is used up.
+  const proTrialCap = usage?.caps?.proTrial;
+  const proTrialLeft =
+    !isPro && proTrialCap && proTrialCap.limit !== null
+      ? Math.max(0, proTrialCap.limit - proTrialCap.used)
+      : null;
+  // Locked = a free user who has spent the whole daily Pro trial.
+  const proLocked = !isPro && proTrialLeft === 0;
 
   // Model switcher.
   const [brainId, setBrainId] = useState<string>('sonnet');
+  // Whether the user has manually chosen a model this session. Until they do,
+  // the default tracks their tier (Pro → Sonnet, Free → the free default) so
+  // free users start on a free model and only spend the Pro trial on purpose.
+  const userPickedBrainRef = useRef(false);
+  useEffect(() => {
+    if (!userPickedBrainRef.current) {
+      setBrainId(isPro ? 'sonnet' : DEFAULT_FREE_BRAIN);
+    }
+  }, [isPro]);
+  // Once a free user's daily Pro trial is spent, revert any selected Pro
+  // model to the free default so the next send doesn't hit the limit. (Pro
+  // users are never locked, so their selection is untouched.)
+  useEffect(() => {
+    if (proLocked && PRO_MODELS.has(brainId)) setBrainId(DEFAULT_FREE_BRAIN);
+  }, [proLocked, brainId]);
   const [brainMenuOpen, setBrainMenuOpen] = useState(false);
   const brainWrapRef = useRef<HTMLDivElement>(null);
   const brainBtnRef = useRef<HTMLButtonElement>(null);
@@ -849,10 +890,21 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
       return;
     }
     if (!result.ok) {
-      addAssistant(result.error);
+      // Billing limits get a clean upgrade card instead of a plain message.
+      // proTrial also reverts the model selection to the free default.
+      if (result.code === 'limit_reached') {
+        setMessages((p) => [...p, { kind: 'limit', id: newId(), reason: 'credits' }]);
+      } else if (result.code === 'feature_capped' && result.cap === 'proTrial') {
+        setBrainId(DEFAULT_FREE_BRAIN);
+        setMessages((p) => [...p, { kind: 'limit', id: newId(), reason: 'proTrial' }]);
+      } else {
+        addAssistant(result.error);
+      }
+      refreshUsage();
       endLoop();
       return;
     }
+    refreshUsage();
     const plan = result.plan;
     if (plan.done || plan.steps.length === 0) {
       // Goal already complete, or a pure question answered from the snapshot.
@@ -1156,6 +1208,14 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   };
 
   const pickBrain = (b: Brain) => {
+    // A free user who has used up the daily Pro trial can't select a Pro
+    // model — clicking it opens the upgrade card instead.
+    if (isProBrain(b) && proLocked) {
+      setBrainMenuOpen(false);
+      openUpgrade({ feature: 'Pro models' });
+      return;
+    }
+    userPickedBrainRef.current = true;
     setBrainId(b.id);
     setBrainMenuOpen(false);
   };
@@ -1286,6 +1346,56 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                         </div>
                         <div className="mt-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                           <CopyButton text={m.text} variant="inline" label="Copy" />
+                        </div>
+                      </div>
+                    );
+                  }
+                  // Billing limit → a clean card: Get Pro, or switch to the
+                  // free default model. Replaces the old plain-text message.
+                  if (m.kind === 'limit') {
+                    const isProTrial = m.reason === 'proTrial';
+                    const dismiss = () =>
+                      setMessages((p) => p.filter((x) => x.id !== m.id));
+                    return (
+                      <div key={m.id} className="max-w-[90%]">
+                        <div className="rounded-2xl border border-black/10 bg-white p-4 shadow-sm">
+                          <div className="flex items-center gap-2">
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#F4F4F5] text-[#6A6A6A]">
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <rect x="3" y="11" width="18" height="11" rx="2" />
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                              </svg>
+                            </span>
+                            <p className="text-[13px] font-semibold text-[#2A2A2A]">
+                              {isProTrial ? 'Daily Pro limit reached' : "You're out of credits"}
+                            </p>
+                          </div>
+                          <p className="mt-2 text-[12.5px] leading-relaxed text-[#6A6A6A]">
+                            {isProTrial
+                              ? `You've used your ${proTrialCap?.limit ?? 4} free Pro-model messages today, so you're back on the free model. Upgrade to keep using Sonnet, Opus, and o3.`
+                              : "You've used your credits for this period. Upgrade to Pro for a much larger allowance, or wait for your next refill."}
+                          </p>
+                          <div className="mt-3 flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openUpgrade({ feature: isProTrial ? 'Pro models' : 'more credits' })
+                              }
+                              className="rounded-lg bg-[#15161A] px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90"
+                            >
+                              Get Pro
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (isProTrial) setBrainId(DEFAULT_FREE_BRAIN);
+                                dismiss();
+                              }}
+                              className="rounded-lg border border-black/10 px-3 py-1.5 text-[12px] font-medium text-[#3A3A3A] hover:bg-black/5"
+                            >
+                              {isProTrial ? 'Switch to free model' : 'Got it'}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );
@@ -1767,11 +1877,22 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                         .filter((b) => b.group === group)
                         .map((b) => {
                           const active = b.id === brainId;
+                          // Free users see Pro models with a daily-trial badge,
+                          // then a lock once the trial is spent.
+                          const gated = isProBrain(b) && !isPro;
+                          const locked = gated && proLocked;
                           return (
                             <button
                               key={b.id}
                               type="button"
                               onClick={() => pickBrain(b)}
+                              title={
+                                gated
+                                  ? locked
+                                    ? 'Pro model — daily free tries used up. Upgrade to use.'
+                                    : `Pro model — ${proTrialLeft} free ${proTrialLeft === 1 ? 'try' : 'tries'} left today`
+                                  : undefined
+                              }
                               className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left ${
                                 active ? 'bg-black/[0.05]' : 'hover:bg-black/[0.035]'
                               }`}
@@ -1779,9 +1900,27 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                               <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[#3A3A3A]">
                                 {active ? '✓' : ''}
                               </span>
-                              <span className="truncate text-xs font-medium text-[#3A3A3A]">
+                              <span
+                                className={`truncate text-xs font-medium ${
+                                  locked ? 'text-[#A8A8A8]' : 'text-[#3A3A3A]'
+                                }`}
+                              >
                                 {b.label}
                               </span>
+                              {gated && (
+                                <span className="ml-auto flex shrink-0 items-center text-[#B0B0B0]">
+                                  {locked ? (
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                      <rect x="3" y="11" width="18" height="11" rx="2" />
+                                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                    </svg>
+                                  ) : (
+                                    <span className="rounded-full bg-black/[0.05] px-1.5 py-0.5 font-mono text-[9px] text-[#8A8A8A]">
+                                      {proTrialLeft} left
+                                    </span>
+                                  )}
+                                </span>
+                              )}
                             </button>
                           );
                         })}

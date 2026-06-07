@@ -281,8 +281,10 @@ export interface AgentPlanInput {
 
 export type AgentStepResult =
   | { ok: true; step: AgentStep }
-  // Plain-language failure reason shown in the panel.
-  | { ok: false; error: string };
+  // Plain-language failure reason shown in the panel. `code`/`cap` are set
+  // for backend billing limits so the UI can show an upgrade card instead
+  // of a plain message.
+  | { ok: false; error: string; code?: BackendErrorCode; cap?: FeatureCap };
 
 // One step in a plan-first proposal: a forecast command the user reviews
 // before approving the whole plan.
@@ -317,7 +319,9 @@ export interface AgentFullPlan {
 
 export type AgentPlanAllResult =
   | { ok: true; plan: AgentFullPlan }
-  | { ok: false; error: string };
+  // `code`/`cap` are set for backend billing limits so the panel can render
+  // an upgrade card (Get Pro / switch to the free model) instead of plain text.
+  | { ok: false; error: string; code?: BackendErrorCode; cap?: FeatureCap };
 
 // ---- Recovery Vault -------------------------------------------------------
 // A trash-bin for AI deletions: when the agent deletes something, Verlox first
@@ -486,8 +490,9 @@ export type BackendErrorCode =
   | 'feature_capped';
 
 // Which free-tier feature cap was hit. Threaded on a 'feature_capped'
-// error so the UI can name the limit precisely.
-export type FeatureCap = 'images' | 'thinkMode';
+// error so the UI can name the limit precisely. 'proTrial' = the daily
+// free allowance of Pro-model messages (Sonnet/Opus/o3) is used up.
+export type FeatureCap = 'images' | 'thinkMode' | 'proTrial';
 
 // One free-tier feature cap (images/day, Plan Mode/month). `limit` is
 // null for Pro, meaning unlimited.
@@ -532,6 +537,8 @@ export interface UsageInfo {
   caps?: {
     images: UsageCap;
     thinkMode: UsageCap;
+    // Daily free Pro-model trial (Sonnet/Opus/o3). limit null for Pro.
+    proTrial?: UsageCap;
   };
   // Recent credit-ledger rows, newest first.
   events?: UsageEvent[];
