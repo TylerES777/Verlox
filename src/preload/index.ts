@@ -94,6 +94,15 @@ const api: IpcApi = {
     ipcRenderer.invoke(IpcChannels.AgentPlanStep, input),
   agentPlanAll: (input) =>
     ipcRenderer.invoke(IpcChannels.AgentPlanAll, input),
+  listOllama: () => ipcRenderer.invoke(IpcChannels.OllamaList),
+  getLocalModelStatus: () => ipcRenderer.invoke(IpcChannels.LocalModelStatus),
+  ensureLocalModel: () => ipcRenderer.invoke(IpcChannels.LocalModelEnsure),
+  cancelLocalModel: () => ipcRenderer.invoke(IpcChannels.LocalModelCancel),
+  onLocalModelStatus: (cb) => {
+    const handler = (_e: unknown, s: unknown) => cb(s as never);
+    ipcRenderer.on(IpcChannels.LocalModelStatusChanged, handler);
+    return () => ipcRenderer.removeListener(IpcChannels.LocalModelStatusChanged, handler);
+  },
   settingsGet: () => ipcRenderer.invoke(IpcChannels.SettingsGet),
   settingsAddProvider: (input) =>
     ipcRenderer.invoke(IpcChannels.SettingsAddProvider, input),

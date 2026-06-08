@@ -238,7 +238,46 @@ export interface AgentStepHistory {
 
 // Which brain runs a step: the Verlox account, or one of the user's own
 // custom providers (called directly from the user's machine).
-export type AgentEngine = 'verlox' | 'custom';
+// Which path serves a turn:
+//   verlox = the Verlox backend (credit-billed hosted models)
+//   custom = a user-added BYOK provider (OpenAI/Anthropic-compatible)
+//   ollama = a model the user pulled via Ollama (127.0.0.1:11434)
+//   local  = Verlox's BUNDLED llama.cpp 3B model running on a local port
+//            (auto-downloaded on first use, fully offline + free)
+export type AgentEngine = 'verlox' | 'custom' | 'ollama' | 'local';
+
+// Lifecycle state of the bundled local model. The renderer subscribes to
+// changes via IpcChannels.LocalModelStatusChanged and renders the download
+// progress card when state.kind is 'downloading' or 'unpacking' or
+// 'starting'. installed = both files exist on disk.
+export type LocalModelState =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'downloading'; what: 'binary' | 'weights'; bytes: number; total: number }
+  | { kind: 'unpacking' }
+  | { kind: 'starting' }
+  | { kind: 'ready'; port: number }
+  | { kind: 'error'; message: string };
+export interface LocalModelStatus {
+  state: LocalModelState;
+  installed: boolean;
+}
+
+// A locally-pulled Ollama model as reported by /api/tags.
+export interface OllamaModelInfo {
+  // Full tag the API accepts (e.g. "llama3.3:70b").
+  name: string;
+  sizeBytes: number;
+  paramSize: string | null;
+}
+
+// Probe result for the local Ollama runtime. `available: false` means the
+// daemon isn't running (or isn't installed) — the picker shows the install
+// prompt instead of an empty list.
+export interface OllamaProbeResult {
+  available: boolean;
+  models: OllamaModelInfo[];
+}
 
 // The wire format a custom provider speaks. Most services (OpenAI,
 // OpenRouter, Groq, Together, Google's compat endpoint, local Ollama /
@@ -957,6 +996,19 @@ export interface IpcApi {
   // agentPlanAll lays out the COMPLETE ordered plan upfront for one approval
   // (plan-first mode), instead of one step at a time.
   agentPlanAll: (input: AgentPlanInput) => Promise<AgentPlanAllResult>;
+  // Probe the local Ollama runtime (127.0.0.1:11434) for the user's pulled
+  // models. Resolves to {available:false} when Ollama isn't running.
+  listOllama: () => Promise<OllamaProbeResult>;
+  // Bundled local model (llama.cpp 3B). getStatus reads current state once;
+  // ensure kicks off the download/boot sequence (idempotent — concurrent
+  // calls share one job); onStatus subscribes to live updates and returns
+  // an unsubscribe function.
+  getLocalModelStatus: () => Promise<LocalModelStatus>;
+  ensureLocalModel: () => Promise<void>;
+  // Cancel any in-progress local-model download. Resolves once the abort
+  // has been requested; the status broadcast will land on { kind: 'idle' }.
+  cancelLocalModel: () => Promise<void>;
+  onLocalModelStatus: (cb: (s: LocalModelStatus) => void) => () => void;
   settingsGet: () => Promise<SettingsInfo>;
   // Set one capability's permission rule (always / ask / never).
   settingsSetPermission: (

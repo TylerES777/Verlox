@@ -12,6 +12,18 @@ import { planTurn } from './backend-client';
 import { getProvider, getProviderKey } from './settings-store';
 import { planAllAnthropic, planStepAnthropic, verifyAnthropic } from './agent-anthropic';
 import { planAllOpenAI, planStepOpenAI, verifyOpenAI } from './agent-openai';
+import { OLLAMA_OPENAI_BASE_URL } from './ollama';
+import { ensureReady as ensureLocalModelReady, localBaseUrl } from './local-model';
+
+// Both Ollama and the bundled llama.cpp server expose an OpenAI-compatible
+// /v1/chat/completions endpoint that ignores Authorization, so the existing
+// OpenAI adapter does the real work. Any non-empty token satisfies its API.
+const OLLAMA_DUMMY_KEY = 'ollama';
+const LOCAL_DUMMY_KEY = 'local';
+// The Llama 3.2 3B model id llama-server reports. The OpenAI adapter sends
+// `model` in the request body, but llama-server ignores it (it serves only
+// the loaded weights). Any non-empty string works.
+const LOCAL_MODEL_ID = 'llama-3.2-3b';
 
 // Routes a "what's the next step?" request to the right engine:
 //   - 'custom': call the chosen provider directly from this machine with the
@@ -40,6 +52,31 @@ function backendErrorMessage(code: BackendErrorCode): string {
 export async function planStep(
   input: AgentPlanInput,
 ): Promise<AgentStepResult> {
+  // --- Local Ollama path: OpenAI-compatible API at 127.0.0.1:11434 ---
+  if (input.engine === 'ollama') {
+    try {
+      const step = await planStepOpenAI(input, OLLAMA_DUMMY_KEY, input.model, OLLAMA_OPENAI_BASE_URL);
+      return { ok: true, step };
+    } catch (e) {
+      // Most likely cause: Ollama daemon stopped between the probe and the call.
+      return { ok: false, error: 'Ollama is not reachable. Make sure it is running and try again.' };
+    }
+  }
+
+  // --- Bundled local model: spin up llama.cpp on demand, then OpenAI-style. ---
+  if (input.engine === 'local') {
+    try {
+      await ensureLocalModelReady();
+      const base = localBaseUrl();
+      if (!base) throw new Error('Local model not ready.');
+      const step = await planStepOpenAI(input, LOCAL_DUMMY_KEY, LOCAL_MODEL_ID, base);
+      return { ok: true, step };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: `Local model: ${msg}` };
+    }
+  }
+
   // --- Custom provider path: call it directly ---
   if (input.engine === 'custom') {
     const provider = input.providerId ? getProvider(input.providerId) : undefined;
@@ -132,6 +169,30 @@ export async function planStep(
 // Plan-first: lay out the COMPLETE ordered plan in one call (for the approve-
 // the-whole-plan UI), instead of one step at a time.
 export async function planAll(input: AgentPlanInput): Promise<AgentPlanAllResult> {
+  // --- Local Ollama path: OpenAI-compatible API at 127.0.0.1:11434 ---
+  if (input.engine === 'ollama') {
+    try {
+      const plan = await planAllOpenAI(input, OLLAMA_DUMMY_KEY, input.model, OLLAMA_OPENAI_BASE_URL);
+      return { ok: true, plan };
+    } catch (e) {
+      return { ok: false, error: 'Ollama is not reachable. Make sure it is running and try again.' };
+    }
+  }
+
+  // --- Bundled local model: spin up llama.cpp on demand, then OpenAI-style. ---
+  if (input.engine === 'local') {
+    try {
+      await ensureLocalModelReady();
+      const base = localBaseUrl();
+      if (!base) throw new Error('Local model not ready.');
+      const plan = await planAllOpenAI(input, LOCAL_DUMMY_KEY, LOCAL_MODEL_ID, base);
+      return { ok: true, plan };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: `Local model: ${msg}` };
+    }
+  }
+
   // --- Custom provider path ---
   if (input.engine === 'custom') {
     const provider = input.providerId ? getProvider(input.providerId) : undefined;

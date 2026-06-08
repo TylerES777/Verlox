@@ -104,6 +104,19 @@ export const IpcChannels = {
   BackendSynthesizeCancel: 'backend:synthesize:cancel',
   BackendSynthesizeEvent: 'backend:synthesize:event',
   BackendGenerateDiagram: 'backend:generate-diagram',
+
+  // Local Ollama detection — renderer asks main to probe 127.0.0.1:11434
+  // and list pulled models. Calls themselves still route through the agent
+  // dispatcher (engine: 'ollama').
+  OllamaList: 'ollama:list',
+
+  // Bundled local model (llama.cpp 3B). The renderer subscribes to the
+  // status broadcast (downloads/boot/ready), kicks the lifecycle by calling
+  // LocalModelEnsure on first use, and tears it down on app quit.
+  LocalModelStatus: 'local-model:status',
+  LocalModelEnsure: 'local-model:ensure',
+  LocalModelCancel: 'local-model:cancel',
+  LocalModelStatusChanged: 'local-model:status:changed',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

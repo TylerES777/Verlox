@@ -76,6 +76,34 @@ body {
   background: transparent;
 }
 
+/* Picker scrollbar — a thinner, glass-feeling variant for the model menu.
+   Hidden until the user hovers the menu, then fades in. Sits flush at the
+   right edge instead of taking a 12px track gutter, so the row content
+   stays visually balanced. */
+.picker-scroll {
+  scrollbar-gutter: stable;
+}
+.picker-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.picker-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.picker-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 180ms ease;
+}
+.picker-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.18);
+}
+.picker-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.32);
+}
+
 /* Hide xterm's scrollbars — TerminalView renders a custom premium scrollbar
    that floats at the card's right edge instead of the text column. xterm 6
    has TWO: the native viewport scrollbar AND a VS Code-derived overlay

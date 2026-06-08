@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -12,6 +13,7 @@ import type {
   AgentStepHistory,
   AttachedImage,
   EnvironmentInfo,
+  LocalModelStatus,
   SettingsInfo,
 } from '@shared/types';
 import {
@@ -139,40 +141,73 @@ type AgentMessage =
       note: string | null;
     };
 
+// Which provider lab owns the model. Drives the small logo on each picker
+// row (replaces the old text "group" headers).
+type ModelProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'meta' | 'deepseek' | 'qwen' | 'ollama' | 'custom';
+
 interface Brain {
   id: string;
   label: string;
-  group: string;
+  // Visual grouping in the picker: 'free' / 'pro' / 'offline' (local Ollama)
+  // / 'custom' (BYOK).
+  tier: 'free' | 'pro' | 'offline' | 'custom';
+  // Which company makes the model — picks the logo on the right.
+  provider: ModelProvider;
   engine: AgentEngine;
   model: string;
   providerId?: string;
 }
 
-function buildBrains(s: SettingsInfo | null): Brain[] {
-  // Hosted models (credit-based). Anthropic runs direct; the GPT models are
-  // served via OpenRouter. The `model` value is the backend ModelChoice; the
-  // labels match the default OpenRouter model ids (swappable on the backend).
-  // Tier gating is enforced server-side: a free user who picks a Pro-only
-  // model (Sonnet, Opus, GPT reasoning) is served Haiku.
+function buildBrains(s: SettingsInfo | null, ollamaModels: { name: string }[] = []): Brain[] {
+  // Hosted models (credit-based). The `model` value is the backend
+  // ModelChoice; tier matches the backend registry (tier.ts minTier).
+  // Free at top, Pro below, BYOK ('custom') at the bottom.
   const list: Brain[] = [
-    { id: 'haiku', label: 'Haiku', group: 'Anthropic', engine: 'verlox', model: 'haiku' },
-    { id: 'sonnet', label: 'Sonnet', group: 'Anthropic', engine: 'verlox', model: 'sonnet' },
-    { id: 'opus', label: 'Opus', group: 'Anthropic', engine: 'verlox', model: 'opus' },
-    { id: 'gpt-mini', label: 'GPT-4o mini', group: 'OpenAI', engine: 'verlox', model: 'gpt-mini' },
-    { id: 'gpt', label: 'GPT-4o', group: 'OpenAI', engine: 'verlox', model: 'gpt' },
-    { id: 'gpt-reasoning', label: 'o3 (reasoning)', group: 'OpenAI', engine: 'verlox', model: 'gpt-reasoning' },
-    { id: 'gemini-flash', label: 'Gemini Flash', group: 'Google', engine: 'verlox', model: 'gemini-flash' },
-    { id: 'gemini', label: 'Gemini 2.5 Pro', group: 'Google', engine: 'verlox', model: 'gemini' },
-    { id: 'grok', label: 'Grok 4.3', group: 'xAI', engine: 'verlox', model: 'grok' },
-    { id: 'llama', label: 'Llama 3.3 70B', group: 'Open models', engine: 'verlox', model: 'llama' },
-    { id: 'deepseek', label: 'DeepSeek V3', group: 'Open models', engine: 'verlox', model: 'deepseek' },
-    { id: 'qwen', label: 'Qwen 2.5 72B', group: 'Open models', engine: 'verlox', model: 'qwen' },
+    // --- Free ---
+    { id: 'haiku', label: 'Haiku', tier: 'free', provider: 'anthropic', engine: 'verlox', model: 'haiku' },
+    { id: 'gpt-mini', label: 'GPT-4o mini', tier: 'free', provider: 'openai', engine: 'verlox', model: 'gpt-mini' },
+    { id: 'gpt', label: 'GPT-4o', tier: 'free', provider: 'openai', engine: 'verlox', model: 'gpt' },
+    { id: 'gemini-flash', label: 'Gemini Flash', tier: 'free', provider: 'google', engine: 'verlox', model: 'gemini-flash' },
+    { id: 'grok', label: 'Grok 4.3', tier: 'free', provider: 'xai', engine: 'verlox', model: 'grok' },
+    { id: 'llama', label: 'Llama 3.3 70B', tier: 'free', provider: 'meta', engine: 'verlox', model: 'llama' },
+    { id: 'deepseek', label: 'DeepSeek V3', tier: 'free', provider: 'deepseek', engine: 'verlox', model: 'deepseek' },
+    { id: 'qwen', label: 'Qwen 2.5 72B', tier: 'free', provider: 'qwen', engine: 'verlox', model: 'qwen' },
+    // --- Pro ---
+    { id: 'sonnet', label: 'Sonnet', tier: 'pro', provider: 'anthropic', engine: 'verlox', model: 'sonnet' },
+    { id: 'opus', label: 'Opus', tier: 'pro', provider: 'anthropic', engine: 'verlox', model: 'opus' },
+    { id: 'gpt-reasoning', label: 'o3 (reasoning)', tier: 'pro', provider: 'openai', engine: 'verlox', model: 'gpt-reasoning' },
+    { id: 'gemini', label: 'Gemini 2.5 Pro', tier: 'pro', provider: 'google', engine: 'verlox', model: 'gemini' },
   ];
+  // --- Offline (bundled): the always-present built-in Llama 3.2 3B. Picked,
+  //     downloaded (~2 GB) on first use, then served by a local llama-server
+  //     process. Zero credits, zero network at runtime. ---
+  list.push({
+    id: 'local:llama-3.2-3b',
+    label: 'Llama 3.2 3B (built-in)',
+    tier: 'offline',
+    provider: 'ollama',
+    engine: 'local',
+    model: 'llama-3.2-3b',
+  });
+  // --- Offline (local Ollama) — populated only when the daemon is detected
+  //     and has at least one pulled model. The 'model' is the Ollama tag the
+  //     OpenAI-compatible /v1/chat/completions endpoint expects verbatim. ---
+  for (const m of ollamaModels) {
+    list.push({
+      id: `ollama:${m.name}`,
+      label: m.name,
+      tier: 'offline',
+      provider: 'ollama',
+      engine: 'ollama',
+      model: m.name,
+    });
+  }
   for (const p of s?.providers ?? []) {
     list.push({
       id: `custom:${p.id}`,
       label: p.name,
-      group: 'Your providers',
+      tier: 'custom',
+      provider: 'custom',
       engine: 'custom',
       model: p.model,
       providerId: p.id,
@@ -181,14 +216,81 @@ function buildBrains(s: SettingsInfo | null): Brain[] {
   return list;
 }
 
-// The hosted model choices that are Pro-only: free users get a small daily
-// trial of these, then they lock and selection reverts to the default. Keep
-// in sync with the backend registry (tier.ts, minTier === 'pro').
-const PRO_MODELS = new Set(['sonnet', 'opus', 'gpt-reasoning']);
+// The hosted model choices that are Pro-only. Keep in sync with the backend
+// registry (tier.ts, minTier === 'pro') and the brain list above.
+const PRO_MODELS = new Set(['sonnet', 'opus', 'gpt-reasoning', 'gemini']);
+// Per-model credit cost surfaced in the picker's hover hint. Mirrors the
+// backend env defaults (config/env.ts); the backend is the source of truth
+// for billing, this is for display only. Update both together.
+const MODEL_CREDIT_COST: Record<string, number> = {
+  haiku: 1,
+  sonnet: 4,
+  opus: 6,
+  'gpt-mini': 1,
+  gpt: 4,
+  'gpt-reasoning': 8,
+  'gemini-flash': 1,
+  gemini: 4,
+  grok: 4,
+  llama: 1,
+  deepseek: 1,
+  qwen: 1,
+};
 // The free default model selection reverts to when the Pro trial is spent.
 const DEFAULT_FREE_BRAIN = 'haiku';
 function isProBrain(b: Brain): boolean {
   return b.engine === 'verlox' && PRO_MODELS.has(b.model);
+}
+
+// Real PNG logos for the providers the user supplied; clean inline SVG
+// fallback for the two they didn't (OpenAI, Google). Vite bundles the PNGs
+// from assets/providers/ and inlines them as data URLs at build time.
+import iconAnthropic from '../assets/providers/anthropic.png';
+import iconOpenAI from '../assets/providers/openai.png';
+import iconGoogle from '../assets/providers/google.png';
+import iconMeta from '../assets/providers/meta.png';
+import iconGrok from '../assets/providers/grok.png';
+import iconDeepSeek from '../assets/providers/deepseek.png';
+import iconQwen from '../assets/providers/qwen.png';
+
+const PROVIDER_PNGS: Partial<Record<ModelProvider, string>> = {
+  anthropic: iconAnthropic,
+  openai: iconOpenAI,
+  google: iconGoogle,
+  meta: iconMeta,
+  xai: iconGrok,
+  deepseek: iconDeepSeek,
+  qwen: iconQwen,
+};
+
+function ProviderIcon({ p }: { p: ModelProvider }) {
+  const png = PROVIDER_PNGS[p];
+  if (png) {
+    // Object-contain so a non-square logo doesn't get distorted by the 14px
+    // box. opacity-80 keeps the colored brands from shouting over the row.
+    return <img src={png} alt="" aria-hidden="true" className="h-3.5 w-3.5 flex-none object-contain opacity-80" />;
+  }
+  // Inline SVG for the two non-lab providers — every brand above is a real PNG.
+  const c = 'h-3 w-3 flex-none text-[#9A9DA5]';
+  if (p === 'custom') {
+    // Plug icon (BYOK).
+    return (
+      <svg viewBox="0 0 24 24" className={c} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0V8ZM12 16v5" />
+      </svg>
+    );
+  }
+  if (p === 'ollama') {
+    // Small home/box mark for local-on-device. Calm and abstract; swap for
+    // the official Ollama logo once we ship a PNG.
+    return (
+      <svg viewBox="0 0 24 24" className={c} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8Z" />
+        <path d="M10 20v-5h4v5" />
+      </svg>
+    );
+  }
+  return null;
 }
 
 function newId(): string {
@@ -480,7 +582,34 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   const modelRef = useRef<string>('sonnet');
   const providerIdRef = useRef<string | undefined>(undefined);
 
-  const brains = buildBrains(settings);
+  // Probe the local Ollama runtime once when the picker first matters, and
+  // again whenever the picker opens so freshly-pulled models show up without
+  // an app restart. `available:false` keeps the Install Ollama prompt visible.
+  const [ollama, setOllama] = useState<{ available: boolean; models: { name: string }[] }>(
+    { available: false, models: [] },
+  );
+  const probeOllamaNow = useCallback(() => {
+    window.api
+      .listOllama()
+      .then((r) => setOllama({ available: r.available, models: r.models }))
+      .catch(() => setOllama({ available: false, models: [] }));
+  }, []);
+  useEffect(() => {
+    probeOllamaNow();
+  }, [probeOllamaNow]);
+
+  // Bundled local model status (download / boot / ready). Subscribed once so
+  // the picker label, the modal, and the pickBrain handler all share one
+  // source of truth. Snapshotted via getLocalModelStatus() on mount so the
+  // installed=true case shows correctly even before the first broadcast.
+  const [localStatus, setLocalStatus] = useState<LocalModelStatus | null>(null);
+  useEffect(() => {
+    void window.api.getLocalModelStatus().then(setLocalStatus).catch(() => {});
+    const unsub = window.api.onLocalModelStatus((s) => setLocalStatus(s));
+    return () => unsub();
+  }, []);
+
+  const brains = buildBrains(settings, ollama.models);
   const selectedBrain = brains.find((b) => b.id === brainId) ?? brains[1];
 
   useEffect(() => {
@@ -1225,9 +1354,28 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     userPickedBrainRef.current = true;
     setBrainId(b.id);
     setBrainMenuOpen(false);
+    // Picking the bundled local model when it isn't downloaded yet kicks the
+    // install: ~30 MB binary + ~2 GB weights, with progress in the modal.
+    if (b.engine === 'local' && localStatus && !localStatus.installed) {
+      void window.api.ensureLocalModel();
+    }
   };
 
-  const groups = Array.from(new Set(brains.map((b) => b.group)));
+  // Picker categories in the order they render: Free, Pro, then Your providers
+  // (BYOK). Only include sections that actually have entries — a user with no
+  // custom providers doesn't see an empty "Your providers" header.
+  // Picker categories: Free → Pro → Offline → Your providers. The Offline
+  // section renders even when no models are listed, because the empty state
+  // is itself useful (an "Install Ollama" prompt). Custom/free/pro sections
+  // appear only when they have entries.
+  const pickerSections: Array<{ tier: 'free' | 'pro' | 'offline' | 'custom'; label: string }> = (
+    [
+      { tier: 'free', label: 'Free' },
+      { tier: 'pro', label: 'Pro' },
+      { tier: 'offline', label: 'Offline · local' },
+      { tier: 'custom', label: 'Your providers' },
+    ] as const
+  ).filter((s) => s.tier === 'offline' || brains.some((b) => b.tier === s.tier));
   // Show the conversation thread only when there's something to show, so the
   // panel stays a clean, calm input bar when idle (no manual collapse).
   const showThread = messages.length > 0 || thinking;
@@ -1853,6 +2001,10 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                     if (r) {
                       setBrainCoords({ left: r.left, bottom: window.innerHeight - r.top + 8 });
                     }
+                    // Re-probe Ollama every time the menu opens so freshly
+                    // pulled models (or a daemon the user just started) show
+                    // up without restarting the app. Probe is < 1.5s.
+                    probeOllamaNow();
                   }
                   setBrainMenuOpen((o) => !o);
                 }}
@@ -1890,21 +2042,67 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                     bottom: brainCoords.bottom,
                     zIndex: 50,
                   }}
-                  className="w-60 overflow-hidden rounded-xl border border-black/10 bg-white p-1 shadow-xl"
+                  className="flex w-60 flex-col overflow-hidden rounded-xl border border-black/10 bg-white shadow-xl"
                 >
-                  {groups.map((group) => (
-                    <div key={group}>
+                  {/* The model list scrolls inside a fixed-height panel so the
+                      menu doesn't grow taller than the bottom-anchored chat bar
+                      when many providers are listed. The "+ Add provider" row
+                      stays pinned at the bottom outside the scroll area. The
+                      top/bottom white-fade overlays cover content under the
+                      first/last visible row so a half-cropped model name reads
+                      as "more above/below" rather than a chopped cutoff. */}
+                  <div className="relative">
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-white via-white/95 to-transparent"
+                    />
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-white via-white/95 to-transparent"
+                    />
+                    <div className="picker-scroll max-h-[320px] overflow-y-auto p-1">
+                  {pickerSections.map((section) => (
+                    <div key={section.tier}>
                       <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-[#B0B0B0]">
-                        {group}
+                        {section.label}
                       </div>
+                      {/* Offline empty states: tell the user how to get models
+                          here. Two distinct copies so the next step is clear. */}
+                      {section.tier === 'offline' && ollama.models.length === 0 && (
+                        <div className="px-2.5 py-2 text-[11px] leading-relaxed text-[#8A8A8A]">
+                          {ollama.available ? (
+                            <span>
+                              No local models yet. Pull one with{' '}
+                              <span className="rounded bg-black/[0.05] px-1 py-px font-mono text-[10px] text-[#3A3A3A]">
+                                ollama pull llama3.3
+                              </span>
+                              .
+                            </span>
+                          ) : (
+                            <span>
+                              Install{' '}
+                              <a
+                                href="https://ollama.com/download"
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                className="underline decoration-[#B0B0B0] underline-offset-2 hover:text-[#3A3A3A]"
+                              >
+                                Ollama
+                              </a>{' '}
+                              to run models locally — free + private.
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {brains
-                        .filter((b) => b.group === group)
+                        .filter((b) => b.tier === section.tier)
                         .map((b) => {
                           const active = b.id === brainId;
                           // Free users see Pro models with a daily-trial badge,
                           // then a lock once the trial is spent.
                           const gated = isProBrain(b) && !isPro;
                           const locked = gated && proLocked;
+                          const credits = MODEL_CREDIT_COST[b.model];
                           return (
                             <button
                               key={b.id}
@@ -1917,7 +2115,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                                     : `Pro model — ${proTrialLeft} free ${proTrialLeft === 1 ? 'try' : 'tries'} left today`
                                   : undefined
                               }
-                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left ${
+                              className={`group/row relative flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left ${
                                 active ? 'bg-black/[0.05]' : 'hover:bg-black/[0.035]'
                               }`}
                             >
@@ -1931,10 +2129,32 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                               >
                                 {b.label}
                               </span>
-                              {gated && (
-                                <span className="ml-auto flex shrink-0 items-center text-[#B0B0B0]">
-                                  {locked ? (
-                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              {/* Right side: provider logo, plus (on Pro rows
+                                  for free users) the daily trial indicator —
+                                  "N left" while tries remain, a lock once
+                                  spent. On hover, the per-message credit cost
+                                  fades in just before the icons. */}
+                              <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                                {/* Hover hint: hosted models show their per-
+                                    message credit cost; local/BYOK models say
+                                    "free · local" or "your key" so users see
+                                    the cost story before they pick. */}
+                                <span className="font-mono text-[9.5px] text-[#8A8A8A] opacity-0 transition-opacity duration-150 group-hover/row:opacity-100">
+                                  {b.engine === 'local'
+                                    ? localStatus?.installed
+                                      ? 'free · on-device'
+                                      : 'download · 2 GB'
+                                    : b.engine === 'ollama'
+                                      ? 'free · local'
+                                      : b.engine === 'custom'
+                                        ? 'your key'
+                                        : credits !== undefined
+                                          ? `${credits} cr / msg`
+                                          : ''}
+                                </span>
+                                {gated && (
+                                  locked ? (
+                                    <svg className="h-3 w-3 text-[#B0B0B0]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                                       <rect x="3" y="11" width="18" height="11" rx="2" />
                                       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                     </svg>
@@ -1942,14 +2162,19 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                                     <span className="rounded-full bg-black/[0.05] px-1.5 py-0.5 font-mono text-[9px] text-[#8A8A8A]">
                                       {proTrialLeft} left
                                     </span>
-                                  )}
-                                </span>
-                              )}
+                                  )
+                                )}
+                                <ProviderIcon p={b.provider} />
+                              </span>
                             </button>
                           );
                         })}
                     </div>
                   ))}
+                  </div>
+                  </div>
+                  {/* Pinned footer — always visible regardless of scroll. */}
+                  <div className="border-t border-black/[0.06] p-1">
                   <button
                     type="button"
                     onClick={() => {
@@ -1958,10 +2183,131 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                       // hosts settings itself).
                       window.dispatchEvent(new Event('verlox:open-settings'));
                     }}
-                    className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] text-[#6A6A6A] hover:bg-black/[0.035]"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] text-[#6A6A6A] hover:bg-black/[0.035]"
                   >
                     ＋ Add an AI provider…
                   </button>
+                  </div>
+                </div>,
+                document.body,
+              )}
+            {/* Local-model install / boot modal. Visible whenever a busy
+                state is broadcast (downloading / unpacking / starting) or
+                there's an install error. Plain-language progress only — no
+                spinner, no percentage shouting; matches the calm aesthetic. */}
+            {localStatus &&
+              (localStatus.state.kind === 'downloading' ||
+                localStatus.state.kind === 'unpacking' ||
+                localStatus.state.kind === 'starting' ||
+                localStatus.state.kind === 'error') &&
+              createPortal(
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm">
+                  <div className="w-[420px] max-w-[92vw] rounded-2xl border border-black/10 bg-white p-6 shadow-2xl">
+                    <p className="text-[13px] font-semibold text-[#2A2A2A]">
+                      {(() => {
+                        const s = localStatus.state;
+                        if (s.kind === 'downloading')
+                          return s.what === 'binary'
+                            ? 'Downloading model runtime'
+                            : 'Downloading Llama 3.2 3B';
+                        if (s.kind === 'unpacking') return 'Unpacking model runtime';
+                        if (s.kind === 'starting') return 'Starting the local model';
+                        return 'Local model setup failed';
+                      })()}
+                    </p>
+                    {localStatus.state.kind === 'downloading' && (
+                      <>
+                        {(() => {
+                          const s = localStatus.state;
+                          const pct =
+                            s.total > 0 ? Math.min(100, Math.floor((s.bytes / s.total) * 100)) : 0;
+                          const mb = (n: number) => (n / 1048576).toFixed(0);
+                          return (
+                            <>
+                              <p className="mt-2 font-mono text-[11.5px] text-[#6A6A6A]">
+                                {s.total > 0
+                                  ? `${mb(s.bytes)} of ${mb(s.total)} MB · ${pct}%`
+                                  : `${mb(s.bytes)} MB`}
+                              </p>
+                              <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-black/[0.06]">
+                                <div
+                                  className="h-full rounded-full bg-[#15161A] transition-[width] duration-150"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                              <p className="mt-3 text-[11.5px] leading-relaxed text-[#8A8A8A]">
+                                One-time download. The model then runs entirely on
+                                your machine — no network, no credits.
+                              </p>
+                              {/* Cancel: abort the stream, drop the partial
+                                  file, and revert the selection back to the
+                                  free default so the user isn't stranded on
+                                  a model they just stopped installing. */}
+                              <div className="mt-4 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void window.api.cancelLocalModel();
+                                    setBrainId(DEFAULT_FREE_BRAIN);
+                                  }}
+                                  className="rounded-lg border border-black/10 px-3 py-1.5 text-[12px] text-[#3A3A3A] hover:bg-black/5"
+                                >
+                                  Cancel download
+                                </button>
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </>
+                    )}
+                    {localStatus.state.kind === 'unpacking' && (
+                      <p className="mt-3 text-[11.5px] leading-relaxed text-[#8A8A8A]">
+                        Almost there — finishing the runtime install.
+                      </p>
+                    )}
+                    {localStatus.state.kind === 'starting' && (
+                      <p className="mt-3 text-[11.5px] leading-relaxed text-[#8A8A8A]">
+                        Loading the model into memory. This takes about 10 seconds
+                        the first time.
+                      </p>
+                    )}
+                    {localStatus.state.kind === 'error' && (
+                      <>
+                        <p className="mt-2 text-[12px] leading-relaxed text-[#B04A43]">
+                          {localStatus.state.message}
+                        </p>
+                        <div className="mt-3 flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Switch back to a hosted model AND dismiss the
+                              // error (the modal stays visible until state
+                              // leaves 'error' — cancelLocalModel resets it).
+                              setBrainId(DEFAULT_FREE_BRAIN);
+                              void window.api.cancelLocalModel();
+                            }}
+                            className="rounded-lg border border-black/10 px-3 py-1.5 text-[12px] text-[#3A3A3A] hover:bg-black/5"
+                          >
+                            Use a hosted model
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              // Clear the error first so the modal shows the
+                              // download / starting state cleanly when the
+                              // retry kicks off — otherwise it'd briefly
+                              // re-show the same error message.
+                              await window.api.cancelLocalModel();
+                              void window.api.ensureLocalModel();
+                            }}
+                            className="rounded-lg bg-[#15161A] px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90"
+                          >
+                            Try again
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>,
                 document.body,
               )}

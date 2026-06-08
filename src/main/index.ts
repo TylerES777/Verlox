@@ -52,6 +52,14 @@ import {
   sqlQuery,
 } from './sql-manager';
 import { planAll, planStep, verifyProvider } from './agent';
+import { probeOllama } from './ollama';
+import {
+  ensureReady as ensureLocalModelReady,
+  getStatus as getLocalModelStatus,
+  subscribe as subscribeLocalModel,
+  shutdown as shutdownLocalModel,
+  cancel as cancelLocalModel,
+} from './local-model';
 import {
   captureDeletions,
   forgetVault,
@@ -279,6 +287,29 @@ ipcMain.handle(IpcChannels.AgentPlanStep, (_e, input: AgentPlanInput) =>
 ipcMain.handle(IpcChannels.AgentPlanAll, (_e, input: AgentPlanInput) =>
   planAll(input),
 );
+// Probe the local Ollama runtime so the renderer can list pulled models.
+ipcMain.handle(IpcChannels.OllamaList, () => probeOllama());
+
+// Bundled local model lifecycle (llama.cpp 3B).
+ipcMain.handle(IpcChannels.LocalModelStatus, () => getLocalModelStatus());
+ipcMain.handle(IpcChannels.LocalModelEnsure, async () => {
+  // Fire and forget — the renderer learns of progress via the status stream.
+  // Swallow rejections here so an IPC call doesn't surface an unhandled
+  // promise; the error already flows through setState({kind:'error'}).
+  try {
+    await ensureLocalModelReady();
+  } catch {
+    /* status broadcast already carries the error */
+  }
+});
+ipcMain.handle(IpcChannels.LocalModelCancel, () => cancelLocalModel());
+// Each window subscribes once at mount; main forwards every state change.
+app.on('browser-window-created', (_e, win) => {
+  const unsub = subscribeLocalModel((s) => {
+    if (!win.isDestroyed()) win.webContents.send(IpcChannels.LocalModelStatusChanged, s);
+  });
+  win.on('closed', unsub);
+});
 ipcMain.handle(IpcChannels.SettingsGet, (): SettingsInfo => settingsInfo());
 ipcMain.handle(
   IpcChannels.SettingsAddProvider,
@@ -495,6 +526,8 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   killAllSync();
   killAllPtys();
+  // Tear down the bundled llama.cpp server so it doesn't linger in Task Manager.
+  shutdownLocalModel();
 });
 
 app.on('window-all-closed', () => {
