@@ -24,6 +24,7 @@ import {
 import { CopyButton } from './CopyButton';
 import { lineDiff, type DiffLine } from '../lib/lineDiff';
 import { snapshotTerminals } from '../lib/terminalRegistry';
+import { formatResets } from '../lib/credits';
 import { registerProcess } from '../hooks/useRunningProcesses';
 import { createPortal } from 'react-dom';
 import { PathPicker, type PathSelection } from './PathPicker';
@@ -154,12 +155,18 @@ function buildBrains(s: SettingsInfo | null): Brain[] {
   // Tier gating is enforced server-side: a free user who picks a Pro-only
   // model (Sonnet, Opus, GPT reasoning) is served Haiku.
   const list: Brain[] = [
-    { id: 'haiku', label: 'Haiku', group: 'Verlox', engine: 'verlox', model: 'haiku' },
-    { id: 'sonnet', label: 'Sonnet', group: 'Verlox', engine: 'verlox', model: 'sonnet' },
-    { id: 'opus', label: 'Opus', group: 'Verlox', engine: 'verlox', model: 'opus' },
-    { id: 'gpt-mini', label: 'GPT-4o mini', group: 'Verlox', engine: 'verlox', model: 'gpt-mini' },
-    { id: 'gpt', label: 'GPT-4o', group: 'Verlox', engine: 'verlox', model: 'gpt' },
-    { id: 'gpt-reasoning', label: 'o3 (reasoning)', group: 'Verlox', engine: 'verlox', model: 'gpt-reasoning' },
+    { id: 'haiku', label: 'Haiku', group: 'Anthropic', engine: 'verlox', model: 'haiku' },
+    { id: 'sonnet', label: 'Sonnet', group: 'Anthropic', engine: 'verlox', model: 'sonnet' },
+    { id: 'opus', label: 'Opus', group: 'Anthropic', engine: 'verlox', model: 'opus' },
+    { id: 'gpt-mini', label: 'GPT-4o mini', group: 'OpenAI', engine: 'verlox', model: 'gpt-mini' },
+    { id: 'gpt', label: 'GPT-4o', group: 'OpenAI', engine: 'verlox', model: 'gpt' },
+    { id: 'gpt-reasoning', label: 'o3 (reasoning)', group: 'OpenAI', engine: 'verlox', model: 'gpt-reasoning' },
+    { id: 'gemini-flash', label: 'Gemini Flash', group: 'Google', engine: 'verlox', model: 'gemini-flash' },
+    { id: 'gemini', label: 'Gemini 2.5 Pro', group: 'Google', engine: 'verlox', model: 'gemini' },
+    { id: 'grok', label: 'Grok 4.3', group: 'xAI', engine: 'verlox', model: 'grok' },
+    { id: 'llama', label: 'Llama 3.3 70B', group: 'Open models', engine: 'verlox', model: 'llama' },
+    { id: 'deepseek', label: 'DeepSeek V3', group: 'Open models', engine: 'verlox', model: 'deepseek' },
+    { id: 'qwen', label: 'Qwen 2.5 72B', group: 'Open models', engine: 'verlox', model: 'qwen' },
   ];
   for (const p of s?.providers ?? []) {
     list.push({
@@ -1353,9 +1360,32 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                   // Billing limit → a clean card: Get Pro, or switch to the
                   // free default model. Replaces the old plain-text message.
                   if (m.kind === 'limit') {
-                    const isProTrial = m.reason === 'proTrial';
                     const dismiss = () =>
                       setMessages((p) => p.filter((x) => x.id !== m.id));
+                    const isProTrial = m.reason === 'proTrial';
+                    const remaining = usage?.remaining ?? 0;
+                    // Three cases, in priority order:
+                    //  1. Out of credits entirely → "no more credits until X"
+                    //     (most important — wins even if the model was also
+                    //     unaffordable, since nothing runs regardless).
+                    //  2. Credits left but not enough for THIS model → suggest a
+                    //     cheaper one.
+                    //  3. Daily Pro trial used up → reverted to the free model.
+                    const outOfCredits = !isProTrial && remaining <= 0;
+                    const resetPhrase = formatResets(usage?.resetsAt);
+                    const title = isProTrial
+                      ? 'Daily Pro limit reached'
+                      : outOfCredits
+                        ? "You're out of credits"
+                        : 'Not enough credits for this model';
+                    const body = isProTrial
+                      ? `You've used your ${proTrialCap?.limit ?? 4} free Pro-model messages today, so you're back on the free model. Upgrade to keep using Sonnet, Opus, and o3.`
+                      : outOfCredits
+                        ? `You've used all your credits for now. You'll get more ${resetPhrase}. Upgrade to Pro for a much larger allowance.`
+                        : `You have ${remaining} credit${remaining === 1 ? '' : 's'} left, and this model costs more than that. Switch to a cheaper model like Haiku, or upgrade to Pro.`;
+                    // Switching to the free model only helps when there's at
+                    // least 1 credit to spend (Haiku costs 1) or the trial is up.
+                    const showSwitch = isProTrial || !outOfCredits;
                     return (
                       <div key={m.id} className="max-w-[90%]">
                         <div className="rounded-2xl border border-black/10 bg-white p-4 shadow-sm">
@@ -1366,15 +1396,9 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                               </svg>
                             </span>
-                            <p className="text-[13px] font-semibold text-[#2A2A2A]">
-                              {isProTrial ? 'Daily Pro limit reached' : "You're out of credits"}
-                            </p>
+                            <p className="text-[13px] font-semibold text-[#2A2A2A]">{title}</p>
                           </div>
-                          <p className="mt-2 text-[12.5px] leading-relaxed text-[#6A6A6A]">
-                            {isProTrial
-                              ? `You've used your ${proTrialCap?.limit ?? 4} free Pro-model messages today, so you're back on the free model. Upgrade to keep using Sonnet, Opus, and o3.`
-                              : "You've used your credits for this period. Upgrade to Pro for a much larger allowance, or wait for your next refill."}
-                          </p>
+                          <p className="mt-2 text-[12.5px] leading-relaxed text-[#6A6A6A]">{body}</p>
                           <div className="mt-3 flex gap-2">
                             <button
                               type="button"
@@ -1388,12 +1412,12 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                             <button
                               type="button"
                               onClick={() => {
-                                if (isProTrial) setBrainId(DEFAULT_FREE_BRAIN);
+                                if (showSwitch) setBrainId(DEFAULT_FREE_BRAIN);
                                 dismiss();
                               }}
                               className="rounded-lg border border-black/10 px-3 py-1.5 text-[12px] font-medium text-[#3A3A3A] hover:bg-black/5"
                             >
-                              {isProTrial ? 'Switch to free model' : 'Got it'}
+                              {showSwitch ? 'Switch to free model' : 'Got it'}
                             </button>
                           </div>
                         </div>

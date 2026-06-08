@@ -652,7 +652,13 @@ export type ModelChoice =
   | 'opus'
   | 'gpt'
   | 'gpt-mini'
-  | 'gpt-reasoning';
+  | 'gpt-reasoning'
+  | 'gemini-flash'
+  | 'gemini'
+  | 'grok'
+  | 'llama'
+  | 'deepseek'
+  | 'qwen';
 
 export interface TurnInput {
   userInput: string;
