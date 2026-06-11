@@ -1,11 +1,31 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Shell } from '@shared/types';
 import { AgentPanel } from './AgentPanel';
+import { CopyButton } from './CopyButton';
 import { registerTerminal, unregisterTerminal } from '../lib/terminalRegistry';
 import { finalizeProcess, registerProcess } from '../hooks/useRunningProcesses';
+import {
+  applyBlockEvents,
+  BlockStreamParser,
+  type TerminalBlockData,
+} from '../lib/terminalBlocks';
+
+// Raw shows the live xterm surface; Blocks slices the same stream into
+// Warp-style command/output cards. Persisted globally — if you prefer
+// blocks, you prefer them in every tab and every session.
+type OutputMode = 'raw' | 'blocks';
+const OUTPUT_MODE_KEY = 'verlox-output-mode';
+
+function loadOutputMode(): OutputMode {
+  try {
+    return localStorage.getItem(OUTPUT_MODE_KEY) === 'blocks' ? 'blocks' : 'raw';
+  } catch {
+    return 'raw';
+  }
+}
 
 interface TerminalViewProps {
   // The owning tab's id. Doubles as the PTY session key, so input, output,
@@ -71,6 +91,55 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
     topPct: 0,
     heightPct: 0,
   });
+
+  // Raw vs Blocks output. Blocks accrue from terminal mount regardless of
+  // the visible mode, so toggling later shows the history since open (the
+  // parser can't reconstruct scrollback it never saw).
+  const [mode, setMode] = useState<OutputMode>(loadOutputMode);
+  const [blocks, setBlocks] = useState<TerminalBlockData[]>([]);
+  const [pendingLine, setPendingLine] = useState('');
+
+  const switchMode = (next: OutputMode) => {
+    setMode(next);
+    try {
+      localStorage.setItem(OUTPUT_MODE_KEY, next);
+    } catch {
+      /* private mode etc. — preference just won't stick */
+    }
+    if (next === 'raw') {
+      // The xterm box was visually hidden (opacity 0, geometry intact), so
+      // a fit is cheap insurance and the scroll position snaps to live.
+      requestAnimationFrame(() => {
+        try {
+          fitRef.current?.fit();
+        } catch {
+          /* hidden-measure race — next resize refits */
+        }
+        termRef.current?.scrollToBottom();
+        termRef.current?.focus();
+      });
+    }
+  };
+
+  // Second, independent tap on the PTY stream (xterm keeps its own). The
+  // parser slices bytes into block events; state updates batch per chunk.
+  useEffect(() => {
+    const parser = new BlockStreamParser();
+    let lastPending = '';
+    const off = window.api.onPtyData((event) => {
+      if (event.id !== id) return;
+      const events = parser.feed(event.data);
+      if (events.length > 0) {
+        const now = Date.now();
+        setBlocks((prev) => applyBlockEvents(prev, events, now));
+      }
+      if (parser.pending !== lastPending) {
+        lastPending = parser.pending;
+        setPendingLine(parser.pending);
+      }
+    });
+    return off;
+  }, [id]);
 
   const onScrollbarThumbDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -405,25 +474,44 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
           </span>
           <span className="text-[11px] font-medium text-ink-hint">Terminal</span>
         </div>
-        <OutputModeToggle />
+        <OutputModeToggle mode={mode} onChange={switchMode} />
       </div>
 
       {/* The outer box owns the padding + width cap; the INNER box is the
           xterm mount and carries NO padding, so FitAddon measures a clean box
           and fits the rows exactly — no clipped/unreachable last line. The
           large bottom padding keeps the live prompt above the floating chat
-          panel (collapsed), so what you type is never cut off by it. */}
-      <div className="min-h-0 w-full max-w-[900px] flex-1 overflow-hidden px-4 pb-24 pt-3">
+          panel (collapsed), so what you type is never cut off by it.
+          In Blocks mode the xterm box stays mounted at full size (it keeps
+          consuming the PTY stream, and hiding via opacity rather than
+          display:none keeps FitAddon's geometry valid) with BlocksView
+          layered over it. */}
+      <div className="relative min-h-0 w-full flex-1">
         <div
-          ref={hostRef}
-          onMouseDown={() => termRef.current?.focus()}
-          className="h-full w-full overflow-hidden"
-        />
+          aria-hidden={mode === 'blocks'}
+          className={`h-full w-full max-w-[900px] overflow-hidden px-4 pb-24 pt-3 ${
+            mode === 'blocks' ? 'pointer-events-none opacity-0' : ''
+          }`}
+        >
+          <div
+            ref={hostRef}
+            onMouseDown={() => termRef.current?.focus()}
+            className="h-full w-full overflow-hidden"
+          />
+        </div>
+        {mode === 'blocks' && (
+          <BlocksView
+            terminalId={id}
+            blocks={blocks}
+            pendingLine={pendingLine}
+          />
+        )}
       </div>
 
       {/* Custom premium scrollbar — floats at the card's right edge (not the
-          text-column edge) and mirrors the terminal's scroll. */}
-      {sb.visible && (
+          text-column edge) and mirrors the terminal's scroll. Raw mode only;
+          BlocksView scrolls natively. */}
+      {sb.visible && mode === 'raw' && (
         <div
           ref={scrollbarTrackRef}
           className="absolute right-1.5 top-11 bottom-3 z-[7] w-1.5"
@@ -444,29 +532,179 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
   );
 }
 
-// Raw vs AI output toggle. Raw shows the shell's real output; AI (when its
-// pipeline is wired) explains each command's output in plain English instead,
-// leaving commands that need live interaction untouched.
-// Raw vs AI output. The AI-explains-output pipeline isn't wired yet, so the
-// whole control is locked with a "Soon" tag until it ships.
-function OutputModeToggle() {
+// Raw vs Blocks output toggle. Raw is the live xterm surface; Blocks slices
+// the same stream into one card per command (Warp-style). A future AI mode
+// (explain each command's output in plain English) can join as a third pill.
+function OutputModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: OutputMode;
+  onChange: (mode: OutputMode) => void;
+}) {
+  const pill = (m: OutputMode, label: string) => (
+    <button
+      type="button"
+      onClick={() => onChange(m)}
+      aria-pressed={mode === m}
+      className={`rounded-full px-2.5 py-0.5 transition-colors ${
+        mode === m
+          ? 'bg-[#15161A] text-white'
+          : 'text-ink-hint hover:text-[#3A3A3A]'
+      }`}
+    >
+      {label}
+    </button>
+  );
   return (
     <div
-      className="flex cursor-default select-none items-center gap-1.5 rounded-full border border-hairline bg-surface-subtle px-2.5 py-0.5 text-[10.5px] font-medium text-ink-hint"
       role="group"
-      aria-label="Output mode (coming soon)"
-      title="Raw / AI output — coming soon"
+      aria-label="Output mode"
+      className="flex select-none items-center gap-0.5 rounded-full border border-hairline bg-white p-0.5 text-[10.5px] font-medium"
     >
-      <span>Raw</span>
-      <span aria-hidden="true" className="text-ink-micro">
-        ·
-      </span>
-      <span className="flex items-center gap-0.5">
-        <span aria-hidden="true">✦</span>AI
-      </span>
-      <span className="ml-0.5 rounded-full bg-black/[0.06] px-1.5 py-px text-[8.5px] font-semibold uppercase tracking-wide text-ink-micro">
-        Soon
-      </span>
+      {pill('raw', 'Raw')}
+      {pill('blocks', 'Blocks')}
+    </div>
+  );
+}
+
+// The Blocks view: every command the shell ran since this tab opened, one
+// card each, newest at the bottom, with a command bar that types into the
+// same PTY. Reading is the point; the Raw view stays a toggle away for
+// full-fidelity scrollback and interactive CLIs (vim, REPLs).
+function BlocksView({
+  terminalId,
+  blocks,
+  pendingLine,
+}: {
+  terminalId: string;
+  blocks: TerminalBlockData[];
+  pendingLine: string;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [draft, setDraft] = useState('');
+
+  // Stick to the bottom while new output streams in, unless the user has
+  // scrolled up to read something (then leave them alone).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [blocks, pendingLine]);
+
+  const send = (e: FormEvent) => {
+    e.preventDefault();
+    const cmd = draft.trim();
+    if (!cmd) return;
+    window.api.ptyInput({ id: terminalId, data: `${cmd}\r` });
+    setDraft('');
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    // Ctrl+C with nothing typed interrupts the running command, same as a
+    // real terminal. With a draft present, let the browser copy/clear it.
+    if (e.ctrlKey && e.key === 'c' && draft === '') {
+      e.preventDefault();
+      window.api.ptyInput({ id: terminalId, data: '\x03' });
+    }
+  };
+
+  const running = blocks.length > 0 && blocks[blocks.length - 1].endedAt === null;
+  const fmtTime = (ms: number) =>
+    new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+  return (
+    <div className="absolute inset-0 flex flex-col">
+      <div ref={scrollRef} className="min-h-0 w-full max-w-[900px] flex-1 overflow-y-auto px-4 pt-3">
+        {blocks.length === 0 && (
+          <p className="mt-8 text-center text-[12.5px] text-ink-hint">
+            Each command you run becomes a block here, with its output and a
+            copy button. Run something below to start.
+          </p>
+        )}
+        <div className="space-y-2.5 pb-3">
+          {blocks.map((b) => {
+            const isRunning = b.endedAt === null;
+            const output = b.lines.join('\n');
+            return (
+              <div
+                key={b.id}
+                className="group overflow-hidden rounded-xl border border-hairline bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)]"
+              >
+                <div className="flex items-center gap-2 border-b border-hairline bg-surface-subtle px-3 py-1.5">
+                  <span aria-hidden="true" className="font-mono text-[12px] text-[#3E7A53]">
+                    ❯
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-medium text-[#3A3A3A]">
+                    {b.command}
+                  </span>
+                  {isRunning ? (
+                    <>
+                      <span className="font-mono text-[10px] text-amber-600">running</span>
+                      <button
+                        type="button"
+                        onClick={() => window.api.ptyInput({ id: terminalId, data: '\x03' })}
+                        className="rounded-md border border-hairline px-2 py-0.5 text-[10px] font-medium text-ink-hint hover:text-[#3A3A3A]"
+                      >
+                        Stop
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-mono text-[10px] text-ink-micro">
+                        {fmtTime(b.startedAt)}
+                      </span>
+                      <span className="opacity-0 transition-opacity group-hover:opacity-100">
+                        <CopyButton
+                          text={output || b.command}
+                          variant="inline"
+                          label="Copy"
+                        />
+                      </span>
+                    </>
+                  )}
+                </div>
+                {(output || isRunning || !b.truncated) && (
+                  <div className="max-h-72 overflow-y-auto px-3 py-2 font-mono text-[12px] leading-[1.55] text-[#3A3A3A]">
+                    {b.truncated && (
+                      <p className="text-ink-micro">… earlier output trimmed</p>
+                    )}
+                    {output ? (
+                      <pre className="whitespace-pre-wrap break-words font-mono">{output}</pre>
+                    ) : !isRunning ? (
+                      <span className="text-ink-micro">(no output)</span>
+                    ) : null}
+                    {isRunning && pendingLine && (
+                      <p className="whitespace-pre-wrap break-words text-ink-hint">{pendingLine}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Command bar — types into the same shell the Raw view shows. The
+          bottom margin keeps it above the floating chat panel. */}
+      <form onSubmit={send} className="w-full max-w-[900px] px-4 pb-24 pt-1">
+        <div className="flex items-center gap-2 rounded-xl border border-subtle-border bg-white px-3 py-2 shadow-[0_1px_2px_rgba(16,24,40,0.06)]">
+          <span aria-hidden="true" className="font-mono text-[13px] text-[#3E7A53]">
+            ❯
+          </span>
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={running ? 'A command is running. Ctrl+C interrupts it.' : 'Run a command'}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoComplete="off"
+            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-[#3A3A3A] outline-none placeholder:text-ink-micro"
+          />
+        </div>
+      </form>
     </div>
   );
 }
