@@ -1,20 +1,22 @@
 # Verlox
 
-**The AI terminal that won't ruin your projects.**
+**Git for AI actions in your terminal.**
+
+*Never lose track of what your AI changed.*
 
 [verlox.app](https://www.verlox.app) · [Download for Windows](https://github.com/TylerES777/Verlox/releases/latest/download/Verlox-Setup.exe) · [Changelog](https://www.verlox.app/changelog)
 
-Verlox is an AI terminal for Windows with eleven models built in plus one that runs entirely offline. Every command the AI proposes is planned, risk-scored, and waiting for your approval, with one-click undo on anything it changes. Move fast. Keep your projects intact.
+Verlox is the AI terminal ledger for Windows that records, explains, and reverses every action across eleven hosted models plus a built-in offline one. After any AI session it can tell you what changed, when, why, which AI did it, and how to undo it. AI moves fast. Verlox keeps the record.
 
 ![Verlox screenshot](https://www.verlox.app/og.png)
 
 ## Why this exists
 
-Most AI terminals run first and ask questions later. You find out what broke afterward, and recovery means git, your memory, or luck.
+AI agents are getting more capable, which means more actions, more changes, and more "wait, which AI did that?" moments. Each tool tracks only its own AI: Claude Code guards Claude, Cursor guards itself, Warp runs commands fast and doesn't keep a record at all. There is no shared timeline of what happened to your project.
 
-Verlox flips that. You see a numbered plan with the exact commands and a risk score on every step *before* anything runs. Risky things (deletes, force-pushes, production access) stop and ask. Anything the AI deletes or overwrites is saved to a Recovery Vault and restorable with one click.
+Verlox is that timeline. Every command becomes a numbered plan with the real commands, a reason on each step, and a risk score before anything runs. Every action is logged. Every change stays reversible. The record is the same whether you used Claude, GPT, Gemini, Grok, or the built-in offline model.
 
-Same speed as letting AI rip. None of the regret.
+One ledger. Every AI. Your terminal.
 
 ## What's inside
 
@@ -31,7 +33,7 @@ Pick the right model from a single menu, all credit-billed (or free for the offl
 - **Ollama integration**: auto-detects any model you've pulled via Ollama.
 - **BYOK**: paste your own OpenAI or Anthropic API key, calls go direct from your machine.
 
-### The safety layer
+### The control layer
 
 - **Approval plans**: every request becomes a numbered plan with the real commands and the files they will touch.
 - **Risk scoring**: low for reads, medium for installs and edits, high for deletes and force-pushes. The risky steps always stop and ask.
@@ -50,7 +52,7 @@ Pick the right model from a single menu, all credit-billed (or free for the offl
 
 ## Pricing
 
-- **Free**: 8 fast models, 15 credits a day, daily trial of the flagship Pro models, the built-in offline model, and the full safety layer (plans, risk scoring, permissions, 24-hour Recovery Vault).
+- **Free**: 8 fast models, 15 credits a day, daily trial of the flagship Pro models, the built-in offline model, and the full control layer (plans, risk scoring, permissions, 24-hour Recovery Vault).
 - **Pro · $15/mo**: Sonnet, Opus, o3, Gemini 2.5 Pro, 500 credits a week, Sandbox dry-run with diffs, full Timeline replay, Recovery Vault kept 7 days or forever, generous image uploads.
 
 Cancel any time from the Stripe customer portal.
@@ -67,9 +69,9 @@ macOS and Linux are not yet available. They're on the roadmap.
 
 | | Other AI terminals | Verlox |
 |---|---|---|
-| Execution | Run first, ask questions later | Every step planned and risk-scored first |
-| Visibility | You find out what broke afterward | You see exactly what will change |
-| Recovery | git, your memory, or luck | One-click restore on anything deleted |
+| Record across every AI | Each tool tracks its own model only | One ledger across all of them |
+| The "why" | Not stored | A reason on every step, kept on file |
+| Recovery | git, your memory, or luck | One-click reverse on any change |
 | Model choice | Usually one provider | Eleven hosted models, one offline, BYOK |
 | Offline | No | Built-in offline model |
 
