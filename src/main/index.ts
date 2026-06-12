@@ -114,9 +114,10 @@ function createWindow(): void {
     // where this bar used to be (see ConversationsShell).
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      // Match the renderer's title strip (bg-canvas) so the native window
-      // controls blend in instead of sitting on a white block.
-      color: '#F2F3F5',
+      // The app surface is pure white now (the chat panel sits under this
+      // corner), so the native controls blend into it instead of floating
+      // on a grey block.
+      color: '#FFFFFF',
       symbolColor: '#3A3A3A',
       height: 40,
     },

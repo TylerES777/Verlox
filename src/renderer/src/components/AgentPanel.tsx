@@ -120,8 +120,13 @@ type PlanMessage = {
   simulated: boolean;
 };
 
+// A terminal block attached to a chat turn ("Fix this" / "Ask about this").
+// Identifies the exact block instance — command + when it ran — so two runs
+// of the same command never blur together.
+type BlockRef = { command: string; failed: boolean; time: string };
+
 type AgentMessage =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; blockRef?: BlockRef }
   | { kind: 'assistant'; id: string; text: string }
   // A billing limit was hit: show an upgrade card instead of plain text.
   // 'credits' = out of credits this period; 'proTrial' = the daily free
@@ -495,6 +500,14 @@ function PlanStepRow({
 export function AgentPanel({ terminalId }: AgentPanelProps) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [input, setInput] = useState('');
+  // Terminal block staged as context for the next message (set by a block's
+  // Fix this / Ask about this chip; cleared on send or via its ✕).
+  const [blockCtx, setBlockCtx] = useState<{
+    command: string;
+    output: string;
+    failed: boolean;
+    time: string;
+  } | null>(null);
   const [running, setRunning] = useState(false);
   const [thinking, setThinking] = useState(false);
   // Hover/focus drive the bar open; otherwise it sits closed (compact).
@@ -611,6 +624,18 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
 
   const brains = buildBrains(settings, ollama.models);
   const selectedBrain = brains.find((b) => b.id === brainId) ?? brains[1];
+
+  // Persisted so block cards (TerminalView) can show the model and run their
+  // own in-block "Explain" call with the same brain the chat uses.
+  useEffect(() => {
+    try {
+      localStorage.setItem('verlox-brain-label', selectedBrain.label);
+      localStorage.setItem('verlox-brain-provider', selectedBrain.provider);
+      localStorage.setItem('verlox-brain-engine', selectedBrain.engine);
+      localStorage.setItem('verlox-brain-model', selectedBrain.model);
+      localStorage.setItem('verlox-brain-provider-id', selectedBrain.providerId ?? '');
+    } catch {}
+  }, [selectedBrain]);
 
   useEffect(() => {
     void (async () => {
@@ -730,8 +755,8 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [messages, thinking]);
 
-  const addUser = (text: string) =>
-    setMessages((p) => [...p, { kind: 'user', id: newId(), text }]);
+  const addUser = (text: string, blockRef?: BlockRef) =>
+    setMessages((p) => [...p, { kind: 'user', id: newId(), text, blockRef }]);
   const addAssistant = (text: string) =>
     setMessages((p) => [...p, { kind: 'assistant', id: newId(), text }]);
   const update = (id: string, patch: Partial<AgentMessage>) =>
@@ -1208,8 +1233,13 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     if ((!text && !attachment) || runningRef.current) return;
     simulateRef.current = simulate;
 
-    addUser(attachment ? `${text || 'Take a look at this image.'} 📎` : text);
+    const ctx = blockCtx;
+    addUser(
+      attachment ? `${text || 'Take a look at this image.'} 📎` : text,
+      ctx ? { command: ctx.command, failed: ctx.failed, time: ctx.time } : undefined,
+    );
     setInput('');
+    setBlockCtx(null);
 
     const env = envRef.current;
     if (!env) {
@@ -1240,7 +1270,12 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     setAttachment(null);
     setAttachmentError(null);
 
-    goalRef.current = text || 'Take a look at this image and help.';
+    // With an attached block, the goal carries the exact block instance
+    // (command, run time, its own output) so the model reasons about THAT
+    // run, not whichever similar command it can see on screen.
+    goalRef.current = ctx
+      ? `${text || 'Help me with this terminal command.'}\n\n[Attached terminal block — ran at ${ctx.time}, ${ctx.failed ? 'failed' : 'succeeded'}]\nCommand: ${ctx.command}\nOutput:\n${ctx.output}`
+      : text || 'Take a look at this image and help.';
     // NOTE: priorStepsRef is intentionally NOT cleared here — it accumulates
     // across the conversation so follow-ups ("where's that file?") have context.
     stepCountRef.current = 0;
@@ -1329,6 +1364,64 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
     if (file) void acceptFile(file);
   };
 
+  // A block's "Fix this" / "Ask about this" button attaches that exact block
+  // (command + its own output + when it ran) as structured context — never
+  // pasted into the textarea. The user sees a small block card above the
+  // input and a short editable question. Nothing auto-sends: the user reviews
+  // before spending credits.
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{
+          terminalId: string;
+          command: string;
+          output: string;
+          failed: boolean;
+          time: string;
+          autoSend?: boolean;
+        }>
+      ).detail;
+      if (!detail || detail.terminalId !== terminalId) return;
+      setBlockCtx({
+        command: detail.command,
+        output: detail.output,
+        failed: detail.failed,
+        time: detail.time,
+      });
+      setInput(
+        detail.failed
+          ? 'Fix this error.'
+          : 'Explain what this command did and what the output means.',
+      );
+      // "Fix this" goes straight to work — the plan card is still the approval
+      // gate before anything runs, so auto-sending stays safe.
+      if (detail.autoSend) {
+        pendingAutoSendRef.current = true;
+        return;
+      }
+      setHovered(true);
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (!ta) return;
+        ta.focus();
+        ta.select();
+        ta.style.height = 'auto';
+        ta.style.height = `${Math.min(ta.scrollHeight, 96)}px`;
+      });
+    };
+    window.addEventListener('verlox:ask-agent', onAsk);
+    return () => window.removeEventListener('verlox:ask-agent', onAsk);
+  }, [terminalId]);
+
+  // Deferred auto-send: submit() reads input/blockCtx from state, so we wait
+  // one render after the listener sets them, then fire the fresh closure.
+  const pendingAutoSendRef = useRef(false);
+  useEffect(() => {
+    if (!pendingAutoSendRef.current || !blockCtx || !input.trim()) return;
+    pendingAutoSendRef.current = false;
+    void submit();
+  });
+
   const onTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1376,9 +1469,6 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
       { tier: 'custom', label: 'Your providers' },
     ] as const
   ).filter((s) => s.tier === 'offline' || brains.some((b) => b.tier === s.tier));
-  // Show the conversation thread only when there's something to show, so the
-  // panel stays a clean, calm input bar when idle (no manual collapse).
-  const showThread = messages.length > 0 || thinking;
   // The bar opens on hover or focus, and stays open while there's a reason to:
   // typing, a turn running, the model/settings menus, a thread, or an image.
   // Hover/focus drive open/close. Note: a conversation thread does NOT keep it
@@ -1389,89 +1479,38 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   // the box keep the thread expanded. NOTE: textarea focus alone does NOT —
   // the collapsed state IS the input bar, so focus needn't pin it open. This is
   // what lets the panel reliably collapse when you mouse away.
+  // Docked panel: always open. (hovered still drives focus niceties.)
   const open =
     hovered ||
     running ||
     brainMenuOpen ||
     pickerOpen ||
     !!attachment ||
-    input.trim().length > 0;
+    !!blockCtx ||
+    input.trim().length > 0 ||
+    true;
 
   return (
     <div
       onMouseDown={(e) => e.stopPropagation()}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className="absolute bottom-4 left-1/2 z-10 flex w-[min(92%,680px)] -translate-x-1/2 flex-col overflow-hidden rounded-3xl border border-black/10 bg-white/95 shadow-xl backdrop-blur"
-      style={
-        !open ? undefined : showThread ? { height: 'min(42%, 19rem)' } : undefined
-      }
+      className="relative z-10 flex h-full w-[400px] shrink-0 flex-col overflow-hidden border-l border-black/[0.06] bg-white"
     >
-      {/* Header (no `relative` so the settings overlay below anchors to the
-          whole panel, not just this bar). */}
-      <div className="shrink-0">
-        {/* Header bar — height + fade animate with the bar's open state. The
-            overflow-hidden is on this wrapper (not the header div), so the
-            settings overlay below still anchors to the whole panel. */}
-        <div
-          className={`grid transition-all duration-200 ease-out ${
-            open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
-          }`}
-        >
-          <div className="overflow-hidden">
-            <div className="flex items-center justify-between border-b border-black/5 px-3 py-2">
-        <div className="flex min-w-0 items-center gap-1.5 text-[#6A6A6A]">
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-            className="shrink-0"
-          >
-            <path
-              d="M12 3l1.8 4.9L18.7 9.7 13.8 11.5 12 16.4 10.2 11.5 5.3 9.7 10.2 7.9 12 3z"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinejoin="round"
-            />
-          </svg>
-          <span className="shrink-0 text-xs font-medium">Verlox</span>
-          {workDir && (
-            <span
-              className="ml-1 truncate text-[11px] text-[#9A9A9A]"
-              title={`Working in ${workDir}`}
-            >
-              · working in {shortFolder(workDir)}
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {running && (
-            <button
-              onClick={stop}
-              className="rounded-md border border-[#B4632F]/30 bg-[#FBF1EA] px-2 py-0.5 text-[11px] font-medium text-[#B4632F] hover:bg-[#F6E6DB]"
-            >
-              Stop
-            </button>
-          )}
-        </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Settings now live in a dedicated page (SettingsView), opened from
-            the top-bar gear — no longer an overlay inside this panel. */}
-      </div>
-
+      {/* No header bar: the working-folder note and Stop control live just
+          above the input card instead, so the thread runs to the top. */}
       {/* Conversation area */}
-      {open && showThread && (
+      {/* Docked panel: the thread always fills the column so the input stays
+          pinned at the bottom; idle shows a calm hint in the middle. */}
+      {(
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {messages.length === 0 && !thinking ? (
-            <div className="mx-auto max-w-md py-6 text-center text-sm leading-relaxed text-[#9A9A9A]">
-              Tell Verlox what you want to do, in plain English. It works one
-              step at a time, asks before changing anything, and saves a
-              restore point so you can always undo.
+            <div className="flex h-full items-center justify-center">
+              <p className="mx-auto max-w-[260px] text-center text-[13px] leading-relaxed text-[#9A9A9A]">
+                Tell Verlox what you want to do, in plain English. It works one
+                step at a time, asks before changing anything, and saves a
+                restore point so you can always undo.
+              </p>
             </div>
           ) : (
             <div ref={msgListRef} className="flex flex-col gap-3">
@@ -1487,8 +1526,26 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                   if (m.kind === 'user') {
                     return (
                       <div key={m.id} className="flex justify-end">
-                        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-[#EFEFED] px-3 py-1.5 text-sm text-[#3A3A3A]">
-                          {m.text}
+                        <div className="max-w-[85%]">
+                          {m.blockRef && (
+                            <div className="mb-1 flex items-center gap-2 rounded-xl rounded-br-sm border border-black/[0.07] bg-[#F7F8FB] px-2.5 py-1.5">
+                              <span
+                                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                  m.blockRef.failed ? 'bg-[#B4322B]' : 'bg-[#3E7A53]'
+                                }`}
+                                aria-hidden="true"
+                              />
+                              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#3A3A3A]">
+                                {m.blockRef.command}
+                              </span>
+                              <span className="shrink-0 text-[9.5px] text-[#9A9A9A]">
+                                {m.blockRef.failed ? 'failed' : 'succeeded'} · {m.blockRef.time}
+                              </span>
+                            </div>
+                          )}
+                          <div className="rounded-2xl rounded-br-sm bg-[#EFEFED] px-3 py-1.5 text-sm text-[#3A3A3A]">
+                            {m.text}
+                          </div>
                         </div>
                       </div>
                     );
@@ -1879,6 +1936,32 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {blockCtx && (
+          <div className="px-3 pt-2">
+            <div className="flex items-center gap-2 rounded-xl border border-black/[0.07] bg-[#F7F8FB] px-2.5 py-1.5">
+              <span
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                  blockCtx.failed ? 'bg-[#B4322B]' : 'bg-[#3E7A53]'
+                }`}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-[#3A3A3A]">
+                {blockCtx.command}
+              </span>
+              <span className="shrink-0 text-[10px] text-[#9A9A9A]">
+                {blockCtx.failed ? 'failed' : 'succeeded'} · {blockCtx.time}
+              </span>
+              <button
+                type="button"
+                onClick={() => setBlockCtx(null)}
+                aria-label="Remove attached block"
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] leading-none text-[#9A9A9A] hover:text-[#3A3A3A]"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
         {attachment && (
           <div className="flex items-start px-3 pt-2">
             <div className="relative">
@@ -1909,7 +1992,47 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
             </button>
           </div>
         )}
-        <form onSubmit={submit} className="flex flex-col px-3.5 pb-3 pt-2.5">
+        {/* Working folder + Stop — sits right on top of the typing board. */}
+        <div className="mx-3 mt-2 flex items-center justify-between gap-2 px-1">
+          {workDir ? (
+            <span
+              className="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-[#9A9A9A]"
+              title={`Working in ${workDir}`}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-3 w-3 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+              </svg>
+              working in {shortFolder(workDir)}
+            </span>
+          ) : (
+            <span />
+          )}
+          {running && (
+            <button
+              onClick={stop}
+              className="shrink-0 rounded-md border border-[#B4632F]/30 bg-[#FBF1EA] px-2 py-0.5 text-[11px] font-medium text-[#B4632F] hover:bg-[#F6E6DB]"
+            >
+              Stop
+            </button>
+          )}
+        </div>
+        <form
+          onSubmit={submit}
+          className="mx-3 mb-3 mt-1.5 flex flex-col rounded-2xl border border-black/[0.08] px-3 pb-2 pt-2.5"
+          style={{
+            background: 'linear-gradient(180deg, #fafbfe 0%, #eff2f8 55%, #e8ecf4 100%)',
+            boxShadow:
+              'inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 3px rgba(16,24,40,0.07), 0 6px 16px rgba(16,24,40,0.06)',
+          }}
+        >
           {/* Input — full width on top, like the mockup. */}
           <textarea
             ref={textareaRef}
@@ -1990,8 +2113,10 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
               className="hidden"
               onChange={onFileInput}
             />
-            {/* Model switcher */}
-            <div ref={brainWrapRef} className="shrink-0">
+            {/* Model switcher — the one flexible control in the row: it
+                truncates its label when the panel is tight so the Simulate
+                and Send buttons never get pushed out of the card. */}
+            <div ref={brainWrapRef} className="min-w-0">
               <button
                 ref={brainBtnRef}
                 type="button"
@@ -2012,7 +2137,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                 aria-haspopup="listbox"
                 aria-expanded={brainMenuOpen}
                 title={`Model: ${selectedBrain.label}`}
-                className="flex max-w-[150px] items-center gap-1 rounded-lg px-2 py-1.5 text-[12px] font-medium text-[#6A6A6A] hover:bg-black/5 hover:text-[#3A3A3A] disabled:opacity-40"
+                className="flex w-full min-w-0 max-w-[150px] items-center gap-1 rounded-lg px-2 py-1.5 text-[12px] font-medium text-[#6A6A6A] hover:bg-black/5 hover:text-[#3A3A3A] disabled:opacity-40"
               >
                 <span className="truncate">{selectedBrain.label}</span>
                 <svg
@@ -2346,7 +2471,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
                   : 'Sandbox is a Pro feature — simulate plans with before/after diffs'
               }
               aria-label="Simulate"
-              className="mr-1.5 flex h-9 shrink-0 items-center gap-1 rounded-full border border-hairline px-3 text-[11px] font-medium text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink disabled:opacity-30"
+              className="mr-1.5 flex h-8 shrink-0 items-center gap-1 rounded-full border border-hairline px-2.5 text-[11px] font-medium text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink disabled:opacity-30"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path
@@ -2370,7 +2495,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
               type="submit"
               disabled={(!input.trim() && !attachment) || running}
               aria-label="Send"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#3A3A3A] text-white transition-colors hover:bg-black disabled:opacity-30"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#3A3A3A] text-white transition-colors hover:bg-black disabled:opacity-30"
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path

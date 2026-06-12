@@ -7,12 +7,20 @@ import { useAuth } from '../contexts/AuthContext';
 import { useUsage } from '../contexts/UsageContext';
 import { useUpgrade } from '../contexts/UpgradeContext';
 import { useUpdateStatus } from '../hooks/useUpdateStatus';
+import { VaultGlyph } from './VaultView';
+import { ClockGlyph } from './TimelineView';
 
 interface SidebarProps {
   tabs: ConversationTab[];
   activeId: string;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  // Top-row controls (the old title strip's buttons now live here, inside
+  // the sidebar's own theme).
+  onToggleSidebar: () => void;
+  onOpenSettings: () => void;
+  onOpenVault: () => void;
+  onOpenTimeline: () => void;
 }
 
 // Left sidebar. Four stacked sections: a search box, the open tabs, the
@@ -20,7 +28,16 @@ interface SidebarProps {
 // pick), and the live-running processes. The terminal sits as a centered
 // board to the right (see ConversationsShell). The new-terminal button lives
 // at the top of the board area, not here.
-export function Sidebar({ tabs, activeId, onSelect, onClose }: SidebarProps) {
+export function Sidebar({
+  tabs,
+  activeId,
+  onSelect,
+  onClose,
+  onToggleSidebar,
+  onOpenSettings,
+  onOpenVault,
+  onOpenTimeline,
+}: SidebarProps) {
   const [query, setQuery] = useState('');
   // Hover-preview card for a tab: shows that terminal's recent output.
   const [preview, setPreview] = useState<{
@@ -36,13 +53,84 @@ export function Sidebar({ tabs, activeId, onSelect, onClose }: SidebarProps) {
 
   return (
     <>
-    <aside className="flex min-h-0 w-64 shrink-0 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-faint shadow-sm">
-      {/* Brand */}
-      <div className="flex items-center gap-2 px-4 pb-3 pt-4">
+    <aside
+      className="flex min-h-0 w-64 shrink-0 flex-col overflow-hidden"
+      style={{
+        background: 'linear-gradient(180deg, #f6f7fb 0%, #eef0f7 100%)',
+        boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.7), 1px 0 0 rgba(0,0,0,0.06)',
+      }}
+    >
+      {/* Brand row — also the window drag handle on the sidebar side, with
+          the app controls (collapse, settings, vault, timeline) at its right
+          in the sidebar's own theme. */}
+      <div
+        className="flex items-center gap-2 px-4 pb-3 pt-4"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
         <span className="text-base leading-none text-ink-label" aria-hidden="true">
           ✦
         </span>
         <span className="text-sm font-medium tracking-tight text-ink">Verlox</span>
+        <div
+          className="ml-auto flex items-center gap-0.5"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            aria-label="Settings"
+            title="Settings"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
+          >
+            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5" />
+              <path
+                d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenVault}
+            aria-label="Recovery Vault"
+            title="Recovery Vault"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
+          >
+            <VaultGlyph className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onOpenTimeline}
+            aria-label="Timeline"
+            title="Timeline — everything Verlox has done"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
+          >
+            <ClockGlyph className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            aria-label="Hide sidebar"
+            title="Hide sidebar"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              className="h-3.5 w-3.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="2" />
+              <line x1="6.5" y1="3.5" x2="6.5" y2="12.5" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Search */}
@@ -87,7 +175,7 @@ export function Sidebar({ tabs, activeId, onSelect, onClose }: SidebarProps) {
                       : 'text-ink-label hover:bg-black/[0.04] hover:text-ink'
                   }`}
                 >
-                  {tab.kind === 'sql' ? <SqlGlyph /> : <TerminalGlyph />}
+                  <TerminalGlyph />
                   <span className="min-w-0 flex-1 truncate">{tab.title}</span>
                   <button
                     type="button"
@@ -408,16 +496,6 @@ function TerminalGlyph() {
       <rect x="1" y="2.5" width="12" height="9" rx="1.5" />
       <path d="M3.5 5.5L6 7l-2.5 1.5" />
       <line x1="7.5" y1="8.5" x2="10" y2="8.5" />
-    </svg>
-  );
-}
-
-function SqlGlyph() {
-  return (
-    <svg viewBox="0 0 14 14" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <ellipse cx="7" cy="3.2" rx="4.5" ry="1.8" />
-      <path d="M2.5 3.2v7.6c0 1 2 1.8 4.5 1.8s4.5-.8 4.5-1.8V3.2" />
-      <path d="M2.5 7c0 1 2 1.8 4.5 1.8s4.5-.8 4.5-1.8" />
     </svg>
   );
 }

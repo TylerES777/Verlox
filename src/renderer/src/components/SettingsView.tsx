@@ -25,6 +25,14 @@ function announceChange() {
   window.dispatchEvent(new Event('verlox:settings-changed'));
 }
 
+// The app's glass material (same family as the terminal blocks and chat
+// input): platinum gradient, inset top highlight, soft lifted shadow.
+const SHEEN_BG = 'linear-gradient(180deg, #fafbfe 0%, #eff2f8 55%, #e8ecf4 100%)';
+const CARD_SHADOW =
+  'inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 3px rgba(16,24,40,0.07), 0 6px 16px rgba(16,24,40,0.06)';
+const INPUT_CLS =
+  'w-full rounded-lg border border-black/[0.08] bg-white/80 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-hint focus:border-ink/25 focus:outline-none';
+
 export function SettingsView({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
 
@@ -97,11 +105,11 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16"
+      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16 backdrop-blur-[2px]"
       onMouseDown={onClose}
     >
       <div
-        className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-hairline bg-card shadow-2xl"
+        className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-black/[0.08] bg-white shadow-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -139,29 +147,43 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               models, Anthropic, and more.
             </p>
 
-            {hasProviders && (
-              <div className="mt-2 space-y-1">
+            {/* Your providers — always visible so it's clear you can add as
+                many as you like, each one a glass card with its own Remove. */}
+            <div className="mt-3 text-[11px] font-medium uppercase tracking-wide text-ink-hint">
+              Your providers
+            </div>
+            {hasProviders ? (
+              <div className="mt-1.5 space-y-1.5">
                 {settings?.providers.map((p) => (
                   <div
                     key={p.id}
-                    className="flex items-center justify-between rounded-lg border border-black/10 px-2.5 py-1.5"
+                    className="flex items-center justify-between rounded-xl border border-black/[0.08] px-3 py-2"
+                    style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
                   >
                     <div className="min-w-0">
                       <div className="truncate text-xs font-medium text-ink">{p.name}</div>
-                      <div className="truncate text-[11px] text-ink-hint">{p.model}</div>
+                      <div className="truncate font-mono text-[10.5px] text-ink-hint">{p.model}</div>
                     </div>
                     <button
                       onClick={() => removeProvider(p.id)}
-                      className="shrink-0 text-[11px] text-[#B4632F] hover:underline"
+                      className="shrink-0 rounded-md border border-black/[0.08] bg-white/80 px-2 py-0.5 text-[10.5px] font-medium text-ink-label transition-colors hover:text-[#B4322B]"
                     >
                       Remove
                     </button>
                   </div>
                 ))}
               </div>
+            ) : (
+              <p className="mt-1.5 text-[11px] text-ink-micro">
+                None yet. Add as many as you like below.
+              </p>
             )}
 
-            <form onSubmit={submitProvider} className="mt-3 space-y-1.5">
+            <form
+              onSubmit={submitProvider}
+              className="mt-3 space-y-1.5 rounded-xl border border-black/[0.08] p-3"
+              style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
+            >
               <div className="text-[11px] font-medium uppercase tracking-wide text-ink-hint">
                 Add a provider
               </div>
@@ -169,7 +191,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 value={formName}
                 onChange={(e) => setFormName(e.target.value)}
                 placeholder="Name (e.g. GPT-4o)"
-                className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-black/20"
+                className={INPUT_CLS}
               />
               <select
                 value={formFormat}
@@ -178,7 +200,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                   setFormFormat(f);
                   setFormUrl(defaultBaseUrl(f));
                 }}
-                className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-black/20"
+                className={INPUT_CLS}
               >
                 <option value="openai">OpenAI-compatible (most providers)</option>
                 <option value="anthropic">Anthropic (Claude)</option>
@@ -187,25 +209,25 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 value={formUrl}
                 onChange={(e) => setFormUrl(e.target.value)}
                 placeholder="Endpoint URL"
-                className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-black/20"
+                className={INPUT_CLS}
               />
               <input
                 value={formModel}
                 onChange={(e) => setFormModel(e.target.value)}
                 placeholder={modelPlaceholder(formFormat)}
-                className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-black/20"
+                className={INPUT_CLS}
               />
               <input
                 type="password"
                 value={formKey}
                 onChange={(e) => setFormKey(e.target.value)}
                 placeholder="API key"
-                className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-black/20"
+                className={INPUT_CLS}
               />
               <button
                 type="submit"
                 disabled={addBusy}
-                className="w-full rounded-lg bg-[#3A3A3A] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-black disabled:opacity-50"
+                className="w-full rounded-lg bg-[#15161A] px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-black disabled:opacity-50"
               >
                 {addBusy ? 'Checking…' : 'Add & verify'}
               </button>
@@ -267,7 +289,13 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 return (
                   <div key={capability} className="flex items-center justify-between gap-2">
                     <span className="min-w-0 truncate text-xs text-ink-label">{label}</span>
-                    <div className="flex shrink-0 items-center rounded-md border border-hairline bg-surface-subtle p-0.5">
+                    <div
+                      className="flex shrink-0 items-center rounded-md border border-black/[0.08] p-0.5"
+                      style={{
+                        background: SHEEN_BG,
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 2px rgba(16,24,40,0.05)',
+                      }}
+                    >
                       {(['always', 'ask', 'never'] as PermissionRule[]).map((rule) => (
                         <button
                           key={rule}

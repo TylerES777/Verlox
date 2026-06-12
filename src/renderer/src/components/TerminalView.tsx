@@ -12,6 +12,24 @@ import {
   BlockStreamParser,
   type TerminalBlockData,
 } from '../lib/terminalBlocks';
+import type { VaultEntry } from '@shared/types';
+import iconAnthropic from '../assets/providers/anthropic.png';
+import iconOpenAI from '../assets/providers/openai.png';
+import iconGoogle from '../assets/providers/google.png';
+import iconMeta from '../assets/providers/meta.png';
+import iconGrok from '../assets/providers/grok.png';
+import iconDeepSeek from '../assets/providers/deepseek.png';
+import iconQwen from '../assets/providers/qwen.png';
+
+const BRAIN_PROVIDER_PNGS: Record<string, string> = {
+  anthropic: iconAnthropic,
+  openai: iconOpenAI,
+  google: iconGoogle,
+  meta: iconMeta,
+  xai: iconGrok,
+  deepseek: iconDeepSeek,
+  qwen: iconQwen,
+};
 
 // Raw shows the live xterm surface; Blocks slices the same stream into
 // Warp-style command/output cards. Persisted globally — if you prefer
@@ -131,6 +149,16 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
       const events = parser.feed(event.data);
       if (events.length > 0) {
         const now = Date.now();
+        // Title the tab from the first command regardless of how it was
+        // entered — typed in raw, the Blocks command bar, or a chip. The
+        // xterm onData path only sees raw keystrokes, so it misses the rest.
+        if (!titledRef.current) {
+          const first = events.find((e) => e.type === 'start');
+          if (first && first.type === 'start') {
+            titledRef.current = true;
+            onFirstCommandRef.current?.(first.command);
+          }
+        }
         setBlocks((prev) => applyBlockEvents(prev, events, now));
       }
       if (parser.pending !== lastPending) {
@@ -463,70 +491,63 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
   // restores typing. mousedown (not click) so focus lands before the
   // browser's default selection handling runs.
   return (
-    <div className="relative flex h-full w-full flex-col overflow-hidden bg-white">
-      {/* Chrome bar — a solid header strip with the Raw / AI output toggle. */}
-      <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-surface-subtle px-3 py-1.5">
-        <div className="flex items-center gap-2">
-          <span className="flex gap-1" aria-hidden="true">
-            <span className="h-2 w-2 rounded-full bg-black/[0.08]" />
-            <span className="h-2 w-2 rounded-full bg-black/[0.08]" />
-            <span className="h-2 w-2 rounded-full bg-black/[0.08]" />
-          </span>
-          <span className="text-[11px] font-medium text-ink-hint">Terminal</span>
+    <div className="flex h-full w-full overflow-hidden bg-white">
+      {/* Left: the terminal column (chrome bar + raw/blocks content). */}
+      <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Raw / Blocks toggle — floats over the top-right corner of the
+            terminal, no chrome strip behind it. */}
+        <div className="absolute right-4 top-2.5 z-20">
+          <OutputModeToggle mode={mode} onChange={switchMode} />
         </div>
-        <OutputModeToggle mode={mode} onChange={switchMode} />
-      </div>
 
-      {/* The outer box owns the padding + width cap; the INNER box is the
-          xterm mount and carries NO padding, so FitAddon measures a clean box
-          and fits the rows exactly — no clipped/unreachable last line. The
-          large bottom padding keeps the live prompt above the floating chat
-          panel (collapsed), so what you type is never cut off by it.
-          In Blocks mode the xterm box stays mounted at full size (it keeps
-          consuming the PTY stream, and hiding via opacity rather than
-          display:none keeps FitAddon's geometry valid) with BlocksView
-          layered over it. */}
-      <div className="relative min-h-0 w-full flex-1">
-        <div
-          aria-hidden={mode === 'blocks'}
-          className={`h-full w-full max-w-[900px] overflow-hidden px-4 pb-24 pt-3 ${
-            mode === 'blocks' ? 'pointer-events-none opacity-0' : ''
-          }`}
-        >
+        {/* The outer box owns the padding + width cap; the INNER box is the
+            xterm mount and carries NO padding, so FitAddon measures a clean
+            box and fits the rows exactly — no clipped/unreachable last line.
+            In Blocks mode the xterm box stays mounted at full size (it keeps
+            consuming the PTY stream, and hiding via opacity rather than
+            display:none keeps FitAddon's geometry valid) with BlocksView
+            layered over it. */}
+        <div className="relative min-h-0 w-full flex-1">
           <div
-            ref={hostRef}
-            onMouseDown={() => termRef.current?.focus()}
-            className="h-full w-full overflow-hidden"
-          />
+            aria-hidden={mode === 'blocks'}
+            className={`h-full w-full max-w-[1200px] overflow-hidden px-6 pb-6 pt-3 ${
+              mode === 'blocks' ? 'pointer-events-none opacity-0' : ''
+            }`}
+          >
+            <div
+              ref={hostRef}
+              onMouseDown={() => termRef.current?.focus()}
+              className="h-full w-full overflow-hidden"
+            />
+          </div>
+          {mode === 'blocks' && (
+            <BlocksView
+              terminalId={id}
+              blocks={blocks}
+              pendingLine={pendingLine}
+            />
+          )}
         </div>
-        {mode === 'blocks' && (
-          <BlocksView
-            terminalId={id}
-            blocks={blocks}
-            pendingLine={pendingLine}
-          />
+
+        {/* Custom premium scrollbar — floats at the column's right edge (not
+            the text-column edge) and mirrors the terminal's scroll. Raw mode
+            only; BlocksView scrolls natively. */}
+        {sb.visible && mode === 'raw' && (
+          <div
+            ref={scrollbarTrackRef}
+            className="absolute right-1.5 top-3 bottom-3 z-[7] w-1.5"
+          >
+            <div
+              onMouseDown={onScrollbarThumbDown}
+              className="absolute left-0 w-full cursor-pointer rounded-full bg-black/15 transition-colors hover:bg-black/30"
+              style={{ top: `${sb.topPct}%`, height: `${sb.heightPct}%` }}
+            />
+          </div>
         )}
       </div>
 
-      {/* Custom premium scrollbar — floats at the card's right edge (not the
-          text-column edge) and mirrors the terminal's scroll. Raw mode only;
-          BlocksView scrolls natively. */}
-      {sb.visible && mode === 'raw' && (
-        <div
-          ref={scrollbarTrackRef}
-          className="absolute right-1.5 top-11 bottom-3 z-[7] w-1.5"
-        >
-          <div
-            onMouseDown={onScrollbarThumbDown}
-            className="absolute left-0 w-full cursor-pointer rounded-full bg-black/15 transition-colors hover:bg-black/30"
-            style={{ top: `${sb.topPct}%`, height: `${sb.heightPct}%` }}
-          />
-        </div>
-      )}
-
-      {/* The floating natural-language panel where you and Verlox talk and
-          approve actions. It floats over the terminal and never resizes the
-          shell. See AgentPanel.tsx. */}
+      {/* Right: the docked Verlox panel — owns the full right side of the
+          terminal area. See AgentPanel.tsx. */}
       <AgentPanel terminalId={id} />
     </div>
   );
@@ -560,10 +581,364 @@ function OutputModeToggle({
     <div
       role="group"
       aria-label="Output mode"
-      className="flex select-none items-center gap-0.5 rounded-full border border-hairline bg-white p-0.5 text-[10.5px] font-medium"
+      className="flex select-none items-center gap-0.5 rounded-full border border-black/[0.08] p-0.5 text-[10.5px] font-medium"
+      style={{ background: SHEEN_BG, boxShadow: SHEEN_SHADOW }}
     >
       {pill('raw', 'Raw')}
       {pill('blocks', 'Blocks')}
+    </div>
+  );
+}
+
+function getCommandSuggestions(command: string): string[] {
+  const cmd = command.trim().toLowerCase().replace(/^['"]+|['"]+$/g, '');
+  if (/^npm (install|i)(\s|$)/.test(cmd) || cmd === 'npm install' || cmd === 'npm i')
+    return ['npm start', 'npm run build', 'npm test'];
+  if (/^npm start/.test(cmd)) return ['npm run build', 'npm test'];
+  if (/^git add/.test(cmd)) return ['git commit -m ""', 'git status', 'git diff --staged'];
+  if (/^git commit/.test(cmd)) return ['git push', 'git log --oneline -5'];
+  if (/^git status/.test(cmd)) return ['git add .', 'git diff', 'git log --oneline -5'];
+  if (/^git clone/.test(cmd)) return ['ls', 'npm install'];
+  if (/^git pull/.test(cmd)) return ['git log --oneline -5', 'git status'];
+  if (/^cd /.test(cmd)) return ['ls', 'dir', 'code .'];
+  if (/^(ls|dir)/.test(cmd)) return ['cd', 'code .'];
+  if (/^python/.test(cmd)) return ['pip install -r requirements.txt', 'python -m pytest'];
+  if (/^pip install/.test(cmd)) return ['python -m pytest', 'pip list'];
+  if (/^docker build/.test(cmd)) return ['docker run', 'docker ps'];
+  if (/^docker run/.test(cmd)) return ['docker ps', 'docker logs'];
+  return [];
+}
+
+const ERROR_RE = /\b(error|failed|not recognized|not found|exception|cannot|denied|fatal|traceback)\b/i;
+
+// Plain-English summary of what a command did and how it turned out. No AI
+// call — this is a fast local read of the command + its output, which is why
+// the panel never claims a token cost for a plain shell command.
+function summarizeBlock(block: TerminalBlockData): { headline: string; ok: boolean } {
+  const cmd = block.command.trim();
+  const word = cmd.split(/\s+/)[0]?.replace(/^['"]+|['"]+$/g, '') ?? cmd;
+  const errLine = block.lines.find((l) => ERROR_RE.test(l));
+  if (errLine) {
+    if (/not recognized/i.test(errLine))
+      return { headline: `“${word}” isn’t a recognized command. Check the spelling.`, ok: false };
+    if (/not found|no such file/i.test(errLine))
+      return { headline: 'A file or path in the command could not be found.', ok: false };
+    if (/denied|permission/i.test(errLine))
+      return { headline: 'Permission was denied. The command needs higher access.', ok: false };
+    return { headline: `Command failed: ${errLine.trim().slice(0, 80)}`, ok: false };
+  }
+  const lc = cmd.toLowerCase();
+  if (/^(ls|dir|gci|get-childitem)/.test(lc))
+    return { headline: `Listed ${block.lines.length} line${block.lines.length === 1 ? '' : 's'} of directory contents.`, ok: true };
+  if (/^cd /.test(lc)) return { headline: 'Changed the working directory.', ok: true };
+  if (/^git commit/.test(lc)) return { headline: 'Committed staged changes.', ok: true };
+  if (/^git push/.test(lc)) return { headline: 'Pushed commits to the remote.', ok: true };
+  if (/^git status/.test(lc)) return { headline: 'Reported the working-tree status.', ok: true };
+  if (/^npm (install|i)/.test(lc)) return { headline: 'Installed npm dependencies.', ok: true };
+  if (/^(npm run|npm start)/.test(lc)) return { headline: 'Ran an npm script.', ok: true };
+  const out = block.lines.length;
+  if (out === 0) return { headline: 'Completed with no output.', ok: true };
+  return { headline: `Completed and produced ${out} line${out === 1 ? '' : 's'} of output.`, ok: true };
+}
+
+// One shiny tone for the whole insight surface: a cool platinum gradient with
+// an inset top highlight so it reads as glass, not flat grey. The gradient
+// ends deep enough — and the card shadow lifts enough — that the surface
+// separates clearly from the app's white background.
+const SHEEN_BG = 'linear-gradient(180deg, #fafbfe 0%, #eff2f8 55%, #e8ecf4 100%)';
+const SHEEN_SHADOW = 'inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 2px rgba(16,24,40,0.05)';
+// Elevation for whole cards (blocks, command bar): visible hairline + a soft
+// two-layer drop so the card floats off the white instead of dissolving in.
+const CARD_SHADOW =
+  'inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 3px rgba(16,24,40,0.07), 0 6px 16px rgba(16,24,40,0.06)';
+
+function readBrain(): {
+  label: string;
+  provider: string;
+  engine: string;
+  model: string;
+  providerId: string;
+} {
+  try {
+    return {
+      label: localStorage.getItem('verlox-brain-label') || 'AI',
+      provider: localStorage.getItem('verlox-brain-provider') || 'anthropic',
+      engine: localStorage.getItem('verlox-brain-engine') || 'verlox',
+      model: localStorage.getItem('verlox-brain-model') || 'sonnet',
+      providerId: localStorage.getItem('verlox-brain-provider-id') || '',
+    };
+  } catch {
+    return { label: 'AI', provider: 'anthropic', engine: 'verlox', model: 'sonnet', providerId: '' };
+  }
+}
+
+// `aiUsed` is false for plain shell commands (the user typed straight into the
+// PTY, no model in the loop) — no token line, no model badge. When the AI ran
+// the step, pass aiUsed + tokens and the model icon + token count appear.
+// Hands this exact block (command + its own output + run time) to the chat
+// panel as structured context. The panel shows it as a card, not pasted text,
+// and the run time pins WHICH run is meant when a command was run twice.
+// autoSend = the Fix flow: the panel submits immediately and starts planning
+// (the plan card is still the approval gate before anything executes).
+function dispatchAskAgent(
+  terminalId: string,
+  block: TerminalBlockData,
+  failed: boolean,
+  autoSend = false,
+) {
+  window.dispatchEvent(
+    new CustomEvent('verlox:ask-agent', {
+      detail: {
+        terminalId,
+        command: block.command,
+        output: block.lines.slice(-40).join('\n').slice(-2000),
+        failed,
+        time: new Date(block.startedAt).toLocaleTimeString(undefined, {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        autoSend,
+      },
+    }),
+  );
+}
+
+function BlockInsights({
+  terminalId,
+  block,
+  onSendCommand,
+  aiUsed = false,
+  tokens = 0,
+}: {
+  terminalId: string;
+  block: TerminalBlockData;
+  onSendCommand: (cmd: string) => void;
+  aiUsed?: boolean;
+  tokens?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  // In-block AI explanation ("Explain" chip). Generated on demand with the
+  // same brain the chat panel uses; rendered right here in the block, with
+  // the model that wrote it credited underneath.
+  const [explain, setExplain] = useState<{
+    state: 'loading' | 'done' | 'error';
+    text: string;
+    brainLabel: string;
+    brainProvider: string;
+  } | null>(null);
+  const runExplain = async () => {
+    if (explain?.state === 'loading') return;
+    const brain = readBrain();
+    setExplain({ state: 'loading', text: '', brainLabel: brain.label, brainProvider: brain.provider });
+    try {
+      const env = await window.api.getEnvironment();
+      const res = await window.api.agentPlanStep({
+        goal:
+          `Explain in plain English what this terminal command did, based on its output. ` +
+          `Reply with the explanation only. Do NOT propose, suggest, or run any commands.\n\n` +
+          `Command: ${block.command}\nOutput:\n${block.lines.slice(-60).join('\n').slice(-2500)}`,
+        priorSteps: [],
+        cwd: env.homeDir,
+        platform: env.platform,
+        shell: env.shell,
+        engine: brain.engine as never,
+        model: brain.model,
+        providerId: brain.providerId || undefined,
+      });
+      if (res.ok) {
+        setExplain({
+          state: 'done',
+          text: res.step.message || 'No explanation came back. Try again.',
+          brainLabel: brain.label,
+          brainProvider: brain.provider,
+        });
+      } else {
+        setExplain({ state: 'error', text: res.error, brainLabel: brain.label, brainProvider: brain.provider });
+      }
+    } catch {
+      setExplain({
+        state: 'error',
+        text: 'The explanation could not be generated. Try again.',
+        brainLabel: brain.label,
+        brainProvider: brain.provider,
+      });
+    }
+  };
+  // Real Recovery Vault entries captured while this block ran. Checked once
+  // on expand (not per render) — the panel only appears when something is
+  // genuinely restorable, never as a vague "may be recoverable".
+  const [vaultHits, setVaultHits] = useState<VaultEntry[]>([]);
+  const vaultCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!open || vaultCheckedRef.current || block.endedAt === null) return;
+    vaultCheckedRef.current = true;
+    void window.api
+      .vaultList()
+      .then((entries) => {
+        const ended = block.endedAt ?? Date.now();
+        setVaultHits(
+          entries.filter(
+            (e) => e.capturedAt >= block.startedAt - 2000 && e.capturedAt <= ended + 2000,
+          ),
+        );
+      })
+      .catch(() => {});
+  }, [open, block.startedAt, block.endedAt]);
+
+  if (block.endedAt === null) return null;
+
+  const { headline, ok } = summarizeBlock(block);
+  const durationMs = Math.max(0, block.endedAt - block.startedAt);
+  const durationText = durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`;
+  const suggestions = getCommandSuggestions(block.command).slice(0, 3);
+  const brain = aiUsed ? readBrain() : null;
+  const brainPng = brain ? BRAIN_PROVIDER_PNGS[brain.provider] : undefined;
+
+  return (
+    <div className="border-t border-black/[0.04]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left"
+      >
+        <span className="text-[10px] text-ink-label" aria-hidden="true">✦</span>
+        <span className="text-[11px] font-medium text-ink-label">What happened</span>
+        <span className={`text-[10px] ${ok ? 'text-[#3E7A53]' : 'text-[#B4322B]'}`}>
+          {ok ? '● success' : '● error'}
+        </span>
+        <span className="text-[10px] text-ink-micro">{durationText}</span>
+        <span
+          className="ml-auto text-[9px] text-ink-micro transition-transform duration-200"
+          style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          ▼
+        </span>
+      </button>
+      <div
+        className="overflow-hidden transition-all duration-300 ease-out"
+        style={{ maxHeight: open ? (explain ? '680px' : '300px') : '0px' }}
+      >
+        <div className="px-3 pb-3 pt-1">
+          {/* Summary line */}
+          <p className="mb-2.5 text-[12px] leading-snug text-[#3A3A3A]">{headline}</p>
+
+          {/* Recovery Vault — only when something from this block is actually
+              held in the vault and restorable. */}
+          {vaultHits.length > 0 && (
+            <div
+              className="mb-2.5 rounded-lg border border-white/60 px-2.5 py-2"
+              style={{ background: 'rgba(255,255,255,0.55)', boxShadow: SHEEN_SHADOW }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-ink-label">
+                  {vaultHits.length === 1
+                    ? `${vaultHits[0].name} is in the Recovery Vault.`
+                    : `${vaultHits.length} items from this command are in the Recovery Vault.`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new Event('verlox:open-vault'))}
+                  className="shrink-0 rounded-md border border-hairline bg-white px-2 py-0.5 text-[10.5px] font-medium text-ink-label transition-colors hover:border-ink/20 hover:text-ink"
+                >
+                  Restore
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Actions: try again + suggested next commands, one shiny chip style. */}
+          <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              onClick={() => onSendCommand(block.command)}
+              className="rounded-lg border border-white/70 px-2 py-1 font-mono text-[10.5px] font-medium text-ink transition-all hover:brightness-[0.97]"
+              style={{ background: 'rgba(255,255,255,0.7)', boxShadow: SHEEN_SHADOW }}
+            >
+              ↻ Try again
+            </button>
+            {/* Error → straight to fixing: the chat panel submits the fix
+                request immediately (the plan card still gates execution).
+                Success → an in-block explanation, no panel handoff. */}
+            {ok ? (
+              <button
+                type="button"
+                onClick={() => void runExplain()}
+                disabled={explain?.state === 'loading'}
+                className="rounded-lg border border-white/70 px-2 py-1 text-[10.5px] font-medium text-ink-label transition-all hover:brightness-[0.97] hover:text-ink disabled:opacity-60"
+                style={{ background: 'rgba(255,255,255,0.7)', boxShadow: SHEEN_SHADOW }}
+              >
+                {explain?.state === 'loading' ? '✦ Explaining' : '✦ Explain'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => dispatchAskAgent(terminalId, block, true, true)}
+                className="rounded-lg border border-white/70 px-2 py-1 text-[10.5px] font-medium text-[#B4322B] transition-all hover:brightness-[0.97]"
+                style={{ background: 'rgba(255,255,255,0.7)', boxShadow: SHEEN_SHADOW }}
+              >
+                ✦ Fix this
+              </button>
+            )}
+            {suggestions.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => onSendCommand(s)}
+                className="rounded-lg border border-white/70 px-2 py-1 font-mono text-[10.5px] text-ink-label transition-all hover:brightness-[0.97] hover:text-ink"
+                style={{ background: 'rgba(255,255,255,0.7)', boxShadow: SHEEN_SHADOW }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+
+          {/* In-block AI explanation, with the model that wrote it credited. */}
+          {explain && (
+            <div
+              className="mt-2.5 rounded-lg border border-white/60 px-2.5 py-2"
+              style={{ background: 'rgba(255,255,255,0.55)', boxShadow: SHEEN_SHADOW }}
+            >
+              {explain.state === 'loading' ? (
+                <p className="text-[11.5px] text-ink-hint">Reading the output.</p>
+              ) : (
+                <>
+                  <p
+                    className={`whitespace-pre-wrap text-[12px] leading-relaxed ${
+                      explain.state === 'error' ? 'text-[#B4322B]' : 'text-[#3A3A3A]'
+                    }`}
+                  >
+                    {explain.text}
+                  </p>
+                  {explain.state === 'done' && (
+                    <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-ink-micro">
+                      {BRAIN_PROVIDER_PNGS[explain.brainProvider] ? (
+                        <img
+                          src={BRAIN_PROVIDER_PNGS[explain.brainProvider]}
+                          alt=""
+                          aria-hidden="true"
+                          className="h-3 w-3 object-contain opacity-80"
+                        />
+                      ) : null}
+                      <span>{explain.brainLabel}</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Footer: model icon + tokens only when the AI ran this step. */}
+          {aiUsed && brain && (
+            <div className="mt-2 flex items-center gap-1.5 text-[10px] text-ink-micro">
+              {brainPng ? (
+                <img src={brainPng} alt="" aria-hidden="true" className="h-3.5 w-3.5 object-contain opacity-80" />
+              ) : null}
+              <span>{brain.label}</span>
+              <span>· {tokens} tokens</span>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -616,12 +991,45 @@ function BlocksView({
 
   return (
     <div className="absolute inset-0 flex flex-col">
-      <div ref={scrollRef} className="min-h-0 w-full max-w-[900px] flex-1 overflow-y-auto px-4 pt-3">
+      <div
+        ref={scrollRef}
+        className={`min-h-0 w-full max-w-[1200px] flex-1 px-6 ${
+          blocks.length === 0 ? 'overflow-hidden' : 'overflow-y-auto pt-3'
+        }`}
+      >
         {blocks.length === 0 && (
-          <p className="mt-8 text-center text-[12.5px] text-ink-hint">
-            Each command you run becomes a block here, with its output and a
-            copy button. Run something below to start.
-          </p>
+          <div className="flex h-full flex-col items-center justify-center pb-16">
+            {/* A quiet hero: glyph, one line, and starter commands so the
+                empty board invites a first run instead of sitting blank. */}
+            <div
+              className="flex h-12 w-12 items-center justify-center rounded-2xl border border-black/[0.08]"
+              style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
+            >
+              <span className="font-mono text-[18px] text-[#3E7A53]" aria-hidden="true">
+                ❯
+              </span>
+            </div>
+            <p className="mt-4 text-[13.5px] font-medium text-ink">
+              Every command becomes a block.
+            </p>
+            <p className="mt-1 max-w-[340px] text-center text-[12px] leading-relaxed text-ink-hint">
+              Output, a summary of what happened, and one-click next steps,
+              all in one card.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-1.5">
+              {['ls', 'git status', 'node -v'].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => window.api.ptyInput({ id: terminalId, data: `${c}\r` })}
+                  className="rounded-lg border border-black/[0.08] px-2.5 py-1 font-mono text-[11px] text-ink-label transition-all hover:brightness-[0.98] hover:text-ink"
+                  style={{ background: SHEEN_BG, boxShadow: SHEEN_SHADOW }}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
         <div className="space-y-2.5 pb-3">
           {blocks.map((b) => {
@@ -630,9 +1038,10 @@ function BlocksView({
             return (
               <div
                 key={b.id}
-                className="group overflow-hidden rounded-xl border border-hairline bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)]"
+                className="group overflow-hidden rounded-xl border border-black/[0.08]"
+                style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
               >
-                <div className="flex items-center gap-2 border-b border-hairline bg-surface-subtle px-3 py-1.5">
+                <div className="flex items-center gap-2 border-b border-black/[0.04] px-3 py-1.5">
                   <span aria-hidden="true" className="font-mono text-[12px] text-[#3E7A53]">
                     ❯
                   </span>
@@ -680,6 +1089,13 @@ function BlocksView({
                     )}
                   </div>
                 )}
+                <BlockInsights
+                  terminalId={terminalId}
+                  block={b}
+                  onSendCommand={(cmd) => {
+                    window.api.ptyInput({ id: terminalId, data: `${cmd}\r` });
+                  }}
+                />
               </div>
             );
           })}
@@ -688,8 +1104,11 @@ function BlocksView({
 
       {/* Command bar — types into the same shell the Raw view shows. The
           bottom margin keeps it above the floating chat panel. */}
-      <form onSubmit={send} className="w-full max-w-[900px] px-4 pb-24 pt-1">
-        <div className="flex items-center gap-2 rounded-xl border border-subtle-border bg-white px-3 py-2 shadow-[0_1px_2px_rgba(16,24,40,0.06)]">
+      <form onSubmit={send} className="w-full max-w-[1200px] px-6 pb-4 pt-1">
+        <div
+          className="flex items-center gap-2 rounded-xl border border-black/[0.08] px-3 py-2"
+          style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
+        >
           <span aria-hidden="true" className="font-mono text-[13px] text-[#3E7A53]">
             ❯
           </span>
