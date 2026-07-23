@@ -12,5 +12,5 @@ const isDev = import.meta.env.DEV;
 // desktop app can sign in without a local backend + DB running. Restore
 // the localhost:3001 dev branch before committing.
 export const BACKEND_URL = isDev
-  ? 'https://backend-production-08f5e.up.railway.app'
-  : 'https://backend-production-08f5e.up.railway.app';
+  ? 'https://verlox-backend.vercel.app'
+  : 'https://verlox-backend.vercel.app';
