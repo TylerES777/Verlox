@@ -11,6 +11,10 @@ const isDev = import.meta.env.DEV;
 // TEMP (do NOT commit): dev pointed at the Railway prod backend so the
 // desktop app can sign in without a local backend + DB running. Restore
 // the localhost:3001 dev branch before committing.
+// api.verlox.app is OUR domain (registered on Vercel, CNAMEd to the backend
+// project). Hardcoding a host-owned URL stranded every installed app when
+// Railway died — a user-owned domain means the host behind it can change
+// without ever shipping an app update again.
 export const BACKEND_URL = isDev
-  ? 'https://verlox-backend.vercel.app'
-  : 'https://verlox-backend.vercel.app';
+  ? 'https://api.verlox.app'
+  : 'https://api.verlox.app';
