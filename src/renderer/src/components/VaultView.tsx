@@ -157,32 +157,52 @@ export function VaultView({
     [],
   );
 
-  const selectClass =
-    'rounded-lg border border-hairline bg-surface-subtle px-2 py-1 text-[11px] text-ink-label focus:outline-none';
+  const selectClass = page
+    ? 'rounded-xl border border-black/[0.08] bg-white px-3 py-1.5 text-[12px] text-ink-label shadow-[0_1px_2px_rgba(16,24,40,0.04)] focus:outline-none'
+    : 'rounded-lg border border-hairline bg-surface-subtle px-2 py-1 text-[11px] text-ink-label focus:outline-none';
 
   return (
     <div
       className={
         page
-          ? 'flex h-full w-full justify-center overflow-hidden bg-white p-6'
+          ? 'flex h-full w-full flex-col overflow-hidden bg-[#FAFAFC]'
           : 'fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16'
       }
       onMouseDown={page ? undefined : onClose}
     >
       <div
         className={`flex max-h-full w-full flex-col overflow-hidden ${
-          page ? 'max-w-2xl' : 'max-w-xl rounded-2xl border border-hairline bg-card shadow-2xl'
+          page ? 'h-full' : 'max-w-xl rounded-2xl border border-hairline bg-card shadow-2xl'
         }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-hairline px-4 py-3">
-          <div className="flex items-center gap-2">
-            <VaultGlyph />
-            <span className="text-sm font-semibold text-ink">Recovery Vault</span>
-            <span className="text-[11px] text-ink-hint">
-              {entries.length} item{entries.length === 1 ? '' : 's'}
-            </span>
+        {/* Header — page mode gets the big title + subtitle block. */}
+        <div
+          className={
+            page
+              ? 'flex shrink-0 items-start justify-between px-8 pb-4 pt-6'
+              : 'flex shrink-0 items-center justify-between border-b border-hairline px-4 py-3'
+          }
+        >
+          <div className={page ? '' : 'flex items-center gap-2'}>
+            {!page && <VaultGlyph />}
+            {page ? (
+              <>
+                <h1 className="text-[24px] font-semibold tracking-tight text-ink">
+                  Recovery Vault
+                </h1>
+                <p className="mt-1 text-[13px] text-ink-hint">
+                  Everything Verlox deleted, held safe and restorable in one click.
+                </p>
+              </>
+            ) : (
+              <>
+                <span className="text-sm font-semibold text-ink">Recovery Vault</span>
+                <span className="text-[11px] text-ink-hint">
+                  {entries.length} item{entries.length === 1 ? '' : 's'}
+                </span>
+              </>
+            )}
           </div>
           {!page && (
             <button
@@ -195,13 +215,24 @@ export function VaultView({
           )}
         </div>
 
-        {/* Toolbar: search + filters */}
-        <div className="shrink-0 space-y-2 border-b border-hairline px-4 py-3">
+        {/* Toolbar: search + filters. Page mode styles them as the white
+            dashboard pills from the inspo (search left, filters beside). */}
+        <div
+          className={
+            page
+              ? 'shrink-0 space-y-2 px-8 pb-4'
+              : 'shrink-0 space-y-2 border-b border-hairline px-4 py-3'
+          }
+        >
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search deleted items…"
-            className="w-full rounded-lg border border-hairline bg-surface-subtle px-3 py-1.5 text-xs text-ink placeholder:text-ink-hint focus:outline-none focus:ring-1 focus:ring-black/15"
+            className={
+              page
+                ? 'w-full max-w-3xl rounded-xl border border-black/[0.08] bg-white px-3.5 py-2 text-[13px] text-ink shadow-[0_1px_2px_rgba(16,24,40,0.04)] placeholder:text-ink-hint focus:border-ink/25 focus:outline-none'
+                : 'w-full rounded-lg border border-hairline bg-surface-subtle px-3 py-1.5 text-xs text-ink placeholder:text-ink-hint focus:outline-none focus:ring-1 focus:ring-black/15'
+            }
           />
           <div className="flex flex-wrap items-center gap-2">
             <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className={selectClass}>
@@ -229,8 +260,25 @@ export function VaultView({
           </div>
         </div>
 
-        {/* List */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {/* List — page mode: white dashboard card with a tinted header strip. */}
+        <div className={page ? 'min-h-0 flex-1 overflow-y-auto px-8 pb-8' : 'min-h-0 flex-1 overflow-y-auto px-4 py-3'}>
+          <div
+            className={
+              page
+                ? 'max-w-3xl overflow-hidden rounded-2xl border border-black/[0.08] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)]'
+                : ''
+            }
+          >
+          {page && (
+            <div className="flex items-center gap-2 border-b border-black/[0.05] bg-[#FAFBFD] px-5 py-3">
+              <VaultGlyph className="h-3.5 w-3.5" />
+              <span className="text-sm font-semibold text-ink">Deleted items</span>
+              <span className="text-[11px] text-ink-hint">
+                {entries.length} item{entries.length === 1 ? '' : 's'}
+              </span>
+            </div>
+          )}
+          <div className={page ? 'p-5' : ''}>
           {entries.length === 0 ? (
             <div className="py-10 text-center text-sm leading-relaxed text-ink-hint">
               The vault is empty. Anything Verlox deletes is copied here first so
@@ -360,6 +408,8 @@ export function VaultView({
             </ul>
           )}
           {error && <div className="mt-2 text-[11px] text-[#B4632F]">{error}</div>}
+          </div>
+          </div>
         </div>
       </div>
     </div>

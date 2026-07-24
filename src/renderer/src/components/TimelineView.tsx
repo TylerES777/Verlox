@@ -89,36 +89,53 @@ export function TimelineView({
     <div
       className={
         page
-          ? 'flex h-full w-full justify-center overflow-hidden bg-white p-6'
+          ? 'flex h-full w-full flex-col overflow-hidden bg-[#FAFAFC]'
           : 'fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16'
       }
       onMouseDown={page ? undefined : onClose}
     >
       <div
         className={`flex max-h-full w-full flex-col overflow-hidden ${
-          page ? 'max-w-2xl' : 'max-w-lg rounded-2xl border border-hairline bg-card shadow-2xl'
+          page ? 'h-full' : 'max-w-lg rounded-2xl border border-hairline bg-card shadow-2xl'
         }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-hairline px-4 py-3">
-          <div className="flex items-center gap-2">
-            <ClockGlyph />
-            <span className="text-sm font-semibold text-ink">Timeline</span>
-            <span className="text-[11px] text-ink-hint">
-              {events.length} action{events.length === 1 ? '' : 's'}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
+        {page ? (
+          /* Page title block — big title + subtitle, Clear as a pill action. */
+          <div className="flex shrink-0 items-start justify-between px-8 pb-4 pt-6">
+            <div>
+              <h1 className="text-[24px] font-semibold tracking-tight text-ink">Timeline</h1>
+              <p className="mt-1 text-[13px] text-ink-hint">
+                Everything Verlox has done, in order.
+              </p>
+            </div>
             {events.length > 0 && (
               <button
                 onClick={clear}
-                className="rounded-md px-2 py-0.5 text-[11px] text-ink-hint hover:bg-black/5 hover:text-ink"
+                className="rounded-lg border border-black/[0.08] bg-white px-3 py-1.5 text-[12px] font-medium text-ink-label shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-colors hover:text-ink"
               >
                 Clear
               </button>
             )}
-            {!page && (
+          </div>
+        ) : (
+          <div className="flex shrink-0 items-center justify-between border-b border-hairline px-4 py-3">
+            <div className="flex items-center gap-2">
+              <ClockGlyph />
+              <span className="text-sm font-semibold text-ink">Timeline</span>
+              <span className="text-[11px] text-ink-hint">
+                {events.length} action{events.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              {events.length > 0 && (
+                <button
+                  onClick={clear}
+                  className="rounded-md px-2 py-0.5 text-[11px] text-ink-hint hover:bg-black/5 hover:text-ink"
+                >
+                  Clear
+                </button>
+              )}
               <button
                 onClick={onClose}
                 className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
@@ -126,12 +143,29 @@ export function TimelineView({
               >
                 ✕
               </button>
-            )}
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Feed */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {/* Feed — page mode: white dashboard card with a tinted header strip. */}
+        <div className={page ? 'min-h-0 flex-1 overflow-y-auto px-8 pb-8' : 'min-h-0 flex-1 overflow-y-auto px-4 py-3'}>
+          <div
+            className={
+              page
+                ? 'max-w-3xl overflow-hidden rounded-2xl border border-black/[0.08] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)]'
+                : ''
+            }
+          >
+          {page && (
+            <div className="flex items-center gap-2 border-b border-black/[0.05] bg-[#FAFBFD] px-5 py-3">
+              <ClockGlyph className="h-3.5 w-3.5" />
+              <span className="text-sm font-semibold text-ink">Recent actions</span>
+              <span className="text-[11px] text-ink-hint">
+                {events.length} action{events.length === 1 ? '' : 's'}
+              </span>
+            </div>
+          )}
+          <div className={page ? 'p-5' : ''}>
           {visible.length === 0 ? (
             <div className="py-10 text-center text-sm leading-relaxed text-ink-hint">
               {events.length === 0
@@ -195,6 +229,8 @@ export function TimelineView({
               full history
             </button>
           )}
+          </div>
+          </div>
         </div>
       </div>
     </div>

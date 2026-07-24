@@ -33,6 +33,14 @@ const CARD_SHADOW =
 const INPUT_CLS =
   'w-full rounded-lg border border-black/[0.08] bg-white/80 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-hint focus:border-ink/25 focus:outline-none';
 
+// Page-mode card anatomy (dashboard-style): white card on a faint canvas,
+// tinted header strip holding the section name, padded body below.
+const PAGE_CARD =
+  'overflow-hidden rounded-2xl border border-black/[0.08] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)]';
+const PAGE_CARD_HEAD =
+  'flex items-center gap-2 border-b border-black/[0.05] bg-[#FAFBFD] px-5 py-3';
+const PAGE_CARD_BODY = 'p-5';
+
 export function SettingsView({
   onClose,
   page = false,
@@ -115,7 +123,7 @@ export function SettingsView({
     <div
       className={
         page
-          ? 'flex h-full w-full justify-center overflow-hidden bg-white p-6'
+          ? 'flex h-full w-full flex-col overflow-hidden bg-[#FAFAFC]'
           : 'fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16 backdrop-blur-[2px]'
       }
       onMouseDown={page ? undefined : onClose}
@@ -123,26 +131,35 @@ export function SettingsView({
       <div
         className={`flex max-h-full w-full flex-col overflow-hidden ${
           page
-            ? 'max-w-2xl'
+            ? 'h-full'
             : 'max-w-lg rounded-3xl border border-black/[0.08] bg-white shadow-2xl'
         }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-hairline px-4 py-3">
-          <div className="flex items-center gap-2">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="3" stroke="#3A3A3A" strokeWidth="1.6" />
-              <path
-                d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"
-                stroke="#3A3A3A"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="text-sm font-semibold text-ink">Settings</span>
+        {/* Header — page mode owns the full-width page title row
+            (Perplexity-style); modal keeps the compact card header. */}
+        {page ? (
+          /* Page title block — big title + one-line subtitle, dashboard-style. */
+          <div className="shrink-0 px-8 pb-4 pt-6">
+            <h1 className="text-[24px] font-semibold tracking-tight text-ink">Settings</h1>
+            <p className="mt-1 text-[13px] text-ink-hint">
+              Providers, agent behavior, permissions, and what Verlox can see.
+            </p>
           </div>
-          {!page && (
+        ) : (
+          <div className="flex shrink-0 items-center justify-between border-b border-hairline px-4 py-3">
+            <div className="flex items-center gap-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" stroke="#3A3A3A" strokeWidth="1.6" />
+                <path
+                  d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"
+                  stroke="#3A3A3A"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <span className="text-sm font-semibold text-ink">Settings</span>
+            </div>
             <button
               onClick={onClose}
               className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
@@ -150,15 +167,20 @@ export function SettingsView({
             >
               ✕
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* Body */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {/* Body — page mode groups every section into an iOS-style rounded
+            glass card on a roomy full-width canvas. */}
+        <div className={page ? 'min-h-0 flex-1 overflow-y-auto px-8 py-4' : 'min-h-0 flex-1 overflow-y-auto px-4 py-4'}>
+          <div className={page ? 'max-w-3xl space-y-4' : ''}>
           {/* AI providers */}
-          <section>
-            <h3 className="text-sm font-semibold text-ink">AI providers</h3>
-            <p className="mt-1 text-[11px] leading-relaxed text-ink-hint">
+          <section className={page ? PAGE_CARD : ''}>
+            <div className={page ? PAGE_CARD_HEAD : ''}>
+              <h3 className="text-sm font-semibold text-ink">AI providers</h3>
+            </div>
+            <div className={page ? PAGE_CARD_BODY : ''}>
+            <p className={page ? 'text-[11px] leading-relaxed text-ink-hint' : 'mt-1 text-[11px] leading-relaxed text-ink-hint'}>
               Add any AI provider with an API key. Its model shows up in the
               chat-bar switcher and is called directly from your computer (no
               Verlox credits). Works with OpenAI, OpenRouter, Groq, local
@@ -261,11 +283,15 @@ export function SettingsView({
                 </div>
               )}
             </form>
+            </div>
           </section>
 
           {/* Agent behavior */}
-          <section className="mt-6 border-t border-hairline pt-4">
-            <h3 className="text-sm font-semibold text-ink">Agent behavior</h3>
+          <section className={page ? PAGE_CARD : 'mt-6 border-t border-hairline pt-4'}>
+            <div className={page ? PAGE_CARD_HEAD : ''}>
+              <h3 className="text-sm font-semibold text-ink">Agent behavior</h3>
+            </div>
+            <div className={page ? PAGE_CARD_BODY : ''}>
             <button
               onClick={toggleAuto}
               disabled={!settings}
@@ -291,12 +317,16 @@ export function SettingsView({
                 />
               </span>
             </button>
+            </div>
           </section>
 
           {/* Permissions */}
-          <section className="mt-6 border-t border-hairline pt-4">
-            <h3 className="text-sm font-semibold text-ink">Permissions</h3>
-            <p className="mt-1 text-[11px] leading-relaxed text-ink-hint">
+          <section className={page ? PAGE_CARD : 'mt-6 border-t border-hairline pt-4'}>
+            <div className={page ? PAGE_CARD_HEAD : ''}>
+              <h3 className="text-sm font-semibold text-ink">Permissions</h3>
+            </div>
+            <div className={page ? PAGE_CARD_BODY : ''}>
+            <p className={page ? 'text-[11px] leading-relaxed text-ink-hint' : 'mt-1 text-[11px] leading-relaxed text-ink-hint'}>
               What Verlox may do on its own. <b>Always</b> runs without asking,
               <b> Ask</b> pauses for approval, <b>Never</b> refuses the step
               entirely.
@@ -338,12 +368,16 @@ export function SettingsView({
                 );
               })}
             </div>
+            </div>
           </section>
 
           {/* Context boundaries — what Verlox can and can't see. */}
-          <section className="mt-6 border-t border-hairline pt-4">
-            <h3 className="text-sm font-semibold text-ink">What Verlox can see</h3>
-            <p className="mt-1 text-[11px] leading-relaxed text-ink-hint">
+          <section className={page ? PAGE_CARD : 'mt-6 border-t border-hairline pt-4'}>
+            <div className={page ? PAGE_CARD_HEAD : ''}>
+              <h3 className="text-sm font-semibold text-ink">What Verlox can see</h3>
+            </div>
+            <div className={page ? PAGE_CARD_BODY : ''}>
+            <p className={page ? 'text-[11px] leading-relaxed text-ink-hint' : 'mt-1 text-[11px] leading-relaxed text-ink-hint'}>
               Verlox isn’t all-seeing. This is exactly what it has access to when
               it plans and runs actions — so its visibility is never a mystery.
             </p>
@@ -373,7 +407,9 @@ export function SettingsView({
                 </li>
               ))}
             </ul>
+            </div>
           </section>
+          </div>
         </div>
       </div>
     </div>

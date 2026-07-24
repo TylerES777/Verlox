@@ -133,13 +133,8 @@ export function ConversationsShell() {
               />
             </div>
           ) : (
-            <span className="flex h-7 items-center text-[12.5px] font-medium text-ink">
-              {view === 'settings'
-                ? 'Settings'
-                : view === 'vault'
-                  ? 'Recovery Vault'
-                  : 'Timeline'}
-            </span>
+            /* Pages own their titles; this stays a plain drag strip. */
+            <span className="h-7 flex-1" />
           )}
         </div>
         {/* Main area. Terminals stay mounted (hidden) on every view so

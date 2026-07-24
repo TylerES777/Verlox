@@ -7,6 +7,7 @@ import { useUpdateStatus } from '../hooks/useUpdateStatus';
 import { VaultGlyph } from './VaultView';
 import { ClockGlyph } from './TimelineView';
 import type { AppView } from './ConversationsShell';
+import verloxIcon from '../assets/verlox-icon.svg';
 
 interface SidebarProps {
   // Which surface is showing in the main area; drives the nav highlight.
@@ -32,27 +33,29 @@ export function Sidebar({ activeView, onNavigate, onToggleSidebar }: SidebarProp
           the app controls (collapse, settings, vault, timeline) at its right
           in the sidebar's own theme. */}
       <div
-        className="flex items-center gap-2 px-4 pb-3 pt-4"
+        className="flex items-center justify-between px-4 pb-4 pt-4"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        <span className="text-base leading-none text-ink-label" aria-hidden="true">
-          ✦
-        </span>
-        <span className="text-sm font-medium tracking-tight text-ink">Verlox</span>
+        <img
+          src={verloxIcon}
+          alt="Verlox"
+          className="h-7 w-7 rounded-lg"
+          draggable={false}
+        />
         <button
           type="button"
           onClick={onToggleSidebar}
           aria-label="Hide sidebar"
           title="Hide sidebar"
-          className="ml-auto flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-label transition-colors hover:bg-black/[0.06] hover:text-ink"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <svg
             viewBox="0 0 16 16"
-            className="h-3.5 w-3.5"
+            className="h-[18px] w-[18px]"
             fill="none"
             stroke="currentColor"
-            strokeWidth="1.4"
+            strokeWidth="1.3"
             strokeLinejoin="round"
             aria-hidden="true"
           >
@@ -63,8 +66,8 @@ export function Sidebar({ activeView, onNavigate, onToggleSidebar }: SidebarProp
       </div>
 
       {/* App navigation — each row is a page in the main area. */}
-      <nav className="px-2 pt-1">
-        <ul className="space-y-0.5">
+      <nav className="px-3 pt-1">
+        <ul className="space-y-1">
           <NavRow
             label="Terminal"
             active={activeView === 'terminal'}
@@ -97,12 +100,48 @@ export function Sidebar({ activeView, onNavigate, onToggleSidebar }: SidebarProp
       {/* Live running processes. */}
       <RunningSection />
 
+      {/* Upgrade pill — Perplexity-style, centered above the account row.
+          Free users only; Pro has nothing to upgrade to. */}
+      <UpgradeBar />
+
       {/* Account — email, usage/plan, change plan, log out. Pinned bottom. */}
       <ProfileSection />
     </aside>
   );
 }
 
+function UpgradeBar() {
+  const { usage } = useUsage();
+  const { openUpgrade } = useUpgrade();
+  if (usage?.tier === 'pro') return null;
+  return (
+    <div className="mt-auto flex shrink-0 justify-center px-3 pb-2 pt-2">
+      <button
+        type="button"
+        onClick={() => openUpgrade()}
+        className="flex items-center gap-1.5 rounded-full border border-black/[0.08] bg-white/70 px-3.5 py-1.5 text-[12px] font-medium text-ink-label transition-colors hover:bg-white hover:text-ink"
+      >
+        <svg
+          viewBox="0 0 16 16"
+          className="h-3.5 w-3.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="6.25" />
+          <path d="M8 5v6M5 8h6" />
+        </svg>
+        Upgrade plan
+      </button>
+    </div>
+  );
+}
+
+// Perplexity-style nav row: comfortable height, larger icon + label, and the
+// SAME soft tint for hover and selection (a touch stronger when active) — no
+// white card, no shadow.
 function NavRow({
   label,
   active,
@@ -119,13 +158,17 @@ function NavRow({
       <button
         type="button"
         onClick={onClick}
-        className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
+        className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13.5px] transition-colors [&_svg]:h-[18px] [&_svg]:w-[18px] ${
           active
-            ? 'bg-card font-medium text-ink shadow-[0_1px_2px_rgba(0,0,0,0.05)]'
+            ? 'bg-black/[0.06] font-medium text-ink'
             : 'text-ink-label hover:bg-black/[0.04] hover:text-ink'
         }`}
       >
-        <span className="flex w-4 shrink-0 items-center justify-center text-ink-hint">
+        <span
+          className={`flex w-5 shrink-0 items-center justify-center ${
+            active ? 'text-ink' : 'text-ink-hint'
+          }`}
+        >
           {icon}
         </span>
         {label}

@@ -1,0 +1,39 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Verlox app icon">
+  <defs>
+    <!-- Ink squircle body — same vertical ink gradient as the app's
+         primary buttons, so the icon sits inside the brand's material. -->
+    <linearGradient id="vx-bg" x1="256" y1="16" x2="256" y2="496" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#26272D"/>
+      <stop offset="0.55" stop-color="#141519"/>
+      <stop offset="1" stop-color="#0A0A0C"/>
+    </linearGradient>
+    <!-- Top sheen — the glass highlight that runs across every surface. -->
+    <linearGradient id="vx-sheen" x1="256" y1="16" x2="256" y2="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- The live pip — identical gradient to the running-process dot. -->
+    <linearGradient id="vx-pip" x1="304" y1="234" x2="348" y2="278" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5FD08F"/>
+      <stop offset="1" stop-color="#1E8048"/>
+    </linearGradient>
+    <radialGradient id="vx-glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(326 256) scale(60)">
+      <stop offset="0" stop-color="#56C988" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#56C988" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Squircle body -->
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#vx-bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#vx-sheen)"/>
+  <!-- 1px inner glass edge -->
+  <rect x="16.75" y="16.75" width="478.5" height="478.5" rx="115.25" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="1.5"/>
+
+  <!-- Prompt chevron -->
+  <path d="M178 168 L262 256 L178 344" stroke="#F5F6F8" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Live pip: ambient glow, body, top highlight -->
+  <circle cx="326" cy="256" r="58" fill="url(#vx-glow)"/>
+  <circle cx="326" cy="256" r="24" fill="url(#vx-pip)"/>
+  <circle cx="319" cy="249" r="7.5" fill="#FFFFFF" fill-opacity="0.45"/>
+</svg>
