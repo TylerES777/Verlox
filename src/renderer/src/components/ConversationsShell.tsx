@@ -11,6 +11,9 @@ function makeTerminal(): ConversationTab {
   return { id: crypto.randomUUID(), title: 'Terminal', kind: 'terminal' };
 }
 
+// The surfaces the sidebar navigates between.
+export type AppView = 'terminal' | 'settings' | 'vault' | 'timeline';
+
 // Top-level authed screen. The terminal is now the single home: each tab is
 // an interactive terminal with Verlox's agent panel floating over it (talk in
 // plain English, approve steps, undo via restore points). The old separate
@@ -28,21 +31,26 @@ export function ConversationsShell() {
   const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
   // Sidebar collapse. Starts open; the title-bar toggle hides/shows it.
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  // The Settings page (modal). Opened by the top-bar gear, or by anything that
-  // fires the 'verlox:open-settings' event (e.g. the chat bar's "add provider").
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  // The Recovery Vault page (modal), opened by its top-bar button.
-  const [vaultOpen, setVaultOpen] = useState(false);
-  // The Timeline replay page (modal), opened by its top-bar button.
-  const [timelineOpen, setTimelineOpen] = useState(false);
+  // Which surface fills the main area. Settings / Vault / Timeline are real
+  // pages navigated from the sidebar, not floating modals. Terminals stay
+  // mounted (hidden) on other views so background commands keep running.
+  const [view, setView] = useState<AppView>('terminal');
   useEffect(() => {
-    const openSettings = () => setSettingsOpen(true);
-    const openVault = () => setVaultOpen(true);
+    const openSettings = () => setView('settings');
+    const openVault = () => setView('vault');
+    const selectTab = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (!id) return;
+      setActiveId(id);
+      setView('terminal');
+    };
     window.addEventListener('verlox:open-settings', openSettings);
     window.addEventListener('verlox:open-vault', openVault);
+    window.addEventListener('verlox:select-tab', selectTab);
     return () => {
       window.removeEventListener('verlox:open-settings', openSettings);
       window.removeEventListener('verlox:open-vault', openVault);
+      window.removeEventListener('verlox:select-tab', selectTab);
     };
   }, []);
 
@@ -87,14 +95,9 @@ export function ConversationsShell() {
     <div className="flex h-full w-full bg-white">
       {sidebarOpen && (
         <Sidebar
-          tabs={tabs}
-          activeId={activeId}
-          onSelect={setActiveId}
-          onClose={handleClose}
+          activeView={view}
+          onNavigate={setView}
           onToggleSidebar={() => setSidebarOpen(false)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenVault={() => setVaultOpen(true)}
-          onOpenTimeline={() => setTimelineOpen(true)}
         />
       )}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -116,40 +119,53 @@ export function ConversationsShell() {
               <SidebarGlyph />
             </button>
           )}
-          <div
-            className="min-w-0 flex-1"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <TabBar
-              tabs={tabs}
-              activeId={activeId}
-              onSelect={setActiveId}
-              onClose={handleClose}
-              onNew={handleNew}
-            />
-          </div>
+          {view === 'terminal' ? (
+            <div
+              className="min-w-0 flex-1"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            >
+              <TabBar
+                tabs={tabs}
+                activeId={activeId}
+                onSelect={setActiveId}
+                onClose={handleClose}
+                onNew={handleNew}
+              />
+            </div>
+          ) : (
+            <span className="flex h-7 items-center text-[12.5px] font-medium text-ink">
+              {view === 'settings'
+                ? 'Settings'
+                : view === 'vault'
+                  ? 'Recovery Vault'
+                  : 'Timeline'}
+            </span>
+          )}
         </div>
-          {/* Terminal board — flush white, every terminal stays mounted so
-            background tabs keep running. */}
+        {/* Main area. Terminals stay mounted (hidden) on every view so
+            background tabs keep running; pages render instead when active. */}
         <div className="min-h-0 flex-1 overflow-hidden">
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              className={tab.id === activeId ? 'h-full' : 'hidden'}
+              className={view === 'terminal' && tab.id === activeId ? 'h-full' : 'hidden'}
             >
               <TerminalView
                 id={tab.id}
-                isActive={tab.id === activeId}
+                isActive={view === 'terminal' && tab.id === activeId}
                 onFirstCommand={(cmd) => renameTab(tab.id, cmd)}
               />
             </div>
           ))}
+          {view === 'settings' && (
+            <SettingsView page onClose={() => setView('terminal')} />
+          )}
+          {view === 'vault' && <VaultView page onClose={() => setView('terminal')} />}
+          {view === 'timeline' && (
+            <TimelineView page onClose={() => setView('terminal')} />
+          )}
         </div>
       </div>
-
-      {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      {vaultOpen && <VaultView onClose={() => setVaultOpen(false)} />}
-      {timelineOpen && <TimelineView onClose={() => setTimelineOpen(false)} />}
     </div>
   );
 }

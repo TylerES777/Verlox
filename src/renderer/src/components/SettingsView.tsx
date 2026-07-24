@@ -33,7 +33,15 @@ const CARD_SHADOW =
 const INPUT_CLS =
   'w-full rounded-lg border border-black/[0.08] bg-white/80 px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-hint focus:border-ink/25 focus:outline-none';
 
-export function SettingsView({ onClose }: { onClose: () => void }) {
+export function SettingsView({
+  onClose,
+  page = false,
+}: {
+  onClose: () => void;
+  // page = fill the main area as a real page (sidebar navigation) instead
+  // of a floating modal.
+  page?: boolean;
+}) {
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
 
   // Add-provider form.
@@ -105,11 +113,19 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16 backdrop-blur-[2px]"
-      onMouseDown={onClose}
+      className={
+        page
+          ? 'flex h-full w-full justify-center overflow-hidden bg-white p-6'
+          : 'fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16 backdrop-blur-[2px]'
+      }
+      onMouseDown={page ? undefined : onClose}
     >
       <div
-        className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-black/[0.08] bg-white shadow-2xl"
+        className={`flex max-h-full w-full flex-col overflow-hidden ${
+          page
+            ? 'max-w-2xl'
+            : 'max-w-lg rounded-3xl border border-black/[0.08] bg-white shadow-2xl'
+        }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -126,13 +142,15 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             </svg>
             <span className="text-sm font-semibold text-ink">Settings</span>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
-            aria-label="Close settings"
-          >
-            ✕
-          </button>
+          {!page && (
+            <button
+              onClick={onClose}
+              className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
+              aria-label="Close settings"
+            >
+              ✕
+            </button>
+          )}
         </div>
 
         {/* Body */}

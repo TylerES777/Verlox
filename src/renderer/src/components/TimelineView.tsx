@@ -26,7 +26,14 @@ function fmtDay(ms: number): string {
   });
 }
 
-export function TimelineView({ onClose }: { onClose: () => void }) {
+export function TimelineView({
+  onClose,
+  page = false,
+}: {
+  onClose: () => void;
+  // page = fill the main area as a real page instead of a floating modal.
+  page?: boolean;
+}) {
   const { isPro } = useTier();
   const { openUpgrade } = useUpgrade();
   const [events, setEvents] = useState<TimelineEvent[]>([]);
@@ -80,11 +87,17 @@ export function TimelineView({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16"
-      onMouseDown={onClose}
+      className={
+        page
+          ? 'flex h-full w-full justify-center overflow-hidden bg-white p-6'
+          : 'fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16'
+      }
+      onMouseDown={page ? undefined : onClose}
     >
       <div
-        className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-hairline bg-card shadow-2xl"
+        className={`flex max-h-full w-full flex-col overflow-hidden ${
+          page ? 'max-w-2xl' : 'max-w-lg rounded-2xl border border-hairline bg-card shadow-2xl'
+        }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -105,13 +118,15 @@ export function TimelineView({ onClose }: { onClose: () => void }) {
                 Clear
               </button>
             )}
-            <button
-              onClick={onClose}
-              className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
-              aria-label="Close timeline"
-            >
-              ✕
-            </button>
+            {!page && (
+              <button
+                onClick={onClose}
+                className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
+                aria-label="Close timeline"
+              >
+                ✕
+              </button>
+            )}
           </div>
         </div>
 

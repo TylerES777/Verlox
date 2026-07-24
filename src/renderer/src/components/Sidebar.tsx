@@ -1,58 +1,26 @@
 import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import type { ConversationTab } from './TabBar';
 import { finalizeProcess, useRunningProcesses } from '../hooks/useRunningProcesses';
-import { readTerminalText } from '../lib/terminalRegistry';
 import { useAuth } from '../contexts/AuthContext';
 import { useUsage } from '../contexts/UsageContext';
 import { useUpgrade } from '../contexts/UpgradeContext';
 import { useUpdateStatus } from '../hooks/useUpdateStatus';
 import { VaultGlyph } from './VaultView';
 import { ClockGlyph } from './TimelineView';
+import type { AppView } from './ConversationsShell';
 
 interface SidebarProps {
-  tabs: ConversationTab[];
-  activeId: string;
-  onSelect: (id: string) => void;
-  onClose: (id: string) => void;
-  // Top-row controls (the old title strip's buttons now live here, inside
-  // the sidebar's own theme).
+  // Which surface is showing in the main area; drives the nav highlight.
+  activeView: AppView;
+  onNavigate: (view: AppView) => void;
   onToggleSidebar: () => void;
-  onOpenSettings: () => void;
-  onOpenVault: () => void;
-  onOpenTimeline: () => void;
 }
 
-// Left sidebar. Four stacked sections: a search box, the open tabs, the
-// Rewind timeline (restore points the app makes on its own — no folder to
-// pick), and the live-running processes. The terminal sits as a centered
-// board to the right (see ConversationsShell). The new-terminal button lives
-// at the top of the board area, not here.
-export function Sidebar({
-  tabs,
-  activeId,
-  onSelect,
-  onClose,
-  onToggleSidebar,
-  onOpenSettings,
-  onOpenVault,
-  onOpenTimeline,
-}: SidebarProps) {
-  const [query, setQuery] = useState('');
-  // Hover-preview card for a tab: shows that terminal's recent output.
-  const [preview, setPreview] = useState<{
-    title: string;
-    top: number;
-    left: number;
-    text: string;
-  } | null>(null);
-  const q = query.trim().toLowerCase();
-  const visibleTabs = q
-    ? tabs.filter((t) => t.title.toLowerCase().includes(q))
-    : tabs;
-
+// Left sidebar: brand row (drag handle + collapse), the app navigation
+// (Terminal / Settings / Recovery Vault / Timeline as labeled rows, each a
+// real page in the main area), live running processes, and the account
+// section pinned at the bottom. Tabs live only in the top tab bar now.
+export function Sidebar({ activeView, onNavigate, onToggleSidebar }: SidebarProps) {
   return (
-    <>
     <aside
       className="flex min-h-0 w-64 shrink-0 flex-col overflow-hidden"
       style={{
@@ -71,171 +39,123 @@ export function Sidebar({
           ✦
         </span>
         <span className="text-sm font-medium tracking-tight text-ink">Verlox</span>
-        <div
-          className="ml-auto flex items-center gap-0.5"
+        <button
+          type="button"
+          onClick={onToggleSidebar}
+          aria-label="Hide sidebar"
+          title="Hide sidebar"
+          className="ml-auto flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            aria-label="Settings"
-            title="Settings"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
+          <svg
+            viewBox="0 0 16 16"
+            className="h-3.5 w-3.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+            aria-hidden="true"
           >
-            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5" />
-              <path
-                d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={onOpenVault}
-            aria-label="Recovery Vault"
-            title="Recovery Vault"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
-          >
-            <VaultGlyph className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={onOpenTimeline}
-            aria-label="Timeline"
-            title="Timeline — everything Verlox has done"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
-          >
-            <ClockGlyph className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleSidebar}
-            aria-label="Hide sidebar"
-            title="Hide sidebar"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-ink-hint transition-colors hover:bg-black/[0.05] hover:text-ink"
-          >
-            <svg
-              viewBox="0 0 16 16"
-              className="h-3.5 w-3.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="2" />
-              <line x1="6.5" y1="3.5" x2="6.5" y2="12.5" />
-            </svg>
-          </button>
-        </div>
+            <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="2" />
+            <line x1="6.5" y1="3.5" x2="6.5" y2="12.5" />
+          </svg>
+        </button>
       </div>
 
-      {/* Search */}
-      <div className="px-3 pb-3">
-        <div className="relative">
-          <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink-hint">
-            <SearchGlyph />
-          </span>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search tabs…"
-            className="w-full rounded-lg border border-hairline bg-card py-1.5 pl-7 pr-2 text-[12.5px] text-ink placeholder:text-ink-hint focus:border-ink/20 focus:outline-none"
+      {/* App navigation — each row is a page in the main area. */}
+      <nav className="px-2 pt-1">
+        <ul className="space-y-0.5">
+          <NavRow
+            label="Terminal"
+            active={activeView === 'terminal'}
+            onClick={() => onNavigate('terminal')}
+            icon={<TerminalGlyph />}
           />
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="px-2">
-        <SectionLabel>Tabs</SectionLabel>
-        <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto">
-          {/* Newest at the top, oldest below. */}
-          {[...visibleTabs].reverse().map((tab) => {
-            const active = tab.id === activeId;
-            return (
-              <li key={tab.id}>
-                <div
-                  onClick={() => onSelect(tab.id)}
-                  onMouseEnter={(e) => {
-                    const r = e.currentTarget.getBoundingClientRect();
-                    setPreview({
-                      title: tab.title,
-                      top: Math.min(r.top, window.innerHeight - 332),
-                      left: r.right + 10,
-                      text: readTerminalText(tab.id, 80),
-                    });
-                  }}
-                  onMouseLeave={() => setPreview(null)}
-                  className={`group flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] ${
-                    active
-                      ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.05)]'
-                      : 'text-ink-label hover:bg-black/[0.04] hover:text-ink'
-                  }`}
-                >
-                  <TerminalGlyph />
-                  <span className="min-w-0 flex-1 truncate">{tab.title}</span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClose(tab.id);
-                    }}
-                    aria-label="Close tab"
-                    className={`flex h-4 w-4 items-center justify-center rounded text-ink-micro hover:text-ink ${
-                      active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                    }`}
-                  >
-                    <CloseGlyph />
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-          {visibleTabs.length === 0 && (
-            <li className="px-2 py-1 text-[11.5px] text-ink-hint">No tabs match.</li>
-          )}
+          <NavRow
+            label="Settings"
+            active={activeView === 'settings'}
+            onClick={() => onNavigate('settings')}
+            icon={<GearGlyph />}
+          />
+          <NavRow
+            label="Recovery Vault"
+            active={activeView === 'vault'}
+            onClick={() => onNavigate('vault')}
+            icon={<VaultGlyph className="h-3.5 w-3.5" />}
+          />
+          <NavRow
+            label="Timeline"
+            active={activeView === 'timeline'}
+            onClick={() => onNavigate('timeline')}
+            icon={<ClockGlyph className="h-3.5 w-3.5" />}
+          />
         </ul>
-      </div>
+      </nav>
 
       <Divider />
 
       {/* Live running processes. */}
-      <RunningSection onSelect={onSelect} />
+      <RunningSection />
 
       {/* Account — email, usage/plan, change plan, log out. Pinned bottom. */}
       <ProfileSection />
     </aside>
-    {preview &&
-      createPortal(
-        <div
-          style={{
-            position: 'fixed',
-            left: preview.left,
-            top: preview.top,
-            zIndex: 100,
-          }}
-          className="pointer-events-none w-[440px] overflow-hidden rounded-xl border border-hairline bg-card p-3 shadow-xl"
-        >
-          <div className="mb-1.5 truncate text-[11px] font-medium text-ink-label">
-            {preview.title}
-          </div>
-          <pre className="max-h-[280px] overflow-hidden whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
-            {preview.text || 'No output yet.'}
-          </pre>
-        </div>,
-        document.body,
-      )}
-    </>
+  );
+}
+
+function NavRow({
+  label,
+  active,
+  onClick,
+  icon,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors ${
+          active
+            ? 'bg-card font-medium text-ink shadow-[0_1px_2px_rgba(0,0,0,0.05)]'
+            : 'text-ink-label hover:bg-black/[0.04] hover:text-ink'
+        }`}
+      >
+        <span className="flex w-4 shrink-0 items-center justify-center text-ink-hint">
+          {icon}
+        </span>
+        {label}
+      </button>
+    </li>
+  );
+}
+
+function GearGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 // --- Running ---------------------------------------------------------------
 
-function RunningSection({ onSelect }: { onSelect: (id: string) => void }) {
+function RunningSection() {
   const procs = useRunningProcesses();
   const live = procs.filter((p) => p.status === 'running');
+  // Jump to the tab a process runs in. The sidebar no longer owns tab state,
+  // so this asks the shell to switch via an event.
+  const onSelect = (id: string) =>
+    window.dispatchEvent(new CustomEvent('verlox:select-tab', { detail: { id } }));
 
   return (
     <div className="shrink-0 px-2 pb-3 pt-1">
@@ -481,15 +401,6 @@ function StopGlyph() {
 
 // --- glyphs ----------------------------------------------------------------
 
-function SearchGlyph() {
-  return (
-    <svg viewBox="0 0 14 14" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-      <circle cx="6" cy="6" r="4" />
-      <line x1="9" y1="9" x2="12.5" y2="12.5" />
-    </svg>
-  );
-}
-
 function TerminalGlyph() {
   return (
     <svg viewBox="0 0 14 14" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -500,11 +411,3 @@ function TerminalGlyph() {
   );
 }
 
-function CloseGlyph() {
-  return (
-    <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-      <line x1="1.5" y1="1.5" x2="8.5" y2="8.5" />
-      <line x1="8.5" y1="1.5" x2="1.5" y2="8.5" />
-    </svg>
-  );
-}

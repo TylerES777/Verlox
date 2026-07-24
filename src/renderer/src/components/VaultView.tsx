@@ -73,7 +73,14 @@ function FileIcon() {
   );
 }
 
-export function VaultView({ onClose }: { onClose: () => void }) {
+export function VaultView({
+  onClose,
+  page = false,
+}: {
+  onClose: () => void;
+  // page = fill the main area as a real page instead of a floating modal.
+  page?: boolean;
+}) {
   const { isPro } = useTier();
   const { openUpgrade } = useUpgrade();
   const [entries, setEntries] = useState<VaultEntry[]>([]);
@@ -155,11 +162,17 @@ export function VaultView({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16"
-      onMouseDown={onClose}
+      className={
+        page
+          ? 'flex h-full w-full justify-center overflow-hidden bg-white p-6'
+          : 'fixed inset-0 z-[60] flex items-start justify-center bg-black/20 p-6 pt-16'
+      }
+      onMouseDown={page ? undefined : onClose}
     >
       <div
-        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-hairline bg-card shadow-2xl"
+        className={`flex max-h-full w-full flex-col overflow-hidden ${
+          page ? 'max-w-2xl' : 'max-w-xl rounded-2xl border border-hairline bg-card shadow-2xl'
+        }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -171,13 +184,15 @@ export function VaultView({ onClose }: { onClose: () => void }) {
               {entries.length} item{entries.length === 1 ? '' : 's'}
             </span>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
-            aria-label="Close vault"
-          >
-            ✕
-          </button>
+          {!page && (
+            <button
+              onClick={onClose}
+              className="rounded-md px-2 py-0.5 text-sm text-ink-hint hover:bg-black/5 hover:text-ink"
+              aria-label="Close vault"
+            >
+              ✕
+            </button>
+          )}
         </div>
 
         {/* Toolbar: search + filters */}
