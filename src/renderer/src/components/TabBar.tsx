@@ -1,7 +1,10 @@
+import { useEffect, useRef, useState } from 'react';
+
 export interface ConversationTab {
   id: string;
   title: string;
-  // 'conversation' — the plain-English plan/approve/run flow (legacy).
+  // 'conversation' — the AI terminal: chat with Verlox (plan / approve /
+  // run, Claude Code style), no raw shell surface.
   // 'terminal' — a real interactive PTY the user types into directly,
   // able to host interactive CLIs (Claude Code, vim, REPLs).
   kind: 'conversation' | 'terminal';
@@ -12,14 +15,38 @@ interface TabBarProps {
   activeId: string;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
-  // Opens a new terminal tab.
+  // Opens a new basic terminal tab.
   onNew: () => void;
+  // Opens a new AI terminal (chat) tab.
+  onNewAi: () => void;
 }
 
 // The tab strip. A rounded gray segmented-control holds all open tabs; the
-// active one is white so it reads as belonging to the surface below. The
-// new-tab button sits outside the control and opens a fresh terminal.
-export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps) {
+// new-tab button opens a small card offering the two surfaces: a basic
+// terminal, or the AI terminal (chat).
+export function TabBar({ tabs, activeId, onSelect, onClose, onNew, onNewAi }: TabBarProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // Close the new-tab card on an outside click or Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
   return (
     <div className="flex shrink-0 items-center gap-2">
       {/* Segmented-control container — gray pill holding all tabs. Scrolls
@@ -45,13 +72,13 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
                     : 'text-ink-label group-hover:text-ink'
                 }`}
               >
-                {tab.kind === 'terminal' ? <TerminalGlyph /> : null}
+                {tab.kind === 'terminal' ? <TerminalGlyph /> : <SparkGlyph />}
                 <span className="truncate">{tab.title}</span>
               </button>
               <button
                 type="button"
                 onClick={() => onClose(tab.id)}
-                aria-label="Close conversation"
+                aria-label="Close tab"
                 className={`flex h-4 w-4 items-center justify-center rounded text-ink-micro transition-opacity hover:text-ink focus:outline-none ${
                   active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                 }`}
@@ -63,16 +90,65 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps
         })}
       </div>
 
-      {/* New-tab button — opens a fresh terminal directly. */}
-      <button
-        type="button"
-        onClick={onNew}
-        aria-label="New terminal"
-        title="New terminal"
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-      >
-        <PlusGlyph />
-      </button>
+      {/* New-tab affordance — a small card offering the two surfaces. */}
+      <div className="relative" ref={menuRef}>
+        <button
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-label="New tab"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+        >
+          <PlusGlyph />
+        </button>
+
+        {menuOpen && (
+          <div
+            role="menu"
+            className="absolute left-0 top-full z-30 mt-1.5 w-64 overflow-hidden rounded-xl border border-black/[0.08] bg-white p-1 shadow-xl"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onNewAi();
+                setMenuOpen(false);
+              }}
+              className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-surface-subtle focus:outline-none"
+            >
+              <span className="mt-0.5 text-ink-label">
+                <SparkGlyph />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-medium text-ink">AI Terminal</span>
+                <span className="block text-[11px] leading-snug text-ink-hint">
+                  Chat in plain English. Plans, approvals, undo.
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onNew();
+                setMenuOpen(false);
+              }}
+              className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-surface-subtle focus:outline-none"
+            >
+              <span className="mt-0.5 text-ink-label">
+                <TerminalGlyph />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-medium text-ink">Terminal</span>
+                <span className="block text-[11px] leading-snug text-ink-hint">
+                  A real shell, with Blocks and AI insights.
+                </span>
+              </span>
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -92,6 +168,22 @@ function TerminalGlyph() {
       <rect x="1" y="2.5" width="12" height="9" rx="1.5" />
       <path d="M3.5 5.5L6 7l-2.5 1.5" />
       <line x1="7.5" y1="8.5" x2="10" y2="8.5" />
+    </svg>
+  );
+}
+
+function SparkGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-3.5 w-3.5 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3l1.8 4.9L18.7 9.7 13.8 11.5 12 16.4 10.2 11.5 5.3 9.7 10.2 7.9 12 3z" />
     </svg>
   );
 }

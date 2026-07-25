@@ -107,34 +107,14 @@ function EmptyState({ onExampleClick }: EmptyStateProps) {
 
   // Ready-state pip — same lit-glass treatment as the Running pane's
   // green dot, sized down for the header strip. Signals "Verlox is
-  // live, just waiting on you" without saying anything explicit.
-  const pipStyle: React.CSSProperties = {
-    background: 'linear-gradient(135deg, #56C988 0%, #1E8048 100%)',
-    boxShadow:
-      'inset 0 0.5px 0 rgba(255,255,255,0.45), 0 0 6px rgba(40,160,90,0.55)',
-  };
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8">
       <div className="flex w-full max-w-reading flex-col items-center">
-        {/* Ready strip — small mono wordmark + pip, uppercase tracked
-            "ready" label. Same visual register as the Running pane
-            header so the whole app reads as one design system. */}
-        <div className="flex items-center gap-2">
-          <span
-            className="h-1.5 w-1.5 rounded-full animate-flicker"
-            style={pipStyle}
-            aria-hidden="true"
-          />
-          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-label">
-            Verlox · ready
-          </span>
-        </div>
-
         {/* Headline — tight letter-spacing, larger than before for
             the premium first-impression. Single line at the column
             width we target so it reads as a deliberate statement. */}
         <h1
-          className="mt-5 text-center text-[28px] font-semibold leading-tight text-ink"
+          className="text-center text-[28px] font-semibold leading-tight text-ink"
           style={{ letterSpacing: '-0.03em' }}
         >
           What would you like to do?
@@ -143,8 +123,8 @@ function EmptyState({ onExampleClick }: EmptyStateProps) {
         {/* Sub — narrower so the line breaks land naturally, slightly
             softer ink color for visual hierarchy under the headline. */}
         <p className="mt-3 max-w-[440px] text-center text-[14px] leading-relaxed text-ink-hint">
-          Type in plain English. Verlox plans the steps, runs them, and tells
-          you what happened — turn on Plan Mode to review every plan first.
+          Type in plain English. Verlox plans the steps, shows you the plan,
+          and runs it once you approve. Everything it does can be undone.
         </p>
 
         {/* Examples — three glass-tinted cards in a row at wide
@@ -315,11 +295,6 @@ interface ConversationViewProps {
   // mounted (hidden via CSS) so running commands and history survive a
   // tab switch — isActive only drives input focus.
   isActive: boolean;
-  // Session-wide Plan Mode preference, owned by ConversationsShell.
-  // Every ConversationView shares the same value; the per-conversation
-  // Header renders the toggle bound to it.
-  planMode: boolean;
-  onPlanModeChange: (value: boolean) => void;
   // Session-wide model selection (Haiku / Sonnet / Opus), owned by
   // ConversationsShell and shared across tabs. The Input bar renders the
   // switcher bound to it; useCommands sends it on each turn.
@@ -349,8 +324,6 @@ interface ConversationViewProps {
 export function ConversationView({
   conversationId,
   isActive,
-  planMode,
-  onPlanModeChange,
   modelChoice,
   onModelChoiceChange,
   onTitleChange,
@@ -414,7 +387,9 @@ export function ConversationView({
   } = useCommands(
     conversationId,
     cwd,
-    planMode,
+    // Plan-first is not a mode anymore: the AI terminal always lays out
+    // the plan and waits for approval before anything runs.
+    true,
     modelChoice,
     handleCwdChange,
     focusedFile,
@@ -560,8 +535,6 @@ export function ConversationView({
     <div className="flex h-full flex-col overflow-hidden">
       <Header
         displayPath={headerPath}
-        planMode={planMode}
-        onPlanModeChange={onPlanModeChange}
         canClear={messages.length > 0}
         onClear={handleClear}
       />
@@ -594,18 +567,23 @@ export function ConversationView({
           />
         </div>
       )}
-      <Input
-        ref={inputRef}
-        onSubmit={(text, image) => {
-          void submitInput(text, image);
-        }}
-        pickerInitialPath={cwd?.absolute ?? null}
-        onPickPath={handlePickPath}
-        locked={locked}
-        busy={isBusy}
-        modelChoice={modelChoice}
-        onModelChoiceChange={onModelChoiceChange}
-      />
+      {/* Conversational input column: capped and centered so the bar reads
+          like a chat composer, with the send button beside the text instead
+          of stranded at the window's far edge. */}
+      <div className="mx-auto w-full max-w-4xl">
+        <Input
+          ref={inputRef}
+          onSubmit={(text, image) => {
+            void submitInput(text, image);
+          }}
+          pickerInitialPath={cwd?.absolute ?? null}
+          onPickPath={handlePickPath}
+          locked={locked}
+          busy={isBusy}
+          modelChoice={modelChoice}
+          onModelChoiceChange={onModelChoiceChange}
+        />
+      </div>
     </div>
   );
 }

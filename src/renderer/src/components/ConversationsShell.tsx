@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { ModelChoice } from '@shared/types';
 import { TerminalView } from './TerminalView';
+import { ConversationView } from './ConversationView';
 import { TabBar, type ConversationTab } from './TabBar';
 import { Sidebar } from './Sidebar';
 import { SettingsView } from './SettingsView';
@@ -9,6 +11,10 @@ import { installProcessListeners } from '../hooks/useRunningProcesses';
 
 function makeTerminal(): ConversationTab {
   return { id: crypto.randomUUID(), title: 'Terminal', kind: 'terminal' };
+}
+
+function makeAiTerminal(): ConversationTab {
+  return { id: crypto.randomUUID(), title: 'AI Terminal', kind: 'conversation' };
 }
 
 // The surfaces the sidebar navigates between.
@@ -58,6 +64,22 @@ export function ConversationsShell() {
     const t = makeTerminal();
     setTabs((cs) => [...cs, t]);
     setActiveId(t.id);
+  }, []);
+
+  const handleNewAi = useCallback(() => {
+    const t = makeAiTerminal();
+    setTabs((cs) => [...cs, t]);
+    setActiveId(t.id);
+  }, []);
+
+  // Session-wide AI-terminal model choice, shared across conversation tabs.
+  // (Plan-first is always on — no plan-mode state anymore.)
+  const [modelChoice, setModelChoice] = useState<ModelChoice>('sonnet');
+
+  // AI-terminal tabs title themselves from the first message.
+  const setTabTitle = useCallback((tabId: string, title: string) => {
+    const t = title.length > 22 ? `${title.slice(0, 21)}…` : title;
+    setTabs((cs) => cs.map((c) => (c.id === tabId ? { ...c, title: t } : c)));
   }, []);
 
   // Rename a tab from its first command (only while still the default title).
@@ -130,6 +152,7 @@ export function ConversationsShell() {
                 onSelect={setActiveId}
                 onClose={handleClose}
                 onNew={handleNew}
+                onNewAi={handleNewAi}
               />
             </div>
           ) : (
@@ -145,11 +168,23 @@ export function ConversationsShell() {
               key={tab.id}
               className={view === 'terminal' && tab.id === activeId ? 'h-full' : 'hidden'}
             >
-              <TerminalView
-                id={tab.id}
-                isActive={view === 'terminal' && tab.id === activeId}
-                onFirstCommand={(cmd) => renameTab(tab.id, cmd)}
-              />
+              {tab.kind === 'conversation' ? (
+                <ConversationView
+                  conversationId={tab.id}
+                  isActive={view === 'terminal' && tab.id === activeId}
+                  modelChoice={modelChoice}
+                  onModelChoiceChange={setModelChoice}
+                  onTitleChange={setTabTitle}
+                  onRunningChange={() => {}}
+                  insertRequest={null}
+                />
+              ) : (
+                <TerminalView
+                  id={tab.id}
+                  isActive={view === 'terminal' && tab.id === activeId}
+                  onFirstCommand={(cmd) => renameTab(tab.id, cmd)}
+                />
+              )}
             </div>
           ))}
           {view === 'settings' && (

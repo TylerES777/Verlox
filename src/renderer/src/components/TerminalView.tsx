@@ -3,7 +3,6 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Shell } from '@shared/types';
-import { AgentPanel } from './AgentPanel';
 import { CopyButton } from './CopyButton';
 import { registerTerminal, unregisterTerminal } from '../lib/terminalRegistry';
 import { finalizeProcess, registerProcess } from '../hooks/useRunningProcesses';
@@ -546,9 +545,6 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
         )}
       </div>
 
-      {/* Right: the docked Verlox panel — owns the full right side of the
-          terminal area. See AgentPanel.tsx. */}
-      <AgentPanel terminalId={id} />
     </div>
   );
 }
@@ -675,42 +671,12 @@ function readBrain(): {
 // `aiUsed` is false for plain shell commands (the user typed straight into the
 // PTY, no model in the loop) — no token line, no model badge. When the AI ran
 // the step, pass aiUsed + tokens and the model icon + token count appear.
-// Hands this exact block (command + its own output + run time) to the chat
-// panel as structured context. The panel shows it as a card, not pasted text,
-// and the run time pins WHICH run is meant when a command was run twice.
-// autoSend = the Fix flow: the panel submits immediately and starts planning
-// (the plan card is still the approval gate before anything executes).
-function dispatchAskAgent(
-  terminalId: string,
-  block: TerminalBlockData,
-  failed: boolean,
-  autoSend = false,
-) {
-  window.dispatchEvent(
-    new CustomEvent('verlox:ask-agent', {
-      detail: {
-        terminalId,
-        command: block.command,
-        output: block.lines.slice(-40).join('\n').slice(-2000),
-        failed,
-        time: new Date(block.startedAt).toLocaleTimeString(undefined, {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
-        autoSend,
-      },
-    }),
-  );
-}
-
 function BlockInsights({
-  terminalId,
   block,
   onSendCommand,
   aiUsed = false,
   tokens = 0,
 }: {
-  terminalId: string;
   block: TerminalBlockData;
   onSendCommand: (cmd: string) => void;
   aiUsed?: boolean;
@@ -726,7 +692,7 @@ function BlockInsights({
     brainLabel: string;
     brainProvider: string;
   } | null>(null);
-  const runExplain = async () => {
+  const runExplain = async (fix = false) => {
     if (explain?.state === 'loading') return;
     const brain = readBrain();
     setExplain({ state: 'loading', text: '', brainLabel: brain.label, brainProvider: brain.provider });
@@ -734,8 +700,10 @@ function BlockInsights({
       const env = await window.api.getEnvironment();
       const res = await window.api.agentPlanStep({
         goal:
-          `Explain in plain English what this terminal command did, based on its output. ` +
-          `Reply with the explanation only. Do NOT propose, suggest, or run any commands.\n\n` +
+          (fix
+            ? `This terminal command failed. Explain in plain English what went wrong and give the corrected command to run. Reply with the explanation and the fix only; do not run anything.\n\n`
+            : `Explain in plain English what this terminal command did, based on its output. ` +
+              `Reply with the explanation only. Do NOT propose, suggest, or run any commands.\n\n`) +
           `Command: ${block.command}\nOutput:\n${block.lines.slice(-60).join('\n').slice(-2500)}`,
         priorSteps: [],
         cwd: env.homeDir,
@@ -856,9 +824,8 @@ function BlockInsights({
             >
               ↻ Try again
             </button>
-            {/* Error → straight to fixing: the chat panel submits the fix
-                request immediately (the plan card still gates execution).
-                Success → an in-block explanation, no panel handoff. */}
+            {/* Both answer inline, right in the block: Explain on success,
+                a what-went-wrong + corrected-command answer on failure. */}
             {ok ? (
               <button
                 type="button"
@@ -872,11 +839,12 @@ function BlockInsights({
             ) : (
               <button
                 type="button"
-                onClick={() => dispatchAskAgent(terminalId, block, true, true)}
-                className="rounded-lg border border-white/70 px-2 py-1 text-[10.5px] font-medium text-[#B4322B] transition-all hover:brightness-[0.97]"
+                onClick={() => void runExplain(true)}
+                disabled={explain?.state === 'loading'}
+                className="rounded-lg border border-white/70 px-2 py-1 text-[10.5px] font-medium text-[#B4322B] transition-all hover:brightness-[0.97] disabled:opacity-60"
                 style={{ background: 'rgba(255,255,255,0.7)', boxShadow: SHEEN_SHADOW }}
               >
-                ✦ Fix this
+                {explain?.state === 'loading' ? '✦ Working' : '✦ Fix this'}
               </button>
             )}
             {suggestions.map((s) => (
@@ -1090,7 +1058,6 @@ function BlocksView({
                   </div>
                 )}
                 <BlockInsights
-                  terminalId={terminalId}
                   block={b}
                   onSendCommand={(cmd) => {
                     window.api.ptyInput({ id: terminalId, data: `${cmd}\r` });

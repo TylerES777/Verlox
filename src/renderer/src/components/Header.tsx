@@ -1,5 +1,3 @@
-import { HeaderMenu } from './HeaderMenu';
-import { PlanModeToggle } from './PlanModeToggle';
 import { Tooltip } from './Tooltip';
 
 interface HeaderProps {
@@ -8,10 +6,6 @@ interface HeaderProps {
   // renders a faint "No folder" — commands still run, from the home
   // directory, but the header is honest that no folder was picked.
   displayPath: string | null;
-  // Session-wide Plan Mode (Chunk 4). Rendered as a header pill between
-  // the cwd and the avatar.
-  planMode: boolean;
-  onPlanModeChange: (value: boolean) => void;
   // Whether the Clear button is meaningful — false when there's nothing
   // to clear (empty conversation). The button hides entirely in that
   // case rather than dimming, so the header chrome stays minimal.
@@ -21,23 +15,13 @@ interface HeaderProps {
   onClear: () => void;
 }
 
-// Per-conversation header. Three slots: wordmark | cwd | right-group.
-// The wordmark, Plan Mode toggle, and account menu reflect app-global
-// state — each conversation renders its own Header but only the active
-// conversation's is on screen, and the session-wide props keep them all
-// in sync. The cwd slot is the one genuinely per-conversation piece.
-export function Header({
-  displayPath,
-  planMode,
-  onPlanModeChange,
-  canClear,
-  onClear,
-}: HeaderProps) {
+// Per-conversation header: DEV badge | cwd | Clear. Plan Mode is no longer
+// a toggle — the AI terminal always plans before running (that's the
+// product's core promise), so there is no mode to switch. The account menu
+// lives in the app sidebar, not here.
+export function Header({ displayPath, canClear, onClear }: HeaderProps) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b-[0.5px] border-hairline px-6">
-      {/* No wordmark inside the app — the brand lives on the window /
-          installer, not as an in-app watermark. The DEV badge stays as
-          a dev-only environment marker. */}
       <div className="flex shrink-0 items-center gap-2">
         {import.meta.env.DEV && (
           <span className="rounded-md border border-amber/40 bg-amber/[0.12] px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-amber">
@@ -58,18 +42,14 @@ export function Header({
       )}
       <div className="flex shrink-0 items-center gap-3">
         {canClear && <ClearButton onClick={onClear} />}
-        <PlanModeToggle on={planMode} onChange={onPlanModeChange} />
-        <HeaderMenu />
       </div>
     </header>
   );
 }
 
-// Clear-conversation button. Icon + label, styled to match the visual
-// weight of PlanModeToggle so the right-group reads as a row of peer
-// controls. The eraser glyph reads as "wipe this" more clearly than a
-// trash can would — trash implies permanent deletion of an item, but
-// clearing the terminal is a soft reset.
+// Clear-conversation button. Icon + label. The eraser glyph reads as
+// "wipe this" more clearly than a trash can would — trash implies
+// permanent deletion of an item, but clearing the terminal is a soft reset.
 function ClearButton({ onClick }: { onClick: () => void }) {
   return (
     <Tooltip label="Clear conversation">
