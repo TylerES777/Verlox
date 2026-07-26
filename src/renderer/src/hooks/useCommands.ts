@@ -27,6 +27,7 @@ import {
   registerProcess,
 } from './useRunningProcesses';
 import type { RunningProcessSummary } from '@shared/types';
+import { liveRunBegin, liveRunStepStart, liveRunStepDone, liveRunEnd } from '../lib/liveRun';
 
 // ── State machine ─────────────────────────────────────────────────────────
 
@@ -1195,6 +1196,7 @@ export function useCommands(
             exitCode: code,
             signal,
           });
+          liveRunStepDone(stepIndex, stepStatus, code, output);
 
           resolve({
             stepIndex,
@@ -1207,6 +1209,7 @@ export function useCommands(
 
         activeStepIdsRef.current.set(messageId, stepId);
         dispatch({ type: 'STEP_START', id: messageId, index: stepIndex });
+        liveRunStepStart(stepIndex);
         // Register in the global Running pane ONLY for processes the
         // planner flagged as long-running (dev servers, watchers,
         // daemons). Quick one-shot commands — even slow ones like
@@ -1452,6 +1455,13 @@ export function useCommands(
       const executionLog: ExecutionLogEntry[] = [];
       let killed = false;
 
+      // Feed the live activity pane: it narrates this run in real time and
+      // becomes the summary when the loop ends. Chat-only turns (no steps)
+      // never open the pane.
+      if (plan.steps.length > 0) {
+        liveRunBegin(conversationId, trimmed || 'Run the attached request', plan.steps);
+      }
+
       for (let i = 0; i < plan.steps.length; i += 1) {
         const entry = await runStep(
           id,
@@ -1479,6 +1489,9 @@ export function useCommands(
           break;
         }
       }
+
+      // Flip the live pane from narration to its summary layer.
+      if (plan.steps.length > 0) liveRunEnd();
 
       if (killed) {
         dispatch({ type: 'KILLED', id });

@@ -3,6 +3,7 @@ import type { CwdInfo, ModelChoice } from '@shared/types';
 import { Header } from './Header';
 import { Conversation } from './Conversation';
 import { Input, type InputHandle } from './Input';
+import { LiveActivityPane } from './LiveActivityPane';
 import type { PathSelection } from './PathPicker';
 import { useCommands } from '../hooks/useCommands';
 import { useUsage } from '../contexts/UsageContext';
@@ -532,7 +533,8 @@ export function ConversationView({
   // surface. Timeline sidebar's right border is the only divider; the
   // conversation area carries no rounded card / shadow of its own.
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
       <Header
         displayPath={headerPath}
         canClear={messages.length > 0}
@@ -584,6 +586,10 @@ export function ConversationView({
           onModelChoiceChange={onModelChoiceChange}
         />
       </div>
+    </div>
+    {/* Live activity pane — appears while a plan runs, becomes the summary
+        after, and dismisses into the Timeline. */}
+    <LiveActivityPane conversationId={conversationId} />
     </div>
   );
 }
