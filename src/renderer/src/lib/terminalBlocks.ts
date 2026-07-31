@@ -149,6 +149,20 @@ export class PromptFallbackParser {
         events.push({ type: 'output', text: line });
       }
     }
+
+    // The shell's final prompt has no trailing newline, so it never reaches
+    // the loop above. Without this check the last block would sit "running"
+    // forever, even though the command already finished.
+    const tail = reduceLine(this.buf).trimEnd();
+    if (this.open) {
+      const m = tail.match(PROMPT_RE);
+      const isIdlePrompt = !!m && /[\\/]/.test(m[1]) && m[2].trim() === '';
+      if (isIdlePrompt) {
+        events.push({ type: 'end', text: '' });
+        this.open = false;
+      }
+    }
+
     if (this.buf.length > 8192) this.buf = this.buf.slice(-4096);
     return events;
   }

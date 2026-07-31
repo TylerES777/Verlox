@@ -173,9 +173,14 @@ export function ptyStart(
       ? { ...(process.env as Record<string, string>), ...shellEnv }
       : (process.env as Record<string, string>),
     // Force the older WinPTY backend on Windows — ConPTY logs "AttachConsole
-    // failed" under Electron here and is unstable. WinPTY does pass the
-    // invisible OSC 133 marks through, so command-block detection works on
-    // this backend (verified: blocks carry real exit codes).
+    // failed" under Electron here and is unstable.
+    //
+    // Caveat: WinPTY's handling of the OSC 133 marks is unreliable. They have
+    // been observed arriving intact (blocks with real exit codes) and also
+    // going missing entirely in packaged builds. The renderer therefore keeps
+    // a prompt-reading fallback so the Blocks view degrades to "no exit
+    // codes" instead of "no blocks". Getting ConPTY stable would make the
+    // marks dependable and let the fallback retire.
     useConpty: false,
   });
 
