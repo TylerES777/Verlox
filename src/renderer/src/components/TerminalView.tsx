@@ -8,8 +8,10 @@ import { registerTerminal, unregisterTerminal } from '../lib/terminalRegistry';
 import { finalizeProcess, registerProcess } from '../hooks/useRunningProcesses';
 import {
   appendToOpenBlock,
+  applyFallbackEvents,
   closeBlock,
   openBlock,
+  PromptFallbackParser,
   type TerminalBlockData,
 } from '../lib/terminalBlocks';
 import type { VaultEntry } from '@shared/types';
@@ -144,27 +146,43 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
   // Nothing here parses the prompt, so this works on any shell that emits
   // the marks — PowerShell today, zsh/bash when their hooks land.
   useEffect(() => {
+    // True once any OSC 133 mark arrives. Until then we can't assume shell
+    // integration loaded, so raw data also feeds the prompt-reading fallback
+    // — otherwise a shell that never emits marks would show no blocks at all.
+    let oscActive = false;
+    const fallback = new PromptFallbackParser();
+
+    const titleFrom = (command: string) => {
+      if (titledRef.current || !command) return;
+      titledRef.current = true;
+      onFirstCommandRef.current?.(command);
+    };
+
     const offStart = window.api.onPtyBlockStart((event) => {
       if (event.id !== id) return;
+      oscActive = true;
       const command = event.command.trim();
       if (!command) return;
-      // Title the tab from the first command regardless of how it was
-      // entered — typed in raw, the Blocks command bar, or a chip. The
-      // xterm onData path only sees raw keystrokes, so it misses the rest.
-      if (!titledRef.current) {
-        titledRef.current = true;
-        onFirstCommandRef.current?.(command);
-      }
+      titleFrom(command);
       setBlocks((prev) => openBlock(prev, command, Date.now()));
     });
 
     const offData = window.api.onPtyData((event) => {
       if (event.id !== id) return;
-      setBlocks((prev) => appendToOpenBlock(prev, event.data));
+      if (oscActive) {
+        setBlocks((prev) => appendToOpenBlock(prev, event.data));
+        return;
+      }
+      const events = fallback.feed(event.data);
+      if (events.length === 0) return;
+      const started = events.find((e) => e.type === 'start');
+      if (started) titleFrom(started.text);
+      setBlocks((prev) => applyFallbackEvents(prev, events, Date.now()));
     });
 
     const offBlock = window.api.onPtyBlock((event) => {
       if (event.id !== id) return;
+      oscActive = true;
       setBlocks((prev) =>
         closeBlock(prev, event.command.trim(), event.output, event.exitCode, Date.now()),
       );
@@ -610,21 +628,29 @@ function getCommandSuggestions(command: string): string[] {
   return [];
 }
 
-const ERROR_RE = /\b(error|failed|not recognized|not found|exception|cannot|denied|fatal|traceback)\b/i;
+// Signatures of a failed command, used ONLY when the shell gave us no exit
+// code. Deliberately broad: missing a failure is worse than a false positive,
+// because a wrongly-green block tells the user everything is fine when we
+// genuinely don't know.
+const ERROR_RE =
+  /\b(error|failed|failure|not recognized|not found|no such file|exception|cannot|can't|unable to|denied|refused|fatal|traceback|bad option|unknown option|invalid|unexpected|missing|abort(ed)?|panic)\b|^usage:/i;
 
 // Plain-English summary of what a command did and how it turned out. No AI
 // call — this is a fast local read of the command + its output, which is why
 // the panel never claims a token cost for a plain shell command.
 //
-// Success/failure comes from the shell's real exit code (OSC 133), not from
-// scanning output for the word "error". Output text is only used to pick a
-// helpful explanation once we already know it failed.
+// Success/failure comes from the shell's real exit code (OSC 133) whenever we
+// have one. When the shell didn't report a code, we do NOT assume success —
+// unknown is not the same as fine — so we fall back to scanning the output for
+// an error signature, which is the old heuristic used only as a safety net.
 function summarizeBlock(block: TerminalBlockData): { headline: string; ok: boolean } {
   const cmd = block.command.trim();
   const word = cmd.split(/\s+/)[0]?.replace(/^['"]+|['"]+$/g, '') ?? cmd;
-  const failed = block.exitCode !== null && block.exitCode !== 0;
+  const errLineFound = block.lines.find((l) => ERROR_RE.test(l)) ?? '';
+  const failed =
+    block.exitCode !== null ? block.exitCode !== 0 : errLineFound !== '';
   if (failed) {
-    const errLine = block.lines.find((l) => ERROR_RE.test(l)) ?? '';
+    const errLine = errLineFound;
     if (/not recognized/i.test(errLine))
       return { headline: `“${word}” isn’t a recognized command. Check the spelling.`, ok: false };
     if (/not found|no such file/i.test(errLine))

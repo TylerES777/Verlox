@@ -159,18 +159,23 @@ export function ptyStart(
   // strip the profile (aliases, prompt, PATH tweaks are part of what they
   // expect). On Windows this also injects Verlox's safe-delete override so
   // deletions go to the Recycle Bin (see shell-safety.ts).
-  const { file, args } = buildSafeShell();
+  const { file, args, env: shellEnv } = buildSafeShell();
   const pty = nodePty.spawn(file, args, {
     name: 'xterm-color',
     cols: cols > 0 ? cols : 80,
     rows: rows > 0 ? rows : 24,
     cwd: cwd && cwd.length > 0 ? cwd : homedir(),
-    env: process.env as Record<string, string>,
+    // shellEnv carries the POSIX shell-integration vars (ZDOTDIR and the
+    // user's original, so our init can source their real config). When there
+    // is none (Windows), pass process.env through untouched rather than a
+    // spread copy — node-pty is fussy about the env object on Windows.
+    env: shellEnv
+      ? { ...(process.env as Record<string, string>), ...shellEnv }
+      : (process.env as Record<string, string>),
     // Force the older WinPTY backend on Windows — ConPTY logs "AttachConsole
-    // failed" under Electron here and is unstable. NOTE: WinPTY also strips the
-    // invisible OSC 133 markers the shell emits, so command-block detection
-    // (Phase 1, see shell-safety.ts) is dormant on this backend. Visual
-    // command blocks need ConPTY stabilized first.
+    // failed" under Electron here and is unstable. WinPTY does pass the
+    // invisible OSC 133 marks through, so command-block detection works on
+    // this backend (verified: blocks carry real exit codes).
     useConpty: false,
   });
 

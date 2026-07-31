@@ -104,6 +104,80 @@ function denoise(incoming: string[], tail: string | undefined): string[] {
   return out;
 }
 
+// --- Fallback: prompt detection ------------------------------------------
+// OSC 133 is the primary path and the only cross-shell one, but it depends on
+// the shell integration actually loading (a locked-down profile, a missing
+// PSReadLine, or a PTY backend that eats the marks all defeat it). Without a
+// fallback the Blocks view degrades to showing NOTHING, which is far worse
+// than degrading to "no exit codes". So when no mark has ever arrived for a
+// terminal, we fall back to reading the prompt, exactly as before.
+//
+// This path can't know exit codes — blocks it creates carry exitCode null,
+// and the UI treats null as "unknown" rather than "success".
+
+const PROMPT_RE = /^(?:PS )?(.+?)>\s?(.*)$/;
+
+export interface FallbackEvent {
+  type: 'start' | 'output' | 'end';
+  text: string;
+}
+
+/** Slice raw PTY text into block events by watching for the shell prompt. */
+export class PromptFallbackParser {
+  private buf = '';
+  private open = false;
+
+  feed(data: string): FallbackEvent[] {
+    const events: FallbackEvent[] = [];
+    this.buf += stripAnsi(data);
+    let nl: number;
+    while ((nl = this.buf.indexOf('\n')) !== -1) {
+      const line = reduceLine(this.buf.slice(0, nl)).trimEnd();
+      this.buf = this.buf.slice(nl + 1);
+      const m = line.match(PROMPT_RE);
+      if (m && /[\\/]/.test(m[1])) {
+        if (this.open) {
+          events.push({ type: 'end', text: '' });
+          this.open = false;
+        }
+        const command = m[2].trim();
+        if (command) {
+          events.push({ type: 'start', text: command });
+          this.open = true;
+        }
+      } else if (this.open) {
+        events.push({ type: 'output', text: line });
+      }
+    }
+    if (this.buf.length > 8192) this.buf = this.buf.slice(-4096);
+    return events;
+  }
+}
+
+/** Apply fallback events to the block list. */
+export function applyFallbackEvents(
+  prev: TerminalBlockData[],
+  events: FallbackEvent[],
+  now: number,
+): TerminalBlockData[] {
+  let blocks = prev;
+  for (const ev of events) {
+    if (ev.type === 'start') {
+      blocks = openBlock(blocks, ev.text, now);
+    } else if (ev.type === 'output') {
+      blocks = appendToOpenBlock(blocks, `${ev.text}\n`);
+    } else {
+      const last = blocks[blocks.length - 1];
+      if (last && last.endedAt === null) {
+        blocks = blocks
+          .slice(0, -1)
+          .concat({ ...last, endedAt: now, partial: '' });
+      }
+    }
+  }
+  return blocks;
+}
+
 /**
  * A command was submitted: open a running block. Any block still marked
  * running is closed first — a new command means the previous one is over,
