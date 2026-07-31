@@ -23,6 +23,10 @@ export const IpcChannels = {
   PtyKill: 'pty:kill',
   PtyData: 'pty:data',
   PtyExit: 'pty:exit',
+  // A command block just STARTED (OSC 133 'C' mark): the shell reported the
+  // submitted command text. Lets the Blocks view open a running card and
+  // stream live output into it instead of waiting for the command to finish.
+  PtyBlockStart: 'pty:block-start',
   // A completed command block (OSC 133 shell integration): command + output
   // + exit code, for rendering Warp-style blocks.
   PtyBlock: 'pty:block',

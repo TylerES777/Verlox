@@ -88,6 +88,15 @@ export interface PtyExitEvent {
 // A completed command block, parsed from the shell's OSC 133 markers. Powers
 // Warp-style command blocks and per-command AI translation. `command` and
 // `output` are raw (may contain ANSI); the renderer cleans/renders them.
+// Fired when the shell reports a command was submitted (OSC 133 'C'). The
+// Blocks view opens a running card here and streams live output into it;
+// PtyBlockEvent then closes that card with the authoritative output + exit
+// code. Both carry the same `command`, so the pair is easy to correlate.
+export interface PtyBlockStartEvent {
+  id: string;
+  command: string;
+}
+
 export interface PtyBlockEvent {
   id: string;
   command: string;
@@ -959,6 +968,9 @@ export interface IpcApi {
   ptyKill: (id: string) => void;
   onPtyData: (cb: (event: PtyDataEvent) => void) => Unsubscribe;
   onPtyExit: (cb: (event: PtyExitEvent) => void) => Unsubscribe;
+  // A command block opening (OSC 133 'C'). Fires when the shell reports the
+  // submitted command, before any output arrives.
+  onPtyBlockStart: (cb: (event: PtyBlockStartEvent) => void) => Unsubscribe;
   // Completed command blocks (OSC 133). Fires once per finished command.
   onPtyBlock: (cb: (event: PtyBlockEvent) => void) => Unsubscribe;
 

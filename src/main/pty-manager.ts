@@ -85,6 +85,11 @@ function handleBlockMark(
     state.output = '';
     state.startedAt = Date.now();
     state.phase = 'output';
+    // Tell the renderer a block is opening so it can show a running card
+    // and stream output into it, rather than waiting for the command to end.
+    if (!sender.isDestroyed()) {
+      sender.send(IpcChannels.PtyBlockStart, { id, command: state.command });
+    }
   } else if (kind === 'D') {
     const raw = payload.split(';')[1];
     const exitNum = raw !== undefined && raw !== '' ? Number(raw) : NaN;

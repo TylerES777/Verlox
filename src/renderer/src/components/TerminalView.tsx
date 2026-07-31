@@ -7,8 +7,9 @@ import { CopyButton } from './CopyButton';
 import { registerTerminal, unregisterTerminal } from '../lib/terminalRegistry';
 import { finalizeProcess, registerProcess } from '../hooks/useRunningProcesses';
 import {
-  applyBlockEvents,
-  BlockStreamParser,
+  appendToOpenBlock,
+  closeBlock,
+  openBlock,
   type TerminalBlockData,
 } from '../lib/terminalBlocks';
 import type { VaultEntry } from '@shared/types';
@@ -110,11 +111,10 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
   });
 
   // Raw vs Blocks output. Blocks accrue from terminal mount regardless of
-  // the visible mode, so toggling later shows the history since open (the
-  // parser can't reconstruct scrollback it never saw).
+  // the visible mode, so toggling later shows the history since open (shell
+  // integration can't reconstruct scrollback it never saw).
   const [mode, setMode] = useState<OutputMode>(loadOutputMode);
   const [blocks, setBlocks] = useState<TerminalBlockData[]>([]);
-  const [pendingLine, setPendingLine] = useState('');
 
   const switchMode = (next: OutputMode) => {
     setMode(next);
@@ -138,34 +138,43 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
     }
   };
 
-  // Second, independent tap on the PTY stream (xterm keeps its own). The
-  // parser slices bytes into block events; state updates batch per chunk.
+  // Blocks come from OSC 133 shell integration, parsed in the main process:
+  // block-start opens a running card, raw pty:data streams live output into
+  // it, and block (the 'D' mark) closes it with the shell's real exit code.
+  // Nothing here parses the prompt, so this works on any shell that emits
+  // the marks — PowerShell today, zsh/bash when their hooks land.
   useEffect(() => {
-    const parser = new BlockStreamParser();
-    let lastPending = '';
-    const off = window.api.onPtyData((event) => {
+    const offStart = window.api.onPtyBlockStart((event) => {
       if (event.id !== id) return;
-      const events = parser.feed(event.data);
-      if (events.length > 0) {
-        const now = Date.now();
-        // Title the tab from the first command regardless of how it was
-        // entered — typed in raw, the Blocks command bar, or a chip. The
-        // xterm onData path only sees raw keystrokes, so it misses the rest.
-        if (!titledRef.current) {
-          const first = events.find((e) => e.type === 'start');
-          if (first && first.type === 'start') {
-            titledRef.current = true;
-            onFirstCommandRef.current?.(first.command);
-          }
-        }
-        setBlocks((prev) => applyBlockEvents(prev, events, now));
+      const command = event.command.trim();
+      if (!command) return;
+      // Title the tab from the first command regardless of how it was
+      // entered — typed in raw, the Blocks command bar, or a chip. The
+      // xterm onData path only sees raw keystrokes, so it misses the rest.
+      if (!titledRef.current) {
+        titledRef.current = true;
+        onFirstCommandRef.current?.(command);
       }
-      if (parser.pending !== lastPending) {
-        lastPending = parser.pending;
-        setPendingLine(parser.pending);
-      }
+      setBlocks((prev) => openBlock(prev, command, Date.now()));
     });
-    return off;
+
+    const offData = window.api.onPtyData((event) => {
+      if (event.id !== id) return;
+      setBlocks((prev) => appendToOpenBlock(prev, event.data));
+    });
+
+    const offBlock = window.api.onPtyBlock((event) => {
+      if (event.id !== id) return;
+      setBlocks((prev) =>
+        closeBlock(prev, event.command.trim(), event.output, event.exitCode, Date.now()),
+      );
+    });
+
+    return () => {
+      offStart();
+      offData();
+      offBlock();
+    };
   }, [id]);
 
   const onScrollbarThumbDown = (e: React.MouseEvent) => {
@@ -520,11 +529,7 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
             />
           </div>
           {mode === 'blocks' && (
-            <BlocksView
-              terminalId={id}
-              blocks={blocks}
-              pendingLine={pendingLine}
-            />
+            <BlocksView terminalId={id} blocks={blocks} />
           )}
         </div>
 
@@ -610,18 +615,25 @@ const ERROR_RE = /\b(error|failed|not recognized|not found|exception|cannot|deni
 // Plain-English summary of what a command did and how it turned out. No AI
 // call — this is a fast local read of the command + its output, which is why
 // the panel never claims a token cost for a plain shell command.
+//
+// Success/failure comes from the shell's real exit code (OSC 133), not from
+// scanning output for the word "error". Output text is only used to pick a
+// helpful explanation once we already know it failed.
 function summarizeBlock(block: TerminalBlockData): { headline: string; ok: boolean } {
   const cmd = block.command.trim();
   const word = cmd.split(/\s+/)[0]?.replace(/^['"]+|['"]+$/g, '') ?? cmd;
-  const errLine = block.lines.find((l) => ERROR_RE.test(l));
-  if (errLine) {
+  const failed = block.exitCode !== null && block.exitCode !== 0;
+  if (failed) {
+    const errLine = block.lines.find((l) => ERROR_RE.test(l)) ?? '';
     if (/not recognized/i.test(errLine))
       return { headline: `“${word}” isn’t a recognized command. Check the spelling.`, ok: false };
     if (/not found|no such file/i.test(errLine))
       return { headline: 'A file or path in the command could not be found.', ok: false };
     if (/denied|permission/i.test(errLine))
       return { headline: 'Permission was denied. The command needs higher access.', ok: false };
-    return { headline: `Command failed: ${errLine.trim().slice(0, 80)}`, ok: false };
+    if (errLine.trim())
+      return { headline: `Command failed: ${errLine.trim().slice(0, 80)}`, ok: false };
+    return { headline: `Command failed with exit code ${block.exitCode}.`, ok: false };
   }
   const lc = cmd.toLowerCase();
   if (/^(ls|dir|gci|get-childitem)/.test(lc))
@@ -918,11 +930,9 @@ function BlockInsights({
 function BlocksView({
   terminalId,
   blocks,
-  pendingLine,
 }: {
   terminalId: string;
   blocks: TerminalBlockData[];
-  pendingLine: string;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState('');
@@ -934,7 +944,7 @@ function BlocksView({
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [blocks, pendingLine]);
+  }, [blocks]);
 
   const send = (e: FormEvent) => {
     e.preventDefault();
@@ -1052,8 +1062,8 @@ function BlocksView({
                     ) : !isRunning ? (
                       <span className="text-ink-micro">(no output)</span>
                     ) : null}
-                    {isRunning && pendingLine && (
-                      <p className="whitespace-pre-wrap break-words text-ink-hint">{pendingLine}</p>
+                    {isRunning && b.partial && (
+                      <p className="whitespace-pre-wrap break-words text-ink-hint">{b.partial}</p>
                     )}
                   </div>
                 )}
