@@ -24,6 +24,9 @@ const api: IpcApi = {
   getCwd: () => ipcRenderer.invoke(IpcChannels.CwdGet),
   setCwd: (path) => ipcRenderer.invoke(IpcChannels.CwdSet, path),
   listDir: (path: string) => ipcRenderer.invoke(IpcChannels.DirList, path),
+
+  completionContext: (payload: { kind: 'git-branches' | 'npm-scripts'; cwd: string }) =>
+    ipcRenderer.invoke(IpcChannels.CompletionContext, payload),
   pickDirectory: () => ipcRenderer.invoke(IpcChannels.DialogPickDirectory),
 
   startCommand: (payload: CommandStartPayload) =>
@@ -53,6 +56,12 @@ const api: IpcApi = {
     ipcRenderer.send(IpcChannels.PtyResize, payload),
 
   ptyKill: (id: string) => ipcRenderer.send(IpcChannels.PtyKill, id),
+
+  ptyStopForeground: (payload: { id: string; cwd?: string }) =>
+    ipcRenderer.send(IpcChannels.PtyStopForeground, payload),
+
+  ptyRunCommand: (payload: { id: string; command: string; cwd?: string }) =>
+    ipcRenderer.send(IpcChannels.PtyRunCommand, payload),
 
   onPtyData: (cb) => {
     const listener = (_e: IpcRendererEvent, payload: PtyDataEvent) => cb(payload);

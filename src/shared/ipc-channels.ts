@@ -4,6 +4,8 @@ export const IpcChannels = {
   CwdSet: 'cwd:set',
   // Directory browsing for the path picker (lock-to-folder/file UI).
   DirList: 'dir:list',
+  // Context data for Tab completion (git branches, npm scripts).
+  CompletionContext: 'completion:context',
   // Native OS folder chooser (used by the agent panel to set its working
   // folder). Returns the chosen absolute path, or null if cancelled.
   DialogPickDirectory: 'dialog:pick-directory',
@@ -21,6 +23,12 @@ export const IpcChannels = {
   PtyInput: 'pty:input',
   PtyResize: 'pty:resize',
   PtyKill: 'pty:kill',
+  // Stop the shell's foreground program (Ctrl+C + kill its process tree)
+  // without tearing down the shell or the tab.
+  PtyStopForeground: 'pty:stop-foreground',
+  // Stop whatever is running, then run a command once the old program is
+  // actually gone. Main owns the sequencing — it can see the process table.
+  PtyRunCommand: 'pty:run-command',
   PtyData: 'pty:data',
   PtyExit: 'pty:exit',
   // A command block just STARTED (OSC 133 'C' mark): the shell reported the

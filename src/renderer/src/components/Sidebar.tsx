@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useUsage } from '../contexts/UsageContext';
 import { useUpgrade } from '../contexts/UpgradeContext';
 import { useUpdateStatus } from '../hooks/useUpdateStatus';
+import { WAITING_AFTER_MS } from '../lib/terminalBlocks';
 import { VaultGlyph } from './VaultView';
 import { ClockGlyph } from './TimelineView';
 import type { AppView } from './ConversationsShell';
@@ -195,6 +196,14 @@ function GearGlyph() {
 function RunningSection() {
   const procs = useRunningProcesses();
   const live = procs.filter((p) => p.status === 'running');
+  // Going quiet isn't an event, so a slow tick re-renders the board to let
+  // a working row settle into "waiting". Only runs while something is live.
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (live.length === 0) return;
+    const t = setInterval(() => setTick(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [live.length]);
   // Jump to the tab a process runs in. The sidebar no longer owns tab state,
   // so this asks the shell to switch via an event.
   const onSelect = (id: string) =>
@@ -215,7 +224,14 @@ function RunningSection() {
         <p className="px-2 py-2 text-[11.5px] text-ink-hint">Nothing running.</p>
       ) : (
         <ul className="mt-1 max-h-44 space-y-0.5 overflow-y-auto">
-          {live.map((p) => (
+          {live.map((p) => {
+            // Silence only reads as "waiting" for commands the user typed,
+            // where the block beside it shows the prompt that's asking. An
+            // agent step going quiet is usually just thinking, so it stays
+            // "running" rather than claiming something we can't see.
+            const waiting =
+              p.source === 'terminal' && tick - p.lastOutputAt > WAITING_AFTER_MS;
+            return (
             <li key={p.stepId}>
               <div className="flex items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-black/[0.04]">
                 <button
@@ -233,6 +249,26 @@ function RunningSection() {
                     {p.command}
                   </span>
                 </button>
+                {/* Working vs parked at a prompt. A row that sits on
+                    "waiting" is asking for a keystroke, not stuck. */}
+                <span
+                  title={
+                    waiting
+                      ? 'Waiting for input in the terminal'
+                      : 'Producing output'
+                  }
+                  className={`flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                    waiting ? 'bg-[#EAF0F8] text-[#2E5FA3]' : 'bg-[#FBF1EA] text-[#B4632F]'
+                  }`}
+                >
+                  <span
+                    className={`h-1 w-1 rounded-full ${
+                      waiting ? 'bg-[#2E5FA3]' : 'animate-flicker bg-amber-500'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  {waiting ? 'waiting' : 'running'}
+                </span>
                 {/* Where it came from: a command Verlox ran vs one you typed. */}
                 <span
                   title={
@@ -246,16 +282,21 @@ function RunningSection() {
                       : 'bg-[#EAF3ED] text-[#3E7A53]'
                   }`}
                 >
-                  {p.source === 'terminal' ? 'You' : 'Verlox'}
+                  {p.source === 'terminal' ? 'from you' : 'from Verlox'}
                 </span>
                 <button
                   type="button"
                   onClick={() => {
                     if (p.source === 'terminal') {
-                      // Send Ctrl+C to that terminal's shell, and clear the row
-                      // now — the prompt-return detector only runs while that
-                      // terminal is on screen, so don't depend on it.
-                      window.api.ptyInput({ id: p.conversationId, data: '\x03' });
+                      // Stop the foreground program for real (Ctrl+C plus a
+                      // tree kill — REPLs ignore a lone Ctrl+C), and clear
+                      // the row now — the prompt-return detector only runs
+                      // while that terminal is on screen, so don't depend
+                      // on it.
+                      window.api.ptyStopForeground({
+                        id: p.conversationId,
+                        cwd: p.cwd || undefined,
+                      });
                       finalizeProcess(p.stepId, { exitCode: 0, signal: 'SIGINT' });
                     } else {
                       window.api.stopCommand(p.stepId);
@@ -269,7 +310,8 @@ function RunningSection() {
                 </button>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

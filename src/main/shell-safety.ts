@@ -34,6 +34,16 @@ const SAFE_DELETE_PS = `
 $ErrorActionPreference = 'Continue'
 try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop } catch {}
 
+# UTF-8 in and out. Without this the console decodes typed non-ASCII (and
+# some tool output) with the legacy OEM codepage and mangles it before
+# Verlox ever sees the bytes. Defensive: never let encoding setup break
+# the shell.
+try {
+  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+  [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+  $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {}
+
 function global:Remove-Item {
   [CmdletBinding()]
   param(

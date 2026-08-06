@@ -949,6 +949,11 @@ export interface IpcApi {
   // to list the user's home directory. Always resolves (never rejects) —
   // failures come back as a DirListing with a non-null `error`.
   listDir: (path: string) => Promise<DirListing>;
+  // Context data for Tab completion. Best-effort: failures resolve to [].
+  completionContext: (payload: {
+    kind: 'git-branches' | 'npm-scripts';
+    cwd: string;
+  }) => Promise<string[]>;
   // Open a native folder chooser (agent working folder). Resolves to the
   // chosen absolute path, or null if cancelled.
   pickDirectory: () => Promise<string | null>;
@@ -966,6 +971,13 @@ export interface IpcApi {
   ptyInput: (payload: PtyInputPayload) => void;
   ptyResize: (payload: PtyResizePayload) => void;
   ptyKill: (id: string) => void;
+  // Stop the foreground program (Ctrl+C + kill its tree). The shell
+  // survives — unless it is itself wedged in an in-shell prompt, in which
+  // case it's replaced with a fresh shell at `cwd`.
+  ptyStopForeground: (payload: { id: string; cwd?: string }) => void;
+  // Stop the foreground program, then run `command` once it's really gone.
+  // `cwd` seats the replacement shell if one is needed.
+  ptyRunCommand: (payload: { id: string; command: string; cwd?: string }) => void;
   onPtyData: (cb: (event: PtyDataEvent) => void) => Unsubscribe;
   onPtyExit: (cb: (event: PtyExitEvent) => void) => Unsubscribe;
   // A command block opening (OSC 133 'C'). Fires when the shell reports the

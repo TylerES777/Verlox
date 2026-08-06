@@ -35,6 +35,10 @@ export interface RunningProcess {
   // Epoch ms.
   startedAt: number;
   endedAt: number | null;
+  // Epoch ms of the last output chunk. A running process that has been
+  // quiet for a beat is usually sitting at a prompt waiting for input,
+  // which the board shows differently from one that's actually working.
+  lastOutputAt: number;
   // Where this process came from: 'agent' = a command Verlox ran (controlled
   // via stopCommand); 'terminal' = a long-running command the user typed in
   // the raw shell (stopped by sending Ctrl+C to that terminal's PTY).
@@ -110,6 +114,7 @@ export function registerProcess(input: {
     exitCode: null,
     startedAt: Date.now(),
     endedAt: null,
+    lastOutputAt: Date.now(),
     source: input.source ?? 'agent',
     detectedUrl: null,
     tailOutput: '',
@@ -136,8 +141,22 @@ export function appendProcessOutput(stepId: string, chunk: string): void {
   // (URL detection or status). Per-chunk re-renders of the board
   // would be expensive for a chatty process.
   const urlChanged = detectedUrl !== entry.detectedUrl;
-  registry.set(stepId, { ...entry, tailOutput: tail, detectedUrl });
+  registry.set(stepId, {
+    ...entry,
+    tailOutput: tail,
+    detectedUrl,
+    lastOutputAt: Date.now(),
+  });
   if (urlChanged) notify();
+}
+
+// Terminal-source processes don't stream through appendProcessOutput —
+// their output goes straight to the block store. This keeps their
+// quiet-since clock honest so the board can tell working from waiting.
+export function touchProcess(stepId: string): void {
+  const entry = registry.get(stepId);
+  if (!entry || entry.endedAt !== null) return;
+  registry.set(stepId, { ...entry, lastOutputAt: Date.now() });
 }
 
 // Called by useCommands on step exit. Flips status and schedules

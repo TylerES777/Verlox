@@ -30,9 +30,12 @@ import {
   killAllPtys,
   ptyInput,
   ptyKill,
+  ptyRunCommand,
+  ptyStopForeground,
   ptyResize,
   ptyStart,
 } from './pty-manager';
+import { completionContext } from './completion';
 import {
   checkpoint as snapshotCheckpoint,
   ensureProtected,
@@ -179,6 +182,11 @@ ipcMain.handle(IpcChannels.Ping, (): 'pong' => 'pong');
 ipcMain.handle(IpcChannels.CwdGet, () => getCwd());
 ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
 ipcMain.handle(IpcChannels.DirList, (_e, path: string) => listDirectory(path));
+ipcMain.handle(
+  IpcChannels.CompletionContext,
+  (_e, payload: { kind: 'git-branches' | 'npm-scripts'; cwd: string }) =>
+    completionContext(payload.kind, payload.cwd),
+);
 ipcMain.handle(IpcChannels.DialogPickDirectory, async (): Promise<string | null> => {
   const parent = BrowserWindow.getFocusedWindow() ?? undefined;
   const opts = {
@@ -229,6 +237,20 @@ ipcMain.on(IpcChannels.PtyResize, (_event, payload: PtyResizePayload) => {
 ipcMain.on(IpcChannels.PtyKill, (_event, id: string) => {
   ptyKill(id);
 });
+
+ipcMain.on(
+  IpcChannels.PtyStopForeground,
+  (_event, payload: { id: string; cwd?: string }) => {
+    ptyStopForeground(payload.id, payload.cwd);
+  },
+);
+
+ipcMain.on(
+  IpcChannels.PtyRunCommand,
+  (_event, payload: { id: string; command: string; cwd?: string }) => {
+    ptyRunCommand(payload.id, payload.command, payload.cwd);
+  },
+);
 
 // --- Restore points (recovery safety net) ---------------------------------
 // Main owns a hidden per-folder git vault that records the guarded folder's
