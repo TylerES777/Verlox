@@ -182,6 +182,9 @@ ipcMain.handle(IpcChannels.Ping, (): 'pong' => 'pong');
 ipcMain.handle(IpcChannels.CwdGet, () => getCwd());
 ipcMain.handle(IpcChannels.CwdSet, (_e, path: string) => setCwd(path));
 ipcMain.handle(IpcChannels.DirList, (_e, path: string) => listDirectory(path));
+ipcMain.handle(IpcChannels.SnapshotEnsureProtected, (_e, folder: string) =>
+  ensureProtected(folder),
+);
 ipcMain.handle(
   IpcChannels.CompletionContext,
   (_e, payload: { kind: 'git-branches' | 'npm-scripts'; cwd: string }) =>
@@ -248,6 +251,11 @@ ipcMain.on(
 ipcMain.on(
   IpcChannels.PtyRunCommand,
   (_event, payload: { id: string; command: string; cwd?: string }) => {
+    // Auto-protect the folder before running, exactly as the agent path
+    // does. Without this, commands submitted from Blocks (including every
+    // command the AI runs) never adopt a guarded folder, so no restore
+    // points exist and "Undo this" has nothing to spend.
+    if (payload.cwd) void ensureProtected(payload.cwd);
     ptyRunCommand(payload.id, payload.command, payload.cwd);
   },
 );

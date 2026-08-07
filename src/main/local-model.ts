@@ -29,9 +29,19 @@ const LLAMA_RELEASE_TAG = 'b6024';
 const BINARY_URL =
   process.env.LOCAL_MODEL_BINARY_URL ??
   `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_RELEASE_TAG}/llama-${LLAMA_RELEASE_TAG}-bin-win-cpu-x64.zip`;
+// Pinned to an immutable revision rather than `main`: the expected hash
+// below is only meaningful if the file behind the URL can never change.
+const WEIGHTS_REVISION = '5ab33fa94d1d04e903623ae72c95d1696f09f9e8';
 const WEIGHTS_URL =
   process.env.LOCAL_MODEL_WEIGHTS_URL ??
-  'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf';
+  `https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/${WEIGHTS_REVISION}/Llama-3.2-3B-Instruct-Q4_K_M.gguf`;
+// The publisher's SHA-256 for that exact file. A download can arrive with
+// the right BYTE COUNT and wrong CONTENT (seen in the wild: a 2 GB file
+// that passed the length check and then failed to parse with a garbage
+// tokenizer length), so length alone is not integrity.
+const WEIGHTS_SHA256 =
+  process.env.LOCAL_MODEL_WEIGHTS_SHA256 ??
+  '6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff';
 const WEIGHTS_FILENAME = 'llama-3.2-3b-instruct-q4.gguf';
 const BINARY_NAME = 'llama-server.exe';
 // Sanity floor for the weights file. A real Q4_K_M Llama 3.2 3B is ~2.0 GB;
@@ -257,11 +267,15 @@ async function downloadBinary(): Promise<void> {
 async function downloadWeights(): Promise<void> {
   setState({ kind: 'downloading', what: 'weights', bytes: 0, total: 0 });
   try {
-    await downloadTo(WEIGHTS_URL, weightsPath(), (bytes, total) =>
-      setState({ kind: 'downloading', what: 'weights', bytes, total }),
+    await downloadTo(
+      WEIGHTS_URL,
+      weightsPath(),
+      (bytes, total) => setState({ kind: 'downloading', what: 'weights', bytes, total }),
+      WEIGHTS_SHA256,
     );
   } catch (e) {
-    // Partial weights file is useless — Llama needs the whole GGUF. Drop it.
+    // A partial OR corrupt weights file is useless — Llama needs the whole
+    // correct GGUF. Drop it so the next attempt re-fetches.
     await rm(weightsPath(), { force: true }).catch(() => {});
     throw e;
   }
@@ -274,6 +288,10 @@ async function downloadTo(
   url: string,
   dest: string,
   onProgress: (bytes: number, total: number) => void,
+  // When set, the payload is hashed AS IT STREAMS (free — the bytes are
+  // already in hand) and rejected on mismatch. Catches corruption that the
+  // length check cannot see.
+  expectSha256?: string,
 ): Promise<void> {
   downloadController = new AbortController();
   const signal = downloadController.signal;
@@ -300,8 +318,12 @@ async function downloadTo(
       res.body as unknown as import('node:stream/web').ReadableStream,
     );
     const sink = createWriteStream(dest);
+    const hash = expectSha256
+      ? (await import('node:crypto')).createHash('sha256')
+      : null;
     node.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
+      hash?.update(chunk);
       // Throttle progress events to ~10/sec — the renderer doesn't need every byte.
       const now = Date.now();
       if (now - lastNotify > 100) {
@@ -322,6 +344,18 @@ async function downloadTo(
       throw new Error(
         `Download truncated: got ${bytes} of ${total} bytes (${Math.round((bytes / total) * 100)}%). Check your connection and try again.`,
       );
+    }
+    // Content integrity. A file can be the exact right SIZE and still be
+    // wrong; handing that to llama-server produces an unreadable error
+    // about tokenizer metadata, and the bad file would otherwise be
+    // cached forever.
+    if (hash) {
+      const got = hash.digest('hex');
+      if (got !== expectSha256) {
+        throw new Error(
+          `Download corrupted: the file arrived complete but its contents don't match the published checksum. It has been discarded; try again.`,
+        );
+      }
     }
     onProgress(bytes, total);
   } finally {
@@ -463,6 +497,18 @@ async function startServer(): Promise<number> {
       const { code, signal } = exitedDuringBoot;
       const why = signal ? `signal ${signal}` : `code ${code ?? 'null'}`;
       const tail = stderrTail.trim().split('\n').slice(-3).join(' · ');
+      // A load failure means the GGUF on disk is unusable (corrupt, or
+      // written by a different llama.cpp). Discard it so the next attempt
+      // re-downloads instead of failing identically forever — the old
+      // behaviour left the model permanently broken with a cryptic error
+      // and no way out short of deleting AppData by hand.
+      if (/failed to load model|error loading model|gguf/i.test(stderrTail)) {
+        await rm(weightsPath(), { force: true }).catch(() => {});
+        installed = false;
+        throw new Error(
+          'The offline model file was damaged, so it has been removed. Pick the built-in model again to download a fresh copy.',
+        );
+      }
       throw new Error(
         `Local model server exited during boot (${why}). ${tail || `See ${logPath}`}`,
       );

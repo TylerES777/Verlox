@@ -27,6 +27,9 @@ const api: IpcApi = {
 
   completionContext: (payload: { kind: 'git-branches' | 'npm-scripts'; cwd: string }) =>
     ipcRenderer.invoke(IpcChannels.CompletionContext, payload),
+
+  snapshotEnsureProtected: (folder: string) =>
+    ipcRenderer.invoke(IpcChannels.SnapshotEnsureProtected, folder),
   pickDirectory: () => ipcRenderer.invoke(IpcChannels.DialogPickDirectory),
 
   startCommand: (payload: CommandStartPayload) =>

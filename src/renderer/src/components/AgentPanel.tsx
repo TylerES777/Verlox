@@ -150,7 +150,7 @@ type AgentMessage =
 // row (replaces the old text "group" headers).
 type ModelProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'meta' | 'deepseek' | 'qwen' | 'ollama' | 'custom';
 
-interface Brain {
+export interface Brain {
   id: string;
   label: string;
   // Visual grouping in the picker: 'free' / 'pro' / 'offline' (local Ollama)
@@ -163,7 +163,9 @@ interface Brain {
   providerId?: string;
 }
 
-function buildBrains(s: SettingsInfo | null, ollamaModels: { name: string }[] = []): Brain[] {
+// Exported so the Blocks bar's AI presence chip can offer the same model
+// list without duplicating it.
+export function buildBrains(s: SettingsInfo | null, ollamaModels: { name: string }[] = []): Brain[] {
   // Hosted models (credit-based). The `model` value is the backend
   // ModelChoice; tier matches the backend registry (tier.ts minTier).
   // Free at top, Pro below, BYOK ('custom') at the bottom.

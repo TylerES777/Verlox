@@ -174,13 +174,14 @@ export function serializeBufferToHtml(buffer: BufferLike, command = ''): string 
   // prompt below. Interior prompt-looking lines are real output.
   while (start < end && SNAPSHOT_PROMPT_RE.test(rows[start].text)) start++;
   while (end > start && SNAPSHOT_PROMPT_RE.test(rows[end - 1].text)) end--;
-  // A wrapped echo can leave the command's tail characters on their own
-  // row right under the prompt. One row, and only if it's a strict tail
-  // of the command — real output that merely matches stays.
+  // The echo of the typed command can survive as the first row: wrapped
+  // tail characters under the prompt (winpty), or the full command line
+  // redrawn without its prompt (conpty + PSReadLine). One row, and only
+  // when it's the command itself or a strict tail of it.
   if (start < end && command) {
     const frag = rows[start].text.trim();
-    if (frag && frag.length < command.trim().length && command.trim().endsWith(frag))
-      start++;
+    const cmd = command.trim();
+    if (frag && frag.length <= cmd.length && cmd.endsWith(frag)) start++;
   }
   while (start < end && rows[start].text.trim() === '') start++;
   while (end > start && rows[end - 1].text.trim() === '') end--;

@@ -108,6 +108,14 @@ function handleBlockMark(
       sender.send(IpcChannels.PtyBlockStart, { id, command: state.command });
     }
   } else if (kind === 'D') {
+    // A 'D' with no command ever started (no 'C') is prompt housekeeping:
+    // Ctrl+C at an idle prompt redraws it and the prompt hook dutifully
+    // emits D. Reporting it would materialize an empty phantom block.
+    if (state.phase !== 'output' && !state.command) {
+      state.phase = 'idle';
+      state.output = '';
+      return;
+    }
     const raw = payload.split(';')[1];
     const exitNum = raw !== undefined && raw !== '' ? Number(raw) : NaN;
     const block: PtyBlockEvent = {

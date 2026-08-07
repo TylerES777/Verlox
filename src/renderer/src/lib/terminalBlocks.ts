@@ -349,6 +349,10 @@ export interface TerminalBlockData {
   // drew them. `lines` still exists regardless: every analysis (summary,
   // chips, error scan) reads the plain text.
   snapshotHtml?: string;
+  // True when the AI submitted this command (an accepted proposal in an AI
+  // session). The card wears the model icon so it's always clear who
+  // typed what into the shared terminal.
+  byAi?: boolean;
 }
 
 // How long a running command must be silent before it reads as waiting for
@@ -656,6 +660,10 @@ export function closeBlock(
   const { lines, truncated } = capLines([], authoritative);
 
   const last = prev[prev.length - 1];
+  // A close with no command and nothing open is prompt housekeeping (a
+  // Ctrl+C redraw at an idle prompt) — materializing it would show an
+  // empty phantom card.
+  if (command === '' && (!last || last.endedAt !== null)) return prev;
   // Only fold the result into the open block when it's the SAME command.
   // Without this check a late or mismatched 'D' mark overwrites whichever
   // block happens to be open, which showed one command's output under

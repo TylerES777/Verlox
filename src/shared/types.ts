@@ -997,6 +997,10 @@ export interface IpcApi {
   snapshotPickFolder: () => Promise<string | null>;
   snapshotSetFolder: (folder: string) => Promise<SnapshotActionResult>;
   snapshotCheckpoint: (label?: string) => Promise<SnapshotActionResult>;
+  // Adopt `folder` as the guarded folder when eligible (never home or a
+  // drive root). Idempotent; resolves once protection is in place so a
+  // checkpoint taken right after has somewhere to go.
+  snapshotEnsureProtected: (folder: string) => Promise<void>;
   snapshotList: () => Promise<SnapshotRecord[]>;
   snapshotRestore: (id: string) => Promise<SnapshotActionResult>;
   // Turn automatic snapshots on/off; resolves with the updated status.

@@ -6,6 +6,9 @@ export const IpcChannels = {
   DirList: 'dir:list',
   // Context data for Tab completion (git branches, npm scripts).
   CompletionContext: 'completion:context',
+  // Adopt a folder as the guarded one if it's eligible, so restore points
+  // exist before a command runs. Idempotent and safe to call often.
+  SnapshotEnsureProtected: 'snapshot:ensure-protected',
   // Native OS folder chooser (used by the agent panel to set its working
   // folder). Returns the chosen absolute path, or null if cancelled.
   DialogPickDirectory: 'dialog:pick-directory',

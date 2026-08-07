@@ -4,13 +4,25 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Shell } from '@shared/types';
 import { CopyButton } from './CopyButton';
-import { registerTerminal, unregisterTerminal } from '../lib/terminalRegistry';
+import {
+  registerTerminal,
+  snapshotTerminals,
+  unregisterTerminal,
+} from '../lib/terminalRegistry';
+import {
+  assessCommand,
+  permissionFor,
+  PERMISSION_CAPABILITIES,
+  type CapabilityPermissions,
+} from '@shared/risk';
+import { useAuth } from '../contexts/AuthContext';
 import {
   finalizeProcess,
   registerProcess,
   touchProcess,
 } from '../hooks/useRunningProcesses';
 import { BlockSurface } from '../lib/blockSurface';
+import { buildBrains, type Brain } from './AgentPanel';
 import {
   applyCandidate,
   commandCandidates,
@@ -38,7 +50,73 @@ import {
   WAITING_AFTER_MS,
   type TerminalBlockData,
 } from '../lib/terminalBlocks';
-import type { VaultEntry } from '@shared/types';
+import type { AgentStepHistory, VaultEntry } from '@shared/types';
+
+// One entry in an AI session's timeline: the AI (or user) speaking, or the
+// AI proposing a command for approval. Rendered interleaved with terminal
+// blocks by timestamp.
+interface AiItem {
+  id: string;
+  at: number;
+  from: 'ai' | 'user';
+  kind: 'message' | 'proposal';
+  text: string;
+  command?: string | null;
+  risk?: string | null;
+  status?: 'pending' | 'accepted' | 'skipped';
+  // Filled in once the command this proposal started has finished, so the
+  // card can show what the AI actually got back without hunting for the
+  // block it produced.
+  output?: string;
+  exitCode?: number | null;
+  // Which model said this, captured when it was said. Rendering from the
+  // CURRENT model instead rewrote history on every swap — old answers
+  // suddenly wore the new model's face, hiding that a switch happened.
+  brandLabel?: string;
+  brandProvider?: string;
+  // Plan-first: the whole plan proposed for ONE approval. Steps carry
+  // their own status as the plan executes.
+  plan?: {
+    summary: string;
+    estimate: string;
+    steps: {
+      command: string;
+      reason: string;
+      status: 'pending' | 'running' | 'ran' | 'failed' | 'skipped' | 'blocked';
+      blockedLabel?: string;
+      output?: string;
+      exitCode?: number | null;
+      // Current-vs-proposed contents when this step writes a known file.
+      path?: string;
+      preview?: string;
+      before?: string;
+      beforeExists?: boolean;
+    }[];
+    state: 'awaiting' | 'running' | 'done' | 'cancelled';
+  };
+}
+
+// What's on the user's terminal screens right now, capped so token cost
+// stays sane. Mirrors the AI terminal's context collection.
+const AI_TERMINAL_CONTEXT_CAP = 12000;
+function collectAiTerminalContext(currentId: string): string {
+  const snaps = snapshotTerminals(currentId).filter((s) => s.text);
+  if (snaps.length === 0) return '';
+  return snaps
+    .map((s, i) => {
+      const label = s.current ? `Terminal ${i + 1} (the one in front)` : `Terminal ${i + 1}`;
+      return `[${label}]\n${s.text.slice(-4000)}`;
+    })
+    .join('\n\n')
+    .slice(-AI_TERMINAL_CONTEXT_CAP);
+}
+
+// Mark the open block as AI-run (an accepted proposal's command).
+function tagLastOpenAsAi(prev: TerminalBlockData[]): TerminalBlockData[] {
+  const last = prev[prev.length - 1];
+  if (!last || last.endedAt !== null || last.byAi) return prev;
+  return prev.slice(0, -1).concat({ ...last, byAi: true });
+}
 import { PathPicker, type PathSelection } from './PathPicker';
 import iconAnthropic from '../assets/providers/anthropic.png';
 import iconOpenAI from '../assets/providers/openai.png';
@@ -235,6 +313,700 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
     surfaceRef.current?.focus();
   }).current;
 
+  // --- AI in the room -------------------------------------------------------
+  // "Fix this" (and follow-up messages) run a real agent session INSIDE the
+  // block timeline: the AI speaks in its own message cards, proposes
+  // commands as approval cards, and accepted commands run in THIS terminal
+  // — the resulting block wears the model icon and its real exit code +
+  // output feed the next step. No side chat: the terminal is the room.
+  const [aiItems, setAiItems] = useState<AiItem[]>([]);
+  const [aiActive, setAiActive] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiDone, setAiDone] = useState(false);
+  // The command the AI was called about — shown as the session's context.
+  const [aiContext, setAiContext] = useState('');
+  const aiGoalRef = useRef('');
+  // The conversation itself. The planner API takes a single `goal` string,
+  // so follow-ups used to be concatenated onto it — which made the model
+  // treat one swollen task as the request and start auditing what was
+  // asked when ("you already asked that in Turn 1"). Keeping the exchange
+  // as turns and rendering it as a transcript restores normal chat sense.
+  const aiChatRef = useRef<{ role: 'user' | 'assistant'; text: string }[]>([]);
+  const aiHistoryRef = useRef<AgentStepHistory[]>([]);
+  // Set while an accepted AI command is running; the block watcher below
+  // resolves it with the block's real result.
+  const aiAwaitRef = useRef<{ command: string; since: number } | null>(null);
+  const nextBlockByAiRef = useRef(false);
+  const aiAutoReadOnlyRef = useRef(false);
+  // The user's per-capability rules (always / ask / never) from Settings.
+  // A capability set to "never" must be refused here, not just in the AI
+  // terminal — a rule that only applies in one surface isn't a rule.
+  const aiPermsRef = useRef<CapabilityPermissions | undefined>(undefined);
+  // The last command actually proposed, so a model stuck in a loop can't
+  // re-offer it forever.
+  const aiLastCommandRef = useRef<string | null>(null);
+  // Command -> the id of the restore point representing the folder state
+  // just BEFORE it ran. Captured at the time, because a checkpoint is a
+  // calm no-op when nothing has changed since the last one (ok, but
+  // created: false) — so searching for a point by label afterwards finds
+  // nothing and undo appears broken. Whatever the newest point is at that
+  // moment IS "before this command", created fresh or not.
+  const [aiRestorePoints, setAiRestorePoints] = useState<Record<string, string>>({});
+  // An attached image rides along with the NEXT step only (the backend and
+  // provider calls accept it on the first turn of a goal).
+  const aiImageRef = useRef<{ mediaType: string; base64Data: string } | null>(null);
+
+  const pushAi = (item: Omit<AiItem, 'id' | 'at'>) => {
+    // Stamp WHO is speaking at the moment of speaking, so a later model
+    // swap can't repaint the past.
+    const brain = readBrain();
+    setAiItems((prev) => [
+      ...prev,
+      {
+        ...item,
+        id: `${Date.now()}-${prev.length}`,
+        at: Date.now(),
+        brandLabel: item.brandLabel ?? brain.label,
+        brandProvider: item.brandProvider ?? brain.provider,
+      },
+    ]);
+  };
+
+  // Same safety net the AI terminal runs before an agent command: deletes
+  // are copied into the Recovery Vault first, and every changing command
+  // gets a restore point. Both best-effort — a failed capture must never
+  // block the command, since the Recycle Bin override is still underneath.
+  const runAiCommand = async (command: string) => {
+    const assessment = assessCommand(command);
+    if (assessment.capability === 'delete' && assessment.files.length > 0) {
+      try {
+        await window.api.vaultCapture({
+          command,
+          cwd: cwd || lastCwdRef.current || envHomeRef.current,
+          paths: assessment.files,
+          retention: 'day',
+        });
+        window.dispatchEvent(new Event('verlox:vault-changed'));
+      } catch {
+        // Vault unavailable; the Recycle Bin still catches the delete.
+      }
+    }
+    if (assessment.capability !== 'read') {
+      try {
+        // Adopt this folder as the guarded one FIRST. Auto-protection was
+        // only wired to the agent-terminal's command path, so a Blocks
+        // session never had a guarded folder and every checkpoint failed —
+        // which is why "Undo this" had nothing to offer.
+        const here = cwd || lastCwdRef.current || envHomeRef.current;
+        if (here) await window.api.snapshotEnsureProtected(here);
+        const res = await window.api.snapshotCheckpoint(`Before: ${command}`);
+        if (res.ok) {
+          // Whatever the newest point is now — the one just written, or
+          // the existing one when nothing had changed — is the state to
+          // come back to. Remember its id so undo never has to guess.
+          const list = await window.api.snapshotList();
+          if (list.length > 0) {
+            const id = list[0].id;
+            setAiRestorePoints((prev) => ({ ...prev, [command]: id }));
+          }
+        }
+      } catch {
+        // No guarded folder / git unavailable — undo simply isn't offered.
+      }
+    }
+    aiAwaitRef.current = { command, since: Date.now() };
+    aiLastCommandRef.current = command;
+    nextBlockByAiRef.current = true;
+    window.api.ptyRunCommand({ id, command, cwd: cwd || undefined });
+  };
+
+  // One step in flight at a time. A second message while the AI is
+  // thinking queues a follow-up instead of racing a parallel call (which
+  // produced two answers to one question).
+  const aiStepRunningRef = useRef(false);
+  const aiStepQueuedRef = useRef(false);
+  // How many times this turn has been asked to try again after replying
+  // with neither a command nor a completion. Reset on every real answer.
+  const aiNudgedRef = useRef(0);
+
+  // What gets sent as the planner's `goal`: the standing task (if the
+  // session was seeded by Fix this / Ask AI), the conversation so far as a
+  // transcript, and how to behave in a terminal that has no side panels.
+  const buildAiGoal = (): string => {
+    const chat = aiChatRef.current
+      .map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.text}`)
+      .join('\n');
+    const latest = [...aiChatRef.current].reverse().find((m) => m.role === 'user');
+    return (
+      (aiGoalRef.current ? `${aiGoalRef.current}\n\n` : '') +
+      (chat ? `Conversation so far (most recent last):\n${chat}\n\n` : '') +
+      (latest ? `Respond to the user's latest message: "${latest.text}"\n\n` : '') +
+      `(You are talking with the user inside a terminal. This client has no file browser or ` +
+      `output panel — running a shell command is the only way to show them anything, so when the ` +
+      `answer has to come from the system, propose the command.\n` +
+      `Talk like a helpful assistant in a conversation, never like documentation. After a command ` +
+      `runs, read its output and answer the actual question in one short, friendly reply — ` +
+      `"There are two files here: notes.txt and report.txt. Anything else you want to look at?" — ` +
+      `instead of describing what the command does or narrating your plan.\n` +
+      `If they decline or say they're done, just acknowledge it warmly in one line and offer to ` +
+      `help whenever they need it. Never recap what they asked earlier, never number the turns, ` +
+      `and never tell them the output is already on their screen.)`
+    );
+  };
+
+  // --- Plan-first ---------------------------------------------------------
+  // Instead of one step at a time, lay out the WHOLE plan for a single
+  // approval. Same safety path on execution: permission rules, the local
+  // risk veto, Vault capture and restore points all still apply per step.
+  const [aiPlanMode, setAiPlanMode] = useState(false);
+  const aiPlanRunningRef = useRef(false);
+
+  const updatePlan = (
+    itemId: string,
+    fn: (p: NonNullable<AiItem['plan']>) => NonNullable<AiItem['plan']>,
+  ) => {
+    setAiItems((prev) =>
+      prev.map((i) => (i.id === itemId && i.plan ? { ...i, plan: fn(i.plan) } : i)),
+    );
+  };
+
+  const aiPlanAll = async () => {
+    setAiBusy(true);
+    const brain = readBrain();
+    try {
+      const env = await window.api.getEnvironment();
+      const res = await window.api.agentPlanAll({
+        goal: buildAiGoal(),
+        priorSteps: aiHistoryRef.current,
+        cwd: cwd || env.homeDir,
+        platform: env.platform,
+        shell: env.shell,
+        engine: brain.engine as never,
+        model: brain.model,
+        providerId: brain.providerId || undefined,
+        image: aiImageRef.current,
+        terminalContext: collectAiTerminalContext(id),
+      });
+      aiImageRef.current = null;
+      if (!res.ok) {
+        pushAi({
+          from: 'ai',
+          kind: 'message',
+          text:
+            res.code === 'limit_reached'
+              ? `You're out of credits for ${brain.label}. Switch to a free model with the picker, or upgrade to Pro.`
+              : `That didn't go through: ${res.error}`,
+        });
+        setAiDone(true);
+        return;
+      }
+      const plan = res.plan;
+      // A pure question (or already-done goal) has no steps — that's just
+      // an answer, so render it like any other reply.
+      if (plan.done || plan.steps.length === 0) {
+        pushAi({
+          from: 'ai',
+          kind: 'message',
+          text: plan.summary || plan.message || 'Nothing to do.',
+        });
+        aiChatRef.current = [
+          ...aiChatRef.current,
+          { role: 'assistant', text: plan.summary || plan.message },
+        ];
+        setAiDone(true);
+        return;
+      }
+      const steps = plan.steps.map((s) => {
+        const cap = assessCommand(s.command).capability;
+        const blocked = permissionFor(aiPermsRef.current, cap) === 'never';
+        return {
+          command: s.command,
+          reason: s.reason,
+          status: (blocked ? 'blocked' : 'pending') as 'blocked' | 'pending',
+          blockedLabel: blocked
+            ? (PERMISSION_CAPABILITIES.find((c) => c.capability === cap)?.label ?? cap)
+            : undefined,
+          path: s.path,
+          preview: s.preview,
+        };
+      });
+      // For steps that write a known file, fetch what's there NOW so the
+      // card can show current-vs-proposed before anything is approved.
+      const withBefore = await Promise.all(
+        steps.map(async (s) => {
+          if (!s.path || s.preview === undefined) return s;
+          try {
+            const cur = await window.api.previewFile(s.path, cwd || env.homeDir);
+            return { ...s, before: cur.content, beforeExists: cur.exists };
+          } catch {
+            return s;
+          }
+        }),
+      );
+      pushAi({
+        from: 'ai',
+        kind: 'proposal',
+        text: plan.message || '',
+        plan: {
+          summary: plan.summary,
+          estimate: plan.estimate,
+          steps: withBefore,
+          state: 'awaiting',
+        },
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      pushAi({ from: 'ai', kind: 'message', text: `I couldn't reach ${brain.label}: ${detail}` });
+      setAiDone(true);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  // Run an approved plan start to finish. Each step waits for its block to
+  // close before the next begins, so output and exit codes are real.
+  const runAiPlan = async (itemId: string) => {
+    if (aiPlanRunningRef.current) return;
+    const item = aiItems.find((i) => i.id === itemId);
+    if (!item?.plan) return;
+    aiPlanRunningRef.current = true;
+    updatePlan(itemId, (p) => ({ ...p, state: 'running' }));
+    const steps = item.plan.steps;
+    const results: AgentStepHistory[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      if (steps[i].status === 'blocked') continue;
+      updatePlan(itemId, (p) => ({
+        ...p,
+        steps: p.steps.map((s, k) => (k === i ? { ...s, status: 'running' } : s)),
+      }));
+      const done = await runAiCommandAwait(steps[i].command);
+      const failed = done.exitCode !== null && done.exitCode !== 0;
+      updatePlan(itemId, (p) => ({
+        ...p,
+        steps: p.steps.map((s, k) =>
+          k === i
+            ? { ...s, status: failed ? 'failed' : 'ran', output: done.output, exitCode: done.exitCode }
+            : s,
+        ),
+      }));
+      results.push({
+        command: steps[i].command,
+        exitCode: done.exitCode,
+        output: done.output,
+      });
+      // A failed step stops the plan: later steps usually assume it worked.
+      if (failed) {
+        updatePlan(itemId, (p) => ({
+          ...p,
+          steps: p.steps.map((s, k) =>
+            k > i && s.status === 'pending' ? { ...s, status: 'skipped' } : s,
+          ),
+        }));
+        break;
+      }
+    }
+    updatePlan(itemId, (p) => ({ ...p, state: 'done' }));
+    aiHistoryRef.current = [...aiHistoryRef.current, ...results];
+    aiPlanRunningRef.current = false;
+    // Let the model report on what happened, in its own words.
+    void aiStep();
+  };
+
+  // The actual turn. Recursive (the nudge path calls it again), so the
+  // in-flight guard lives in aiStep below rather than here.
+  const aiStepInner = async () => {
+    const brain = readBrain();
+    try {
+      const env = await window.api.getEnvironment();
+      const res = await window.api.agentPlanStep({
+        // The planner suppresses commands for intents it expects a client
+        // PANEL to answer — a plain folder listing being the big one. This
+        // client has no panels: a command block is the only way anything
+        // reaches the user, so say so or those turns come back empty.
+        goal: buildAiGoal(),
+        priorSteps: aiHistoryRef.current,
+        cwd: cwd || env.homeDir,
+        platform: env.platform,
+        shell: env.shell,
+        engine: brain.engine as never,
+        model: brain.model,
+        providerId: brain.providerId || undefined,
+        image: aiImageRef.current,
+        // What's on screen right now, across tabs — the same context the AI
+        // terminal sends, so the agent in the room isn't blind to the room.
+        terminalContext: collectAiTerminalContext(id),
+      });
+      aiImageRef.current = null;
+      if (!res.ok) {
+        // Billing limits deserve the real reason and a way forward, not a
+        // raw error string.
+        const text =
+          res.code === 'limit_reached'
+            ? `You're out of credits for ${brain.label}. Switch to a free model with the picker, or upgrade to Pro.`
+            : res.code === 'feature_capped'
+              ? `${brain.label} isn't included on your plan. Pick a free model, or upgrade to Pro.`
+              : `That didn't go through: ${res.error}`;
+        pushAi({ from: 'ai', kind: 'message', text });
+        return;
+      }
+      const step = res.step;
+      // A turn that only TALKS ("I'll show you what's in the folder") with
+      // no command and no done flag is an unfinished thought, not an
+      // answer. Nudge once through the normal history channel rather than
+      // printing the promise and stalling — smaller models do this often.
+      if (!step.command && !step.done && aiNudgedRef.current < 1) {
+        aiNudgedRef.current += 1;
+        aiHistoryRef.current = [
+          ...aiHistoryRef.current,
+          {
+            command: '(nothing proposed)',
+            exitCode: null,
+            output:
+              'You replied without a command and without finishing. Answer again with the exact command to run next, or say the goal is complete.',
+          },
+        ];
+        await aiStepInner();
+        return;
+      }
+      aiNudgedRef.current = 0;
+      // ONE reply per exchange. A turn that proposes a command says its
+      // piece through the proposal (command + reason); narrating it first
+      // and then answering afterwards read as two AIs talking. The message
+      // is kept only when it IS the answer.
+      if (step.message && !step.command) {
+        pushAi({ from: 'ai', kind: 'message', text: step.message });
+        aiChatRef.current = [
+          ...aiChatRef.current,
+          { role: 'assistant', text: step.message },
+        ];
+      }
+      // Still nothing after the nudge: end the turn honestly rather than
+      // sitting there looking alive forever.
+      if (step.done || !step.command) setAiDone(true);
+      if (step.command && !step.done) {
+        const localCap = assessCommand(step.command).capability;
+
+        // A capability the user set to "never" is refused outright — the
+        // proposal is never even offered, and the model is told why so it
+        // can find another route instead of asking again.
+        if (permissionFor(aiPermsRef.current, localCap) === 'never') {
+          const label =
+            PERMISSION_CAPABILITIES.find((c) => c.capability === localCap)?.label ?? localCap;
+          pushAi({
+            from: 'ai',
+            kind: 'message',
+            text: `I can't run \`${step.command}\` — your settings never allow "${label}". Change that in Settings, or tell me another way to get there.`,
+          });
+          aiHistoryRef.current = [
+            ...aiHistoryRef.current,
+            {
+              command: step.command,
+              exitCode: null,
+              output: `Refused by the user's permission rules: "${label}" is set to never. Do not propose this or any similar command; find another approach or stop.`,
+            },
+          ];
+          setAiDone(true);
+          return;
+        }
+
+        // A model re-proposing a command it ALREADY RAN is stuck in a
+        // loop, not working. Keyed on what actually ran (not merely what
+        // was offered) so declining a command and then asking for it
+        // deliberately still works.
+        if (step.command === aiLastCommandRef.current) {
+          pushAi({
+            from: 'ai',
+            kind: 'message',
+            text: `That would run \`${step.command}\` again, which I just did, so I stopped. Tell me how you'd like to continue.`,
+          });
+          setAiDone(true);
+          return;
+        }
+
+        // Auto-run needs BOTH the model's word and our own reading of the
+        // command. The model called `New-Item ... -Name a.txt` read-only,
+        // which would have created files with no approval — its
+        // self-assessment can be wrong or sloppy, so the local risk engine
+        // gets a veto. Anything that isn't plainly a read waits for you.
+        const trulyRead = localCap === 'read' || localCap === 'inspect';
+        const auto =
+          step.readOnly && trulyRead && !step.risk && aiAutoReadOnlyRef.current;
+        pushAi({
+          from: 'ai',
+          kind: 'proposal',
+          text: step.reason,
+          command: step.command,
+          risk: step.risk,
+          status: auto ? 'accepted' : 'pending',
+        });
+        if (auto) void runAiCommand(step.command);
+      }
+    } catch (err) {
+      // A thrown call (offline, model not ready, IPC failure) must SAY so.
+      // Swallowing it left the session sitting there looking alive.
+      const detail = err instanceof Error ? err.message : String(err);
+      pushAi({
+        from: 'ai',
+        kind: 'message',
+        text: `I couldn't reach ${brain.label}: ${detail}`,
+      });
+      setAiDone(true);
+    }
+  };
+
+  // One turn in flight at a time. A message sent while the AI is thinking
+  // queues a follow-up instead of racing a parallel call.
+  const aiStep = async () => {
+    if (aiStepRunningRef.current) {
+      aiStepQueuedRef.current = true;
+      return;
+    }
+    aiStepRunningRef.current = true;
+    setAiBusy(true);
+    try {
+      await aiStepInner();
+    } finally {
+      aiStepRunningRef.current = false;
+      setAiBusy(false);
+      if (aiStepQueuedRef.current) {
+        aiStepQueuedRef.current = false;
+        void aiStep();
+      }
+    }
+  };
+
+  const onAiFix = (block: TerminalBlockData) => {
+    aiGoalRef.current =
+      `The user's terminal command failed and asked you to fix it. Diagnose from the output, then run what's needed to make it work, one step at a time.\n\n` +
+      `Command: ${block.command}\nExit code: ${block.exitCode ?? 'unknown'}\nOutput:\n${block.lines.slice(-60).join('\n').slice(-2500)}`;
+    aiHistoryRef.current = [];
+    aiChatRef.current = [];
+    aiLastCommandRef.current = null;
+    setAiItems([]);
+    setAiDone(false);
+    setAiContext(block.command);
+    setAiActive(true);
+    pushAi({ from: 'user', kind: 'message', text: `Fix this: ${block.command}` });
+    void window.api
+      .settingsGet()
+      .then((s) => {
+        aiAutoReadOnlyRef.current = !!s.autoApproveReadonly;
+        aiPermsRef.current = s.permissions;
+      })
+      .catch(() => {})
+      .finally(() => void aiStep());
+  };
+
+  // "Call AI" on any card: the AI enters the room with its attention on
+  // that block, and waits. No model call happens until the user actually
+  // asks something — calling someone over isn't the same as making them
+  // guess why.
+  const onAiCall = (block: TerminalBlockData) => {
+    aiGoalRef.current =
+      `The user called you into their terminal about this command. Help with whatever they ask next; propose commands when action is needed.\n\n` +
+      `Command: ${block.command}\nExit code: ${block.exitCode ?? 'unknown'}\nOutput:\n${block.lines.slice(-60).join('\n').slice(-2500)}`;
+    aiHistoryRef.current = [];
+    aiChatRef.current = [];
+    aiLastCommandRef.current = null;
+    setAiItems([]);
+    setAiDone(false);
+    setAiContext(block.command);
+    setAiActive(true);
+    void window.api
+      .settingsGet()
+      .then((s) => {
+        aiAutoReadOnlyRef.current = !!s.autoApproveReadonly;
+        aiPermsRef.current = s.permissions;
+      })
+      .catch(() => {});
+  };
+
+  // "Call AI" from the bar: the room opens with no block in particular —
+  // the user picks the model first, then says what they want.
+  const onAiStart = () => {
+    aiGoalRef.current = '';
+    aiHistoryRef.current = [];
+    aiChatRef.current = [];
+    aiLastCommandRef.current = null;
+    setAiItems([]);
+    setAiDone(false);
+    setAiContext('');
+    setAiActive(true);
+    void window.api
+      .settingsGet()
+      .then((s) => {
+        aiAutoReadOnlyRef.current = !!s.autoApproveReadonly;
+        aiPermsRef.current = s.permissions;
+      })
+      .catch(() => {});
+  };
+
+  const onAiSend = (
+    text: string,
+    image?: { mediaType: string; base64Data: string } | null,
+  ) => {
+    aiChatRef.current = [...aiChatRef.current, { role: 'user', text }];
+    // A fresh instruction clears the loop guard: asking for something
+    // again on purpose is not the model repeating itself.
+    aiLastCommandRef.current = null;
+    if (image) aiImageRef.current = image;
+    aiNudgedRef.current = 0;
+    setAiDone(false);
+    pushAi({
+      from: 'user',
+      kind: 'message',
+      text: image ? `${text}\n(image attached)` : text,
+    });
+    void (aiPlanMode ? aiPlanAll() : aiStep());
+  };
+
+  const onAiProposal = (itemId: string, run: boolean) => {
+    const item = aiItems.find((i) => i.id === itemId);
+    if (!item || item.kind !== 'proposal' || item.status !== 'pending') return;
+    setAiItems((prev) =>
+      prev.map((i) =>
+        i.id === itemId ? { ...i, status: run ? 'accepted' : 'skipped' } : i,
+      ),
+    );
+    if (run && item.command) {
+      void runAiCommand(item.command);
+      return;
+    }
+    if (item.command) {
+      // Skip means "no", not "try again". Asking the model for another step
+      // right here made it re-propose the same command forever, so the
+      // decline is recorded and the turn ends — the user says what's next.
+      aiHistoryRef.current = [
+        ...aiHistoryRef.current,
+        {
+          command: item.command,
+          exitCode: null,
+          output: 'The user declined to run this command and does not want it re-proposed.',
+        },
+      ];
+      aiChatRef.current = [
+        ...aiChatRef.current,
+        { role: 'assistant', text: `(You offered to run \`${item.command}\`; the user declined.)` },
+      ];
+      setAiDone(true);
+    }
+  };
+
+  // Rewind the guarded folder to the point captured just before a command
+  // the AI ran. Resolves with what was put back, so the confirmation can
+  // name it rather than saying "done".
+  const onAiUndo = async (
+    command: string,
+  ): Promise<{ ok: boolean; message: string }> => {
+    const id = aiRestorePoints[command];
+    if (!id) {
+      return {
+        ok: false,
+        message: 'There is no restore point for this command, so nothing was changed.',
+      };
+    }
+    try {
+      const res = await window.api.snapshotRestore(id);
+      if (!res.ok) {
+        return { ok: false, message: res.error ?? "That restore didn't go through." };
+      }
+      window.dispatchEvent(new Event('verlox:vault-changed'));
+      // Name the files the command touched — "config.txt restored" beats
+      // "done", and this is the moment the user most needs to be sure.
+      const files = assessCommand(command).files.filter(Boolean);
+      const what =
+        files.length === 1
+          ? `${files[0]} restored`
+          : files.length > 1
+            ? `${files.length} files restored`
+            : 'Folder restored';
+      return {
+        ok: true,
+        message: `${what} to how it was before this command ran.`,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  };
+
+  const onAiEnd = () => {
+    setAiActive(false);
+    setAiItems([]);
+    setAiDone(false);
+    setAiContext('');
+    aiAwaitRef.current = null;
+  };
+
+  // One line for the session card's header: what the AI is doing right now.
+  const aiPhase: 'thinking' | 'approval' | 'running' | 'done' | 'idle' = aiBusy
+    ? 'thinking'
+    : aiAwaitRef.current
+      ? 'running'
+      : aiItems.some((i) => i.kind === 'proposal' && i.status === 'pending')
+        ? 'approval'
+        : aiDone
+          ? 'done'
+          : 'idle';
+
+  // Plan execution awaits each command rather than being driven by the
+  // watcher's auto-continue, so the loop can sequence steps itself.
+  const aiAwaitResolveRef = useRef<
+    ((r: { output: string; exitCode: number | null }) => void) | null
+  >(null);
+  const runAiCommandAwait = (command: string) =>
+    new Promise<{ output: string; exitCode: number | null }>((resolve) => {
+      aiAwaitResolveRef.current = resolve;
+      void runAiCommand(command);
+    });
+
+  // The watcher: when the block the AI started closes, its REAL result
+  // (exit code, output as the user saw it) becomes the next step's input.
+  useEffect(() => {
+    const waiting = aiAwaitRef.current;
+    if (!waiting) return;
+    const done = [...blocks]
+      .reverse()
+      .find((b) => b.byAi && b.endedAt !== null && b.endedAt >= waiting.since);
+    if (!done) return;
+    aiAwaitRef.current = null;
+    const tail = done.lines.slice(-40).join('\n').slice(-1500);
+    // A plan step is awaited by its runner, which owns sequencing and
+    // history for the whole plan — hand it the result and stop here.
+    const resolve = aiAwaitResolveRef.current;
+    if (resolve) {
+      aiAwaitResolveRef.current = null;
+      resolve({ output: tail, exitCode: done.exitCode });
+      return;
+    }
+    aiHistoryRef.current = [
+      ...aiHistoryRef.current,
+      { command: waiting.command, exitCode: done.exitCode, output: tail },
+    ];
+    // Hang the result on the proposal that started it, so the card can
+    // show what the AI saw without the user hunting for the block.
+    setAiItems((prev) => {
+      const idx = [...prev]
+        .reverse()
+        .findIndex(
+          (i) =>
+            i.kind === 'proposal' &&
+            i.status === 'accepted' &&
+            i.command === waiting.command &&
+            i.output === undefined,
+        );
+      if (idx === -1) return prev;
+      const at = prev.length - 1 - idx;
+      const next = prev.slice();
+      next[at] = { ...next[at], output: tail, exitCode: done.exitCode };
+      return next;
+    });
+    void aiStep();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocks]);
+
   // Blocks is shown when the user is in Blocks mode AND no full-screen
   // program is running. vim/top take the terminal for as long as they
   // need it, then Blocks returns on its own.
@@ -311,6 +1083,10 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
       // this is where they get surfaced in the Running board.
       beginTermRunRef.current(command);
       setBlocks((prev) => openBlock(prev, command, Date.now()));
+      if (nextBlockByAiRef.current) {
+        nextBlockByAiRef.current = false;
+        setBlocks((prev) => tagLastOpenAsAi(prev));
+      }
       surfaceBegin(command);
     });
 
@@ -350,6 +1126,10 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
       if ((hasEnd || !started) && surfaceActive) getSurface().feed(event.data);
       if (events.length > 0)
         setBlocks((prev) => applyFallbackEvents(prev, events, Date.now()));
+      if (started && nextBlockByAiRef.current) {
+        nextBlockByAiRef.current = false;
+        setBlocks((prev) => tagLastOpenAsAi(prev));
+      }
       if (hasEnd) surfaceFreeze();
       if (started) {
         const startEv = events.find(
@@ -743,6 +1523,25 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
               }
               surfaceMount={surfaceMount}
               surfaceFocus={surfaceFocus}
+              aiItems={aiItems}
+              aiActive={aiActive}
+              aiPhase={aiPhase}
+              aiContext={aiContext}
+              aiPlanMode={aiPlanMode}
+              onAiPlanMode={setAiPlanMode}
+              onAiUndo={onAiUndo}
+              aiRestorePoints={aiRestorePoints}
+              onAiRunPlan={(itemId) => void runAiPlan(itemId)}
+              onAiCancelPlan={(itemId) => {
+                updatePlan(itemId, (p) => ({ ...p, state: 'cancelled' }));
+                setAiDone(true);
+              }}
+              onAiProposal={onAiProposal}
+              onAiSend={onAiSend}
+              onAiEnd={onAiEnd}
+              onAiFix={onAiFix}
+              onAiCall={onAiCall}
+              onAiStart={onAiStart}
             />
           )}
         </div>
@@ -911,6 +1710,32 @@ function summarizeBlock(block: TerminalBlockData): {
   const errLineFound = block.lines.find((l) => ERROR_RE.test(l)) ?? '';
   const failed =
     block.exitCode !== null ? block.exitCode !== 0 : errLineFound !== '';
+
+  // A chained line ("mkdir x; cd x; echo y > z") reports the exit code of
+  // its LAST command, so a failure earlier in the chain can land on a zero
+  // exit. Calling that plain success while the card shows a red error
+  // record is exactly the kind of lie this panel exists to prevent — so a
+  // real PowerShell error record in a "successful" block reads as partial.
+  // Keyed on error-record scaffolding, which nothing else prints, rather
+  // than the broad word scan.
+  if (!failed) {
+    const atLine = block.lines.findIndex((l) => /^At line:\d+ char:\d+/.test(l.trim()));
+    const hasRecord =
+      atLine !== -1 ||
+      block.lines.some((l) => /^\s*\+\s*(CategoryInfo|FullyQualifiedErrorId)\s*:/.test(l));
+    if (hasRecord) {
+      // The line above "At line:N" is the human-readable complaint.
+      const detail =
+        atLine > 0 ? block.lines[atLine - 1].trim().slice(0, 90) : '';
+      return {
+        headline: detail
+          ? `Finished, but part of it reported an error: ${detail}`
+          : 'Finished, but part of the command reported an error.',
+        status: 'partial',
+      };
+    }
+  }
+
   if (failed) {
     // A spinner frame can end up glued to the front of the line the error
     // scan picked ("-npm error code E404"); the headline drops it.
@@ -981,11 +1806,15 @@ function readBrain(): {
 function BlockInsights({
   block,
   onSendCommand,
+  onAiFix,
   aiUsed = false,
   tokens = 0,
 }: {
   block: TerminalBlockData;
   onSendCommand: (cmd: string) => void;
+  // Starts an AI session in the block timeline seeded with this block's
+  // failure — the agent enters the room instead of writing an essay here.
+  onAiFix: () => void;
   aiUsed?: boolean;
   tokens?: number;
 }) {
@@ -1180,12 +2009,11 @@ function BlockInsights({
             ) : (
               <button
                 type="button"
-                onClick={() => void runExplain(true)}
-                disabled={explain?.state === 'loading'}
-                className="rounded-lg border border-white/70 px-2 py-1 text-[10.5px] font-medium text-[#B4322B] transition-all hover:brightness-[0.97] disabled:opacity-60"
+                onClick={onAiFix}
+                className="rounded-lg border border-white/70 px-2 py-1 text-[10.5px] font-medium text-[#B4322B] transition-all hover:brightness-[0.97]"
                 style={{ background: 'rgba(255,255,255,0.7)', boxShadow: SHEEN_SHADOW }}
               >
-                {explain?.state === 'loading' ? '✦ Working' : '✦ Fix this'}
+                ✦ Fix this
               </button>
             )}
             {suggestions.map((s) => (
@@ -1263,6 +2091,22 @@ function BlocksView({
   onStopped,
   surfaceMount,
   surfaceFocus,
+  aiItems,
+  aiActive,
+  aiPhase,
+  aiContext,
+  aiPlanMode,
+  onAiPlanMode,
+  onAiUndo,
+  aiRestorePoints,
+  onAiRunPlan,
+  onAiCancelPlan,
+  onAiProposal,
+  onAiSend,
+  onAiEnd,
+  onAiFix,
+  onAiCall,
+  onAiStart,
 }: {
   terminalId: string;
   blocks: TerminalBlockData[];
@@ -1276,6 +2120,30 @@ function BlocksView({
   // keystrokes go to the program.
   surfaceMount: (node: HTMLDivElement | null) => void;
   surfaceFocus: () => void;
+  // The AI session: one consolidated card above the bar, the bar routes to
+  // it while active, and Fix this starts it.
+  aiItems: AiItem[];
+  aiActive: boolean;
+  aiPhase: 'thinking' | 'approval' | 'running' | 'done' | 'idle';
+  aiContext: string;
+  // Plan-first: lay out the whole plan for one approval instead of
+  // approving each step as it comes.
+  aiPlanMode: boolean;
+  onAiPlanMode: (on: boolean) => void;
+  // Rewinds the guarded folder to just before an AI command ran.
+  onAiUndo: (command: string) => Promise<{ ok: boolean; message: string }>;
+  // Commands that actually have a restore point captured.
+  aiRestorePoints: Record<string, string>;
+  onAiRunPlan: (itemId: string) => void;
+  onAiCancelPlan: (itemId: string) => void;
+  onAiProposal: (itemId: string, run: boolean) => void;
+  onAiSend: (text: string, image?: { mediaType: string; base64Data: string } | null) => void;
+  onAiEnd: () => void;
+  onAiFix: (block: TerminalBlockData) => void;
+  onAiCall: (block: TerminalBlockData) => void;
+  // Opens the room from the bar, with no block in particular. Called only
+  // after the user has chosen which model should join.
+  onAiStart: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState('');
@@ -1307,11 +2175,18 @@ function BlocksView({
   // A NEW command card always scrolls fully into view — submitting a
   // command and then having to hunt for its card defeats the point.
   const lastBlockId = blocks.length > 0 ? blocks[blocks.length - 1].id : null;
+  const lastAiId = aiItems.length > 0 ? aiItems[aiItems.length - 1].id : null;
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || !lastBlockId) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  }, [lastBlockId]);
+    if (!el || (!lastBlockId && !lastAiId)) return;
+    // After paint: a new card's height (and the AI card's growing log)
+    // isn't in scrollHeight yet on the same tick, which left the newest
+    // card half-off screen.
+    const raf = requestAnimationFrame(() =>
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }),
+    );
+    return () => cancelAnimationFrame(raf);
+  }, [lastBlockId, lastAiId]);
 
   // Stick to the bottom while output streams in, unless the user has
   // scrolled up to read something (then leave them alone). Runs on the
@@ -1363,6 +2238,15 @@ function BlocksView({
     e.preventDefault();
     const cmd = draft.trim();
     if (!cmd) return;
+    // While the AI is in the room, the bar is the conversation. End the
+    // session to type shell commands yourself again.
+    if (aiActive) {
+      onAiSend(cmd, attachment ? { mediaType: attachment.mediaType, base64Data: attachment.base64Data } : null);
+      setAttachment(null);
+      setDraft('');
+      setCompletion(null);
+      return;
+    }
     historyAppend(cmd);
     historyRef.current = historyLoad();
     histPosRef.current = null;
@@ -1497,6 +2381,79 @@ function BlocksView({
     });
   };
 
+  // Model picker for the AI presence chip. Same list the AI terminal's
+  // picker builds; selecting writes the shared brain keys so every AI call
+  // (session steps, Explain) uses the new model immediately.
+  // 'switch' = changing models mid-session; 'start' = the bar's Call AI,
+  // where choosing a model is what actually opens the room.
+  const [brainMenu, setBrainMenu] = useState<'closed' | 'switch' | 'start'>('closed');
+  const [, setBrainRev] = useState(0);
+  const [brains, setBrains] = useState<Brain[]>(() => buildBrains(null, []));
+  const loadBrains = () => {
+    void Promise.all([
+      window.api.settingsGet().catch(() => null),
+      window.api.listOllama().catch(() => null),
+    ]).then(([s, o]) => {
+      const models = (o as { models?: { name: string }[] } | null)?.models ?? [];
+      setBrains(buildBrains(s, models));
+    });
+  };
+  const toggleBrainMenu = () => {
+    setBrainMenu((m) => (m === 'closed' ? 'switch' : 'closed'));
+    loadBrains();
+  };
+  const openCallAi = () => {
+    setBrainMenu((m) => (m === 'start' ? 'closed' : 'start'));
+    loadBrains();
+  };
+  const pickBrain = (b: Brain) => {
+    try {
+      localStorage.setItem('verlox-brain-label', b.label);
+      localStorage.setItem('verlox-brain-provider', b.provider);
+      localStorage.setItem('verlox-brain-engine', b.engine);
+      localStorage.setItem('verlox-brain-model', b.model);
+      localStorage.setItem('verlox-brain-provider-id', b.providerId ?? '');
+    } catch {
+      // Private mode; the pick just won't persist.
+    }
+    setBrainRev((r) => r + 1);
+    // Choosing the model IS the act of calling the AI in.
+    if (brainMenu === 'start') {
+      onAiStart();
+      barRef.current?.focus();
+    }
+    setBrainMenu('closed');
+  };
+
+  // An image attached to the next AI message (a screenshot of a failing UI,
+  // a photo of an error on another screen). Cleared once it's sent.
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [attachment, setAttachment] = useState<
+    { mediaType: string; base64Data: string; dataUrl: string; name: string } | null
+  >(null);
+  const attachFile = async (file: File) => {
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () =>
+          typeof reader.result === 'string'
+            ? resolve(reader.result)
+            : reject(new Error('bad read'));
+        reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+        reader.readAsDataURL(file);
+      });
+      const comma = dataUrl.indexOf(',');
+      setAttachment({
+        mediaType: file.type,
+        base64Data: dataUrl.slice(comma + 1),
+        dataUrl,
+        name: file.name,
+      });
+    } catch {
+      // Unreadable file; nothing attached.
+    }
+  };
+
   // Ctrl+R's engine, shared with the `recent` quick button: the current
   // draft is the query, matches open in the panel.
   const openHistorySearch = () => {
@@ -1610,10 +2567,16 @@ function BlocksView({
       return;
     }
 
-    if (e.key === 'Escape' && completion) {
-      e.preventDefault();
-      setDraft(completion.original);
-      setCompletion(null);
+    if (e.key === 'Escape') {
+      if (completion) {
+        e.preventDefault();
+        setDraft(completion.original);
+        setCompletion(null);
+      } else if (aiActive) {
+        // The other way out of AI mode, symmetric with the chip's End.
+        e.preventDefault();
+        onAiEnd();
+      }
     }
   };
 
@@ -1676,7 +2639,398 @@ function BlocksView({
           </div>
         )}
         <div className="space-y-2.5 pb-3">
-          {blocks.map((b) => {
+          {buildTimeline().map((row) =>
+            row.kind === 'ai' ? (
+              <AiSessionCard
+                key={`ai-${row.turn.id}`}
+                items={row.turn.items}
+                phase={row.turn.live ? aiPhase : 'done'}
+                context={row.turn.first ? aiContext : ''}
+                live={row.turn.live}
+                onDecide={onAiProposal}
+                onEnd={onAiEnd}
+                onUndo={onAiUndo}
+                restorePoints={aiRestorePoints}
+                onRunPlan={onAiRunPlan}
+                onCancelPlan={onAiCancelPlan}
+              />
+            ) : (
+              row.node
+            ),
+          )}
+        </div>
+      </div>
+
+
+      {/* Command bar — types into the same shell the Raw view shows. The
+          bottom margin keeps it above the floating chat panel. */}
+      <form onSubmit={send} className="w-full max-w-[1200px] px-6 pb-4 pt-1">
+        {pending && (
+          <p className="px-3 pb-1 text-[11px] text-ink-hint">
+            Stopping {runningName || 'the running command'}, then running{' '}
+            <span className="font-mono">{pending.cmd}</span>
+          </p>
+        )}
+        {/* ONE board. In command mode it's just the input row; when the AI
+            is called, the session (header, log) and the input share this
+            single surface — one interface, one identity. */}
+        <div
+          className="relative rounded-xl border border-black/[0.08]"
+          style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
+        >
+          {/* Tab-completion candidates: a frosted panel floating above the
+              bar (no layout shift), easing in. Tab cycles, Esc restores,
+              click picks. Only shown while there's a real choice. */}
+          {completion && completion.candidates.length > 1 && (
+            <div
+              className="absolute bottom-full left-0 right-0 z-30 mb-2 animate-pane-in rounded-xl border border-black/[0.08] px-2.5 py-2"
+              style={{
+                background: 'rgba(255,255,255,0.72)',
+                backdropFilter: 'blur(12px)',
+                boxShadow: CARD_SHADOW,
+              }}
+            >
+              <div className="flex flex-wrap items-center gap-1">
+                {completion.candidates.map((c, i) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyCompletion(completion, i);
+                    }}
+                    className={`max-w-[340px] truncate rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                      i === completion.index
+                        ? 'border-[#2E5FA3]/40 bg-white text-ink'
+                        : 'border-transparent text-ink-label hover:bg-white/70 hover:text-ink'
+                    }`}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* The model menu for the AI chip: same list as the AI terminal's
+              picker, floating in the same frosted style. */}
+          {brainMenu !== 'closed' && (
+            <div
+              // Anchored to whichever control opened it: the Call AI button
+              // on the right in command mode, the model pill on the left
+              // once the AI is in.
+              className={`absolute bottom-full z-30 mb-2 max-h-72 w-64 animate-pane-in overflow-y-auto rounded-xl border border-black/[0.08] p-1.5 ${
+                brainMenu === 'start' ? 'right-0' : 'left-0'
+              }`}
+              style={{
+                background: 'rgba(255,255,255,0.85)',
+                backdropFilter: 'blur(12px)',
+                boxShadow: CARD_SHADOW,
+              }}
+            >
+              <p className="px-2 pb-1 pt-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-micro">
+                {brainMenu === 'start' ? 'Pick who joins' : 'Choose a model'}
+              </p>
+              {brains.map((b) => {
+                const cur = readBrain();
+                const active = cur.model === b.model && cur.engine === b.engine;
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => pickBrain(b)}
+                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] transition-colors ${
+                      active
+                        ? 'bg-[#7A4FA3]/10 text-ink'
+                        : 'text-ink-label hover:bg-black/[0.04] hover:text-ink'
+                    }`}
+                  >
+                    {BRAIN_PROVIDER_PNGS[b.provider] ? (
+                      <img
+                        src={BRAIN_PROVIDER_PNGS[b.provider]}
+                        alt=""
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5 rounded-sm"
+                      />
+                    ) : (
+                      <span className="h-3.5 w-3.5 rounded-sm bg-black/10" aria-hidden="true" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{b.label}</span>
+                    <span className="text-[9px] uppercase tracking-wide text-ink-micro">
+                      {b.tier}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {/* What's attached to the next message. */}
+          {aiActive && attachment && (
+            <div className="flex items-center gap-2 border-b border-black/[0.05] px-3 py-1.5">
+              <img
+                src={attachment.dataUrl}
+                alt=""
+                className="h-8 w-8 rounded-md border border-hairline object-cover"
+              />
+              <span className="min-w-0 flex-1 truncate text-[11px] text-ink-label">
+                {attachment.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => setAttachment(null)}
+                className="text-[10px] text-ink-hint transition-colors hover:text-ink"
+              >
+                Remove
+              </button>
+            </div>
+          )}
+          <div className="flex items-center gap-2 px-3 py-2">
+          {/* Folder browser — jumps the shell to any folder without typing
+              the path. Wrapper is relative so the picker floats above it. */}
+          <div ref={pickerWrapRef} className="relative z-20 shrink-0">
+            {pickerOpen && <PathPicker initialPath={cwd || null} onPick={goToFolder} />}
+            <button
+              type="button"
+              onClick={() => setPickerOpen((o) => !o)}
+              aria-label={cwd ? `Browse folders. Currently in ${cwd}` : 'Browse folders'}
+              aria-expanded={pickerOpen}
+              title={cwd || 'Browse folders'}
+              className={`flex h-6 max-w-[200px] items-center gap-1.5 rounded-md px-1.5 font-mono text-[11.5px] transition-colors ${
+                pickerOpen
+                  ? 'bg-black/[0.06] text-ink'
+                  : 'text-ink-label hover:bg-black/[0.05] hover:text-ink'
+              }`}
+            >
+              <svg
+                viewBox="0 0 18 18"
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M2 4.5h5l1.7 2H16v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+              </svg>
+              {label && <span className="truncate">{label}</span>}
+            </button>
+          </div>
+          {/* The AI presence chip: while a session is active the bar
+              belongs to the conversation, and this says so — model icon,
+              a working/settled dot, and the way out. */}
+          {/* In AI mode the SAME bar gains two controls: which model is
+              answering, and an attachment. Everything else stays put. */}
+          {aiActive && (
+            <>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  toggleBrainMenu();
+                }}
+                title="Change model"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-hairline bg-white/70 px-2 py-1 text-[10.5px] font-medium text-ink transition-colors hover:border-[#7A4FA3]/40 hover:bg-white"
+              >
+                {BRAIN_PROVIDER_PNGS[readBrain().provider] && (
+                  <img
+                    src={BRAIN_PROVIDER_PNGS[readBrain().provider]}
+                    alt=""
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5 rounded-sm"
+                  />
+                )}
+                <span className="max-w-[120px] truncate">{readBrain().label}</span>
+                <svg
+                  viewBox="0 0 10 6"
+                  className="h-1.5 w-2.5 text-ink-hint"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M1 1l4 4 4-4" />
+                </svg>
+              </button>
+              {/* Plan first: one approval for the whole job instead of a
+                  decision per step. */}
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onAiPlanMode(!aiPlanMode);
+                }}
+                aria-pressed={aiPlanMode}
+                title={
+                  aiPlanMode
+                    ? 'Plan first: the whole plan is shown for one approval'
+                    : 'Plan first: see every step before anything runs'
+                }
+                className={`shrink-0 rounded-md border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
+                  aiPlanMode
+                    ? 'border-[#7A4FA3]/40 bg-white text-ink'
+                    : 'border-hairline text-ink-hint hover:bg-white/70 hover:text-ink'
+                }`}
+              >
+                Plan
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }}
+                aria-label="Attach an image"
+                title="Attach an image"
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors ${
+                  attachment
+                    ? 'bg-[#7A4FA3]/10 text-[#7A4FA3]'
+                    : 'text-ink-label hover:bg-black/[0.05] hover:text-ink'
+                }`}
+              >
+                <svg
+                  viewBox="0 0 18 18"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M13.5 8.5l-4.6 4.6a3 3 0 0 1-4.2-4.2l5.6-5.6a2 2 0 0 1 2.8 2.8l-5.6 5.6a1 1 0 0 1-1.4-1.4l5-5" />
+                </svg>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) void attachFile(file);
+                }}
+              />
+            </>
+          )}
+          <span
+            aria-hidden="true"
+            className={`font-mono text-[13px] ${aiActive ? 'text-[#7A4FA3]' : 'text-[#3E7A53]'}`}
+          >
+            ❯
+          </span>
+          <input
+            ref={barRef}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              // Typing invalidates completion cycling, history position,
+              // and any in-flight directory listing.
+              setCompletion(null);
+              completionSeq.current++;
+              histPosRef.current = null;
+            }}
+            onKeyDown={onKeyDown}
+            placeholder={
+              aiActive
+                ? `Message ${readBrain().label}`
+                : running
+                  ? `Run a command (stops ${runningName || 'the current one'} first). Reply to it inside its card.`
+                  : 'Run a command'
+            }
+            spellCheck={false}
+            autoCapitalize="off"
+            autoComplete="off"
+            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-[#3A3A3A] outline-none placeholder:text-ink-micro"
+          />
+          {/* One-click completion for the things everyone reaches for:
+              each is identical to typing the text and pressing Tab (or
+              Ctrl+R for `recent`). Always visible, and TOGGLES: pressing
+              again while the panel is open closes it. Hidden while the AI
+              has the bar. */}
+          {/* Call the AI into the terminal. Choosing a model in the menu
+              this opens is what actually starts the session. */}
+          {!aiActive && (
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                openCallAi();
+              }}
+              aria-pressed={brainMenu === 'start'}
+              title="Call the AI into this terminal"
+              className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10.5px] font-medium transition-colors duration-200 ${
+                brainMenu === 'start'
+                  ? 'border-[#7A4FA3]/40 bg-white text-ink'
+                  : 'border-hairline text-[#7A4FA3] hover:bg-white/70'
+              }`}
+            >
+              <span aria-hidden="true">✦</span>
+              Call AI
+            </button>
+          )}
+          {/* Leaving AI mode: same place the quick buttons sit in command
+              mode, so the row's shape never jumps. */}
+          {aiActive && (
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onAiEnd();
+              }}
+              aria-label="End the AI session"
+              title="End the AI session (Esc)"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-label transition-colors hover:bg-black/[0.05] hover:text-ink"
+            >
+              <svg
+                viewBox="0 0 14 14"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M3 3l8 8M11 3l-8 8" />
+              </svg>
+            </button>
+          )}
+          {!aiActive && QUICK_BUTTONS.map((b) => (
+            <button
+              key={b.label}
+              type="button"
+              aria-pressed={!!completion}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                quickComplete(b.insert);
+              }}
+              title={
+                completion
+                  ? 'Close suggestions'
+                  : b.insert === ''
+                    ? 'Browse recent commands (Ctrl+R)'
+                    : `Complete ${b.label}`
+              }
+              className={`shrink-0 rounded-md border px-1.5 py-0.5 font-mono text-[10.5px] transition-colors duration-200 ${
+                completion
+                  ? 'border-[#2E5FA3]/40 bg-white text-ink'
+                  : 'border-hairline text-ink-hint hover:bg-white/70 hover:text-ink'
+              }`}
+            >
+              {b.label}
+            </button>
+          ))}
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+
+  // One command card. Unchanged from when it lived inline in the map —
+  // only its home moved, so the timeline can interleave it with AI turns.
+  function renderBlock(b: TerminalBlockData) {
             const isRunning = b.endedAt === null;
             // A running command that has gone quiet is waiting on the user,
             // not working. Saying which is the difference between "is this
@@ -1702,9 +3056,21 @@ function BlocksView({
                 style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
               >
                 <div className="flex items-center gap-2 border-b border-black/[0.04] px-3 py-1.5">
-                  <span aria-hidden="true" className="font-mono text-[12px] text-[#3E7A53]">
-                    ❯
-                  </span>
+                  {/* Who typed this into the shared terminal: the model's
+                      icon when the AI did, the plain prompt glyph when the
+                      user did. */}
+                  {b.byAi ? (
+                    <img
+                      src={BRAIN_PROVIDER_PNGS[readBrain().provider]}
+                      alt="Run by the AI"
+                      title="Run by the AI"
+                      className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                    />
+                  ) : (
+                    <span aria-hidden="true" className="font-mono text-[12px] text-[#3E7A53]">
+                      ❯
+                    </span>
+                  )}
                   <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-medium text-[#3A3A3A]">
                     {b.command}
                   </span>
@@ -1750,6 +3116,24 @@ function BlocksView({
                           label="Copy"
                         />
                       </span>
+                      {/* Call the AI into the room about THIS command —
+                          always visible, wearing the current model's icon. */}
+                      <button
+                        type="button"
+                        onClick={() => onAiCall(b)}
+                        title="Ask the AI about this command"
+                        className="flex shrink-0 items-center gap-1.5 rounded-md border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-label transition-colors hover:border-[#7A4FA3]/40 hover:bg-white hover:text-ink"
+                      >
+                        {BRAIN_PROVIDER_PNGS[readBrain().provider] && (
+                          <img
+                            src={BRAIN_PROVIDER_PNGS[readBrain().provider]}
+                            alt=""
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 rounded-sm"
+                          />
+                        )}
+                        Ask AI
+                      </button>
                     </>
                   )}
                 </div>
@@ -1834,146 +3218,619 @@ function BlocksView({
                   onSendCommand={(cmd) => {
                     window.api.ptyInput({ id: terminalId, data: `${cmd}\r` });
                   }}
+                  onAiFix={() => onAiFix(b)}
                 />
               </div>
             );
-          })}
+  }
+
+  function buildTimeline() {
+    const turns: { id: string; at: number; items: AiItem[]; first: boolean; live: boolean }[] = [];
+    for (const it of aiItems) {
+      const startsTurn = it.from === 'user' || turns.length === 0;
+      if (startsTurn) {
+        turns.push({
+          id: it.id,
+          at: it.at,
+          items: [it],
+          first: turns.length === 0,
+          live: false,
+        });
+      } else {
+        turns[turns.length - 1].items.push(it);
+      }
+    }
+    if (turns.length > 0) turns[turns.length - 1].live = true;
+    return [
+      // A command the AI ran belongs to its exchange, not beside it: its
+      // output is on the proposal row's toggle, so showing the block too
+      // duplicated every answer. It still runs in the real shell.
+      ...blocks
+        .filter((b) => !b.byAi)
+        .map((b) => ({ kind: 'block' as const, at: b.startedAt, node: renderBlock(b) })),
+      ...turns.map((t) => ({ kind: 'ai' as const, at: t.at, turn: t })),
+    ].sort((a, z) => a.at - z.at);
+  }
+}
+
+// The way back from a command that changed things. Verlox saves a restore
+// point before every such command the AI runs; this spends it. Asks once
+// before rewinding, because a rewind moves the whole guarded folder.
+function UndoStep({
+  command,
+  available,
+  onUndo,
+}: {
+  command: string;
+  // False when no restore point was captured (no guarded folder, or git
+  // unavailable). Offering undo we can't honour is worse than not offering.
+  available: boolean;
+  onUndo: (command: string) => Promise<{ ok: boolean; message: string }>;
+}) {
+  const [state, setState] = useState<'idle' | 'confirm' | 'working' | 'done' | 'error'>(
+    'idle',
+  );
+  const [message, setMessage] = useState('');
+  if (!available && state === 'idle') return null;
+
+  if (state === 'done') {
+    return (
+      <div
+        className="mt-1.5 flex items-start gap-2 rounded-lg border border-[#3E7A53]/25 px-2.5 py-1.5"
+        style={{ background: 'rgba(255,255,255,0.7)' }}
+      >
+        <span
+          className="mt-[1px] flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#3E7A53] text-[9px] font-bold text-white"
+          aria-hidden="true"
+        >
+          ✓
+        </span>
+        <p className="text-[11.5px] leading-snug text-[#3A3A3A]">
+          <span className="font-medium text-[#3E7A53]">{message}</span>{' '}
+          <span className="text-ink-hint">
+            The rewind is itself a restore point, so you can put it back from the
+            Timeline.
+          </span>
+        </p>
+      </div>
+    );
+  }
+
+  if (state === 'error') {
+    return (
+      <div
+        className="mt-1.5 flex items-start gap-2 rounded-lg border border-[#B4322B]/25 px-2.5 py-1.5"
+        style={{ background: 'rgba(255,255,255,0.7)' }}
+      >
+        <span
+          className="mt-[1px] flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#B4322B] text-[9px] font-bold text-white"
+          aria-hidden="true"
+        >
+          !
+        </span>
+        <p className="text-[11.5px] leading-snug text-[#3A3A3A]">{message}</p>
+      </div>
+    );
+  }
+
+  if (state === 'working') {
+    return (
+      <p className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-ink-hint">
+        <span
+          className="h-1.5 w-1.5 animate-flicker rounded-full bg-[#B4632F]"
+          aria-hidden="true"
+        />
+        Putting everything back…
+      </p>
+    );
+  }
+
+  if (state === 'confirm') {
+    return (
+      <div
+        className="mt-1.5 rounded-lg border border-[#B4632F]/25 px-2.5 py-2"
+        style={{ background: 'rgba(255,255,255,0.7)' }}
+      >
+        <p className="text-[11.5px] leading-snug text-[#3A3A3A]">
+          Put the protected folder back to how it was before this command?
+        </p>
+        <p className="mt-0.5 text-[11px] leading-snug text-ink-hint">
+          Everything that changed since then is undone. This is reversible.
+        </p>
+        <div className="mt-1.5 flex gap-1.5">
+          <button
+            type="button"
+            onClick={async () => {
+              setState('working');
+              const res = await onUndo(command);
+              setMessage(res.message);
+              setState(res.ok ? 'done' : 'error');
+            }}
+            className="rounded-md border border-[#B4632F]/40 px-2.5 py-1 text-[11px] font-semibold text-[#B4632F] transition-all hover:brightness-[0.97]"
+            style={{ background: 'rgba(255,255,255,0.9)', boxShadow: SHEEN_SHADOW }}
+          >
+            Yes, undo it
+          </button>
+          <button
+            type="button"
+            onClick={() => setState('idle')}
+            className="rounded-md border border-hairline px-2.5 py-1 text-[11px] text-ink-label transition-all hover:text-ink"
+            style={{ background: 'rgba(255,255,255,0.6)' }}
+          >
+            Keep changes
+          </button>
         </div>
       </div>
+    );
+  }
 
-      {/* Command bar — types into the same shell the Raw view shows. The
-          bottom margin keeps it above the floating chat panel. */}
-      <form onSubmit={send} className="w-full max-w-[1200px] px-6 pb-4 pt-1">
-        {pending && (
-          <p className="px-3 pb-1 text-[11px] text-ink-hint">
-            Stopping {runningName || 'the running command'}, then running{' '}
-            <span className="font-mono">{pending.cmd}</span>
-          </p>
+  // Undo is the promise the whole product rests on — it reads as a real
+  // control, not a footnote.
+  return (
+    <button
+      type="button"
+      onClick={() => setState('confirm')}
+      title="Put the protected folder back to how it was before this command"
+      className="mt-1.5 flex items-center gap-1.5 rounded-md border border-[#B4632F]/25 px-2 py-1 text-[10.5px] font-medium text-[#B4632F] transition-all hover:brightness-[0.97]"
+      style={{ background: 'rgba(255,255,255,0.75)', boxShadow: SHEEN_SHADOW }}
+    >
+      <svg
+        viewBox="0 0 16 16"
+        className="h-3.5 w-3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M3 8a5 5 0 1 0 1.6-3.7M3 3v3h3" />
+      </svg>
+      Undo this
+    </button>
+  );
+}
+
+// The whole plan, laid out for one approval. Every step is visible before
+// anything runs, with its file diff when it writes one, and each step
+// reports its own outcome as the plan executes.
+function PlanCard({
+  item,
+  onRun,
+  onCancel,
+  onUndo,
+  restorePoints,
+}: {
+  item: AiItem;
+  onRun: () => void;
+  onCancel: () => void;
+  onUndo: (command: string) => Promise<{ ok: boolean; message: string }>;
+  restorePoints: Record<string, string>;
+}) {
+  const plan = item.plan;
+  const [openStep, setOpenStep] = useState<Record<number, boolean>>({});
+  if (!plan) return null;
+  const awaiting = plan.state === 'awaiting';
+  const runnable = plan.steps.filter((s) => s.status !== 'blocked').length;
+  const blocked = plan.steps.filter((s) => s.status === 'blocked');
+  return (
+    <div className="rounded-lg border border-black/[0.06] bg-white/50 p-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-micro">
+          Plan
+        </span>
+        <span className="text-[10px] text-ink-hint">
+          {plan.steps.length} step{plan.steps.length === 1 ? '' : 's'}
+          {plan.estimate ? ` · ${plan.estimate}` : ''}
+        </span>
+        {plan.state === 'running' && (
+          <span className="flex items-center gap-1 text-[10px] text-[#7A4FA3]">
+            <span className="h-1.5 w-1.5 animate-flicker rounded-full bg-[#7A4FA3]" aria-hidden="true" />
+            running
+          </span>
         )}
-        <div
-          className="relative flex items-center gap-2 rounded-xl border border-black/[0.08] px-3 py-2"
-          style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
-        >
-          {/* Tab-completion candidates: a frosted panel floating above the
-              bar (no layout shift), easing in. Tab cycles, Esc restores,
-              click picks. Only shown while there's a real choice. */}
-          {completion && completion.candidates.length > 1 && (
-            <div
-              className="absolute bottom-full left-0 right-0 z-30 mb-2 animate-pane-in rounded-xl border border-black/[0.08] px-2.5 py-2"
-              style={{
-                background: 'rgba(255,255,255,0.72)',
-                backdropFilter: 'blur(12px)',
-                boxShadow: CARD_SHADOW,
-              }}
-            >
-              <div className="flex flex-wrap items-center gap-1">
-                {completion.candidates.map((c, i) => (
+        {plan.state === 'cancelled' && (
+          <span className="text-[10px] text-ink-micro">cancelled</span>
+        )}
+      </div>
+      {plan.summary && (
+        <p className="mb-2 text-[12px] leading-relaxed text-[#3A3A3A]">{plan.summary}</p>
+      )}
+      <ol className="space-y-1.5">
+        {plan.steps.map((s, i) => (
+          <li key={`${s.command}-${i}`} className="flex gap-2">
+            <span className="mt-0.5 w-4 shrink-0 text-right font-mono text-[10px] text-ink-micro">
+              {i + 1}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <code
+                  className={`rounded bg-white/70 px-1.5 py-0.5 font-mono text-[11.5px] ${
+                    s.status === 'blocked' || s.status === 'skipped'
+                      ? 'text-ink-micro line-through'
+                      : 'text-[#3A3A3A]'
+                  }`}
+                >
+                  {s.command}
+                </code>
+                {s.status === 'running' && (
+                  <span className="text-[10px] text-[#7A4FA3]">running</span>
+                )}
+                {s.status === 'ran' && <span className="text-[10px] text-[#3E7A53]">ran</span>}
+                {s.status === 'failed' && (
+                  <span className="text-[10px] text-[#B4322B]">
+                    failed{s.exitCode != null ? ` (exit ${s.exitCode})` : ''}
+                  </span>
+                )}
+                {s.status === 'skipped' && (
+                  <span className="text-[10px] text-ink-micro">not reached</span>
+                )}
+                {s.status === 'blocked' && (
+                  <span className="text-[10px] text-[#B4632F]">
+                    blocked — “{s.blockedLabel}” is set to never
+                  </span>
+                )}
+                {(s.output !== undefined || s.before !== undefined) && (
                   <button
-                    key={c}
                     type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applyCompletion(completion, i);
-                    }}
-                    className={`max-w-[340px] truncate rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
-                      i === completion.index
-                        ? 'border-[#2E5FA3]/40 bg-white text-ink'
-                        : 'border-transparent text-ink-label hover:bg-white/70 hover:text-ink'
+                    onClick={() => setOpenStep((o) => ({ ...o, [i]: !o[i] }))}
+                    className="text-[10px] text-ink-hint transition-colors hover:text-ink"
+                  >
+                    {openStep[i] ? 'hide' : s.output !== undefined ? 'output' : 'changes'}
+                  </button>
+                )}
+              </div>
+              {s.reason && awaiting && (
+                <p className="mt-0.5 text-[11px] leading-snug text-ink-hint">{s.reason}</p>
+              )}
+              {openStep[i] && s.output !== undefined && (
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white/70 px-2 py-1.5 font-mono text-[11px] leading-[1.5] text-[#3A3A3A]">
+                  {s.output.trim() || '(no output)'}
+                </pre>
+              )}
+              {/* Same restore point every changing command saves, spendable
+                  from the plan too. */}
+              {s.status === 'ran' &&
+                assessCommand(s.command).capability !== 'read' &&
+                assessCommand(s.command).capability !== 'inspect' && (
+                  <UndoStep
+                    command={s.command}
+                    available={!!restorePoints[s.command]}
+                    onUndo={onUndo}
+                  />
+                )}
+              {/* Current-vs-proposed for a step that writes a known file. */}
+              {(openStep[i] || awaiting) && s.preview !== undefined && s.path && (
+                <div className="mt-1 overflow-hidden rounded-md border border-black/[0.06]">
+                  <div className="flex items-center gap-1.5 border-b border-black/[0.05] bg-white/60 px-2 py-1">
+                    <span className="font-mono text-[10px] text-ink-label">{s.path}</span>
+                    <span className="text-[9px] uppercase tracking-wide text-ink-micro">
+                      {s.beforeExists ? 'changes' : 'new file'}
+                    </span>
+                  </div>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[11px] leading-[1.5] text-[#3E7A53]">
+                    {s.preview}
+                  </pre>
+                  {s.beforeExists && s.before ? (
+                    <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words border-t border-black/[0.05] px-2 py-1.5 font-mono text-[11px] leading-[1.5] text-ink-micro line-through">
+                      {s.before}
+                    </pre>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+      {blocked.length > 0 && awaiting && (
+        <p className="mt-2 text-[11px] leading-snug text-[#B4632F]">
+          {blocked.length} step{blocked.length === 1 ? '' : 's'} won’t run: your settings
+          never allow them. The rest can still go ahead.
+        </p>
+      )}
+      {awaiting && (
+        <div className="mt-2.5 flex gap-1.5">
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={runnable === 0}
+            className="rounded-md border border-[#3E7A53]/30 px-2.5 py-1 text-[11px] font-medium text-[#3E7A53] transition-all hover:brightness-[0.97] disabled:opacity-50"
+            style={{ background: 'rgba(255,255,255,0.85)', boxShadow: SHEEN_SHADOW }}
+          >
+            Run {runnable} step{runnable === 1 ? '' : 's'}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md border border-hairline px-2.5 py-1 text-[11px] text-ink-label transition-all hover:text-ink"
+            style={{ background: 'rgba(255,255,255,0.6)', boxShadow: SHEEN_SHADOW }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Wall-clock stamp for a settled exchange, matching the command cards.
+function fmtClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+// --- The AI transcript -----------------------------------------------------
+// The conversation, rendered INSIDE the command bar's own board: a compact
+// activity log, each proposal's Run/Skip inline, and the closing summary
+// set apart when the work is done. The bar's controls (model picker,
+// status, attach, close) live in the input row, so this is only the talk.
+function AiSessionCard({
+  items,
+  phase,
+  context,
+  live,
+  onDecide,
+  onEnd,
+  onUndo,
+  restorePoints,
+  onRunPlan,
+  onCancelPlan,
+}: {
+  items: AiItem[];
+  phase: 'thinking' | 'approval' | 'running' | 'done' | 'idle';
+  context: string;
+  // True for the newest exchange — the only one whose status can still
+  // change, and the only one that offers a way out of the session.
+  live: boolean;
+  onDecide: (itemId: string, run: boolean) => void;
+  onEnd: () => void;
+  onUndo: (command: string) => Promise<{ ok: boolean; message: string }>;
+  restorePoints: Record<string, string>;
+  onRunPlan: (itemId: string) => void;
+  onCancelPlan: (itemId: string) => void;
+}) {
+  // Whoever spoke in THIS exchange — not whoever is selected right now.
+  const current = readBrain();
+  const spoke = items.find((i) => i.from === 'ai' && i.brandLabel);
+  const brain = {
+    label: spoke?.brandLabel ?? current.label,
+    provider: spoke?.brandProvider ?? current.provider,
+  };
+  const png = BRAIN_PROVIDER_PNGS[brain.provider];
+  // The user's face in the conversation, same mark the sidebar shows.
+  const { user } = useAuth();
+  const userInitial = (user?.email?.charAt(0) ?? '?').toUpperCase();
+  const summary =
+    phase === 'done'
+      ? [...items].reverse().find((i) => i.from === 'ai' && i.kind === 'message')
+      : undefined;
+  const log = summary ? items.filter((i) => i.id !== summary.id) : items;
+  const statusText =
+    phase === 'thinking'
+      ? 'thinking'
+      : phase === 'approval'
+        ? 'waiting for your go-ahead'
+        : phase === 'running'
+          ? 'running a command'
+          : phase === 'done'
+            ? 'finished'
+            : 'listening';
+  // Which ran commands have their output expanded.
+  const [openOutputs, setOpenOutputs] = useState<Record<string, boolean>>({});
+  // The log grows downward but the card is docked; keep the newest visible.
+  const logRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [items.length, phase]);
+  return (
+    // A card in the timeline, same language as the command blocks around
+    // it, with a live status header — so "is it working or did it stop?"
+    // is never a question.
+    <div
+      className="overflow-hidden rounded-xl border border-black/[0.08]"
+      style={{ background: SHEEN_BG, boxShadow: CARD_SHADOW }}
+    >
+      <div className="flex items-center gap-2 border-b border-black/[0.04] px-3 py-1.5">
+        {png && <img src={png} alt="" className="h-3.5 w-3.5 shrink-0 rounded-sm" aria-hidden="true" />}
+        <span className="shrink-0 text-[12px] font-medium text-[#3A3A3A]">{brain.label}</span>
+        {context && (
+          <span className="max-w-[280px] truncate rounded-md bg-white/60 px-1.5 py-0.5 font-mono text-[10px] text-ink-label">
+            on {context}
+          </span>
+        )}
+        {/* Only the newest exchange has a status that can still change, or
+            a session to end. Older ones are settled history. */}
+        {live ? (
+          <>
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  phase === 'thinking' || phase === 'running'
+                    ? 'animate-flicker bg-[#7A4FA3]'
+                    : phase === 'approval'
+                      ? 'bg-[#2E5FA3]'
+                      : 'bg-[#3E7A53]'
+                }`}
+                aria-hidden="true"
+              />
+              <span className="font-mono text-[10px] text-ink-hint">{statusText}</span>
+            </span>
+            <button
+              type="button"
+              onClick={onEnd}
+              className="shrink-0 rounded-md border border-hairline px-2 py-0.5 text-[10px] font-medium text-ink-hint transition-colors hover:text-[#3A3A3A]"
+            >
+              End
+            </button>
+          </>
+        ) : (
+          <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-micro">
+            {fmtClock(items[0]?.at ?? 0)}
+          </span>
+        )}
+      </div>
+      <div ref={logRef} className="max-h-[420px] space-y-2 overflow-y-auto px-3.5 py-2.5">
+        {log.map((it) =>
+          it.plan ? (
+            <PlanCard
+              key={it.id}
+              item={it}
+              onRun={() => onRunPlan(it.id)}
+              onCancel={() => onCancelPlan(it.id)}
+              onUndo={onUndo}
+              restorePoints={restorePoints}
+            />
+          ) : it.kind === 'proposal' ? (
+            <div key={it.id} className="py-0.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {/* A ran command is a disclosure: open it to see exactly
+                    what came back, without hunting for its block. */}
+                {it.output !== undefined ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenOutputs((o) => ({ ...o, [it.id]: !o[it.id] }))
+                    }
+                    aria-expanded={!!openOutputs[it.id]}
+                    className="flex items-center gap-1.5 rounded bg-white/70 px-1.5 py-0.5 font-mono text-[11.5px] text-[#3A3A3A] transition-colors hover:bg-white"
+                  >
+                    <span
+                      className="text-[8px] text-ink-micro transition-transform duration-200"
+                      style={{
+                        transform: openOutputs[it.id] ? 'rotate(90deg)' : 'rotate(0deg)',
+                      }}
+                      aria-hidden="true"
+                    >
+                      ▶
+                    </span>
+                    {it.command}
+                  </button>
+                ) : (
+                  <code className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-[11.5px] text-[#3A3A3A]">
+                    {it.command}
+                  </code>
+                )}
+                {it.status === 'accepted' && (
+                  <span
+                    className={`text-[10px] ${
+                      it.exitCode !== undefined && it.exitCode !== null && it.exitCode !== 0
+                        ? 'text-[#B4322B]'
+                        : 'text-[#3E7A53]'
                     }`}
                   >
-                    {c}
-                  </button>
-                ))}
+                    {it.output === undefined
+                      ? 'running'
+                      : it.exitCode !== null && it.exitCode !== 0
+                        ? `failed (exit ${it.exitCode})`
+                        : 'ran'}
+                  </span>
+                )}
+                {it.status === 'skipped' && (
+                  <span className="text-[10px] text-ink-micro">skipped</span>
+                )}
+                {it.status === 'pending' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onDecide(it.id, true)}
+                      className="rounded-md border border-[#3E7A53]/30 px-2 py-0.5 text-[10.5px] font-medium text-[#3E7A53] transition-all hover:brightness-[0.97]"
+                      style={{ background: 'rgba(255,255,255,0.8)', boxShadow: SHEEN_SHADOW }}
+                    >
+                      Run
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDecide(it.id, false)}
+                      className="rounded-md border border-hairline px-2 py-0.5 text-[10.5px] text-ink-label transition-all hover:text-ink"
+                      style={{ background: 'rgba(255,255,255,0.6)', boxShadow: SHEEN_SHADOW }}
+                    >
+                      Skip
+                    </button>
+                  </>
+                )}
               </div>
+              {(it.text || it.risk) && it.status === 'pending' && (
+                <p className={`mt-0.5 text-[11px] leading-snug ${it.risk ? 'text-[#B4632F]' : 'text-ink-hint'}`}>
+                  {it.risk || it.text}
+                </p>
+              )}
+              {openOutputs[it.id] && it.output !== undefined && (
+                <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white/60 px-2 py-1.5 font-mono text-[11px] leading-[1.5] text-[#3A3A3A]">
+                  {it.output.trim() || '(no output)'}
+                </pre>
+              )}
+              {/* A command that changed things saved a restore point first,
+                  so there's a way back. */}
+              {it.status === 'accepted' &&
+                it.output !== undefined &&
+                it.command &&
+                assessCommand(it.command).capability !== 'read' &&
+                assessCommand(it.command).capability !== 'inspect' && (
+                  <UndoStep
+                    command={it.command}
+                    available={!!restorePoints[it.command]}
+                    onUndo={onUndo}
+                  />
+                )}
             </div>
-          )}
-          {/* Folder browser — jumps the shell to any folder without typing
-              the path. Wrapper is relative so the picker floats above it. */}
-          <div ref={pickerWrapRef} className="relative z-20 shrink-0">
-            {pickerOpen && <PathPicker initialPath={cwd || null} onPick={goToFolder} />}
-            <button
-              type="button"
-              onClick={() => setPickerOpen((o) => !o)}
-              aria-label={cwd ? `Browse folders. Currently in ${cwd}` : 'Browse folders'}
-              aria-expanded={pickerOpen}
-              title={cwd || 'Browse folders'}
-              className={`flex h-6 max-w-[200px] items-center gap-1.5 rounded-md px-1.5 font-mono text-[11.5px] transition-colors ${
-                pickerOpen
-                  ? 'bg-black/[0.06] text-ink'
-                  : 'text-ink-label hover:bg-black/[0.05] hover:text-ink'
-              }`}
-            >
-              <svg
-                viewBox="0 0 18 18"
-                className="h-4 w-4 shrink-0"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+          ) : (
+            // Speech, not log lines: the speaker is shown by face — your
+            // avatar, the model's mark — and the words get room to read as
+            // conversation.
+            <div key={it.id} className="py-0.5">
+              <div className="mb-1 flex items-center gap-1.5">
+                {it.from === 'user' ? (
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#3A3A3A] text-[8px] font-semibold text-white">
+                    {userInitial}
+                  </span>
+                ) : (
+                  BRAIN_PROVIDER_PNGS[it.brandProvider ?? brain.provider] && (
+                    <img
+                      src={BRAIN_PROVIDER_PNGS[it.brandProvider ?? brain.provider]}
+                      alt=""
+                      aria-hidden="true"
+                      className="h-4 w-4 shrink-0 rounded-sm"
+                    />
+                  )
+                )}
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-micro">
+                  {it.from === 'user' ? 'You' : (it.brandLabel ?? brain.label)}
+                </span>
+              </div>
+              <p
+                className={`whitespace-pre-wrap text-[13px] leading-relaxed ${
+                  it.from === 'user' ? 'text-ink-label' : 'text-[#3A3A3A]'
+                }`}
               >
-                <path d="M2 4.5h5l1.7 2H16v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
-              </svg>
-              {label && <span className="truncate">{label}</span>}
-            </button>
+                {it.text}
+              </p>
+            </div>
+          ),
+        )}
+        {summary && (
+          <div className="mt-1 border-t border-black/[0.05] pt-2">
+            {/* Still the model talking — the label says who, not what, so
+                its opening remark and its conclusion read as one voice. */}
+            <div className="mb-1 flex items-center gap-1.5">
+              {png && (
+                <img src={png} alt="" aria-hidden="true" className="h-4 w-4 shrink-0 rounded-sm" />
+              )}
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-micro">
+                {brain.label}
+              </span>
+              <span className="text-[9px] uppercase tracking-wide text-[#3E7A53]">
+                answer
+              </span>
+            </div>
+            <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-[#3A3A3A]">
+              {summary.text}
+            </p>
           </div>
-          <span aria-hidden="true" className="font-mono text-[13px] text-[#3E7A53]">
-            ❯
-          </span>
-          <input
-            ref={barRef}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              // Typing invalidates completion cycling, history position,
-              // and any in-flight directory listing.
-              setCompletion(null);
-              completionSeq.current++;
-              histPosRef.current = null;
-            }}
-            onKeyDown={onKeyDown}
-            placeholder={
-              running
-                ? `Run a command (stops ${runningName || 'the current one'} first). Reply to it inside its card.`
-                : 'Run a command'
-            }
-            spellCheck={false}
-            autoCapitalize="off"
-            autoComplete="off"
-            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-[#3A3A3A] outline-none placeholder:text-ink-micro"
-          />
-          {/* One-click completion for the things everyone reaches for:
-              each is identical to typing the text and pressing Tab (or
-              Ctrl+R for `recent`). Always visible, and TOGGLES: pressing
-              again while the panel is open closes it. */}
-          {QUICK_BUTTONS.map((b) => (
-            <button
-              key={b.label}
-              type="button"
-              aria-pressed={!!completion}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                quickComplete(b.insert);
-              }}
-              title={
-                completion
-                  ? 'Close suggestions'
-                  : b.insert === ''
-                    ? 'Browse recent commands (Ctrl+R)'
-                    : `Complete ${b.label}`
-              }
-              className={`shrink-0 rounded-md border px-1.5 py-0.5 font-mono text-[10.5px] transition-colors duration-200 ${
-                completion
-                  ? 'border-[#2E5FA3]/40 bg-white text-ink'
-                  : 'border-hairline text-ink-hint hover:bg-white/70 hover:text-ink'
-              }`}
-            >
-              {b.label}
-            </button>
-          ))}
-        </div>
-      </form>
+        )}
+      </div>
     </div>
   );
 }

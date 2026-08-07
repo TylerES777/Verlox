@@ -409,6 +409,26 @@ export function SettingsView({
             </ul>
             </div>
           </section>
+
+          {/* Attribution for the bundled offline model. Meta's Llama 3.2
+              Community License asks for a visible "Built with Llama"
+              notice wherever the model is used, so it lives here beside
+              the rest of the honest-about-itself settings. */}
+          <section className={page ? PAGE_CARD : 'mt-6 border-t border-hairline pt-4'}>
+            <div className={page ? PAGE_CARD_HEAD : ''}>
+              <h3 className="text-sm font-semibold text-ink">Open source</h3>
+            </div>
+            <div className={page ? PAGE_CARD_BODY : ''}>
+              <p className={page ? 'text-[11px] leading-relaxed text-ink-hint' : 'mt-1 text-[11px] leading-relaxed text-ink-hint'}>
+                <span className="font-medium text-ink-label">Built with Llama.</span>{' '}
+                Verlox’s offline model is Llama 3.2 3B Instruct by Meta, used
+                under the Llama 3.2 Community License. It is downloaded to
+                your machine on first use and runs entirely on your CPU —
+                nothing it sees leaves your computer. Local inference is
+                served by llama.cpp, licensed MIT.
+              </p>
+            </div>
+          </section>
           </div>
         </div>
       </div>
