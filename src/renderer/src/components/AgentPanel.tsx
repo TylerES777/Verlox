@@ -20,6 +20,7 @@ import {
   assessCommand,
   highestRisk,
   permissionFor,
+  PERMISSION_CAPABILITIES,
   riskLabel,
   type RiskLevel,
 } from '@shared/risk';
@@ -587,6 +588,10 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
   const goalRef = useRef<string>('');
   const priorStepsRef = useRef<AgentStepHistory[]>([]);
   const autoApproveRef = useRef(true);
+  // Permission rules, mirrored into a ref because the step loop reads them
+  // outside render. Plan-first mode already honoured these; step mode did
+  // not, so a capability set to "never" was only enforced on one path.
+  const permsRef = useRef<SettingsInfo['permissions'] | undefined>(undefined);
   const stopRef = useRef(false);
   const runningRef = useRef(false);
   const stepCountRef = useRef(0);
@@ -655,6 +660,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
         const s = await window.api.settingsGet();
         setSettings(s);
         autoApproveRef.current = s.autoApproveReadonly;
+        permsRef.current = s.permissions;
         if (s.providers.length > 0) setBrainId(`custom:${s.providers[0].id}`);
       } catch {
         // Leave defaults.
@@ -670,6 +676,7 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
         const s = await window.api.settingsGet();
         setSettings(s);
         autoApproveRef.current = s.autoApproveReadonly;
+        permsRef.current = s.permissions;
       } catch {
         // Keep current.
       }
@@ -913,7 +920,27 @@ export function AgentPanel({ terminalId }: AgentPanelProps) {
       return;
     }
 
-    const autoRun = autoApproveRef.current && step.readOnly && !step.risk;
+    // A capability the user set to "never" is refused before the step is
+    // ever offered. Plan-first mode already did this; without it here, the
+    // rule silently applied on one path and not the other.
+    const localCap = assessCommand(command).capability;
+    if (permissionFor(permsRef.current, localCap) === 'never') {
+      const label =
+        PERMISSION_CAPABILITIES.find((c) => c.capability === localCap)?.label ?? localCap;
+      addAssistant(
+        `I can't run \`${command}\` — your settings never allow “${label}”. Change that in Settings, or tell me another way to get there.`,
+      );
+      endLoop();
+      return;
+    }
+
+    // Auto-run needs the model's word AND our own reading of the command.
+    // Models mislabel writes as read-only (seen in the wild: New-Item
+    // called readOnly), which would create or delete files with no
+    // approval — so the local risk engine gets a veto.
+    const trulyRead = localCap === 'read' || localCap === 'inspect';
+    const autoRun =
+      autoApproveRef.current && step.readOnly && trulyRead && !step.risk;
     const propId = newId();
     if (step.message) addAssistant(step.message);
     setMessages((p) => [

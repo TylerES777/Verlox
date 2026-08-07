@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -74,6 +74,10 @@ interface AiItem {
   // suddenly wore the new model's face, hiding that a switch happened.
   brandLabel?: string;
   brandProvider?: string;
+  // The command this exchange was called about, stamped when it was
+  // said so older transcripts keep their own context after the session
+  // ends or a new one starts.
+  ctx?: string;
   // Plan-first: the whole plan proposed for ONE approval. Steps carry
   // their own status as the plan executes.
   plan?: {
@@ -323,7 +327,12 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
   const [aiActive, setAiActive] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiDone, setAiDone] = useState(false);
-  // The command the AI was called about — shown as the session's context.
+  // The command the current session was called about. Held in a ref and
+  // stamped onto each message as it's pushed, so every exchange in the
+  // timeline keeps the context it was actually about.
+  const aiContextRef = useRef('');
+  // Same value, in state, so the bar can show what this session is
+  // about before the first message exists to carry it.
   const [aiContext, setAiContext] = useState('');
   const aiGoalRef = useRef('');
   // The conversation itself. The planner API takes a single `goal` string,
@@ -368,6 +377,7 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
         at: Date.now(),
         brandLabel: item.brandLabel ?? brain.label,
         brandProvider: item.brandProvider ?? brain.provider,
+        ctx: item.ctx ?? aiContextRef.current,
       },
     ]);
   };
@@ -779,11 +789,14 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
     aiGoalRef.current =
       `The user's terminal command failed and asked you to fix it. Diagnose from the output, then run what's needed to make it work, one step at a time.\n\n` +
       `Command: ${block.command}\nExit code: ${block.exitCode ?? 'unknown'}\nOutput:\n${block.lines.slice(-60).join('\n').slice(-2500)}`;
+    // A new conversation resets what the MODEL remembers, but the visible
+    // transcript is history and stays put — the same way earlier command
+    // blocks stay when you run a new command.
     aiHistoryRef.current = [];
     aiChatRef.current = [];
     aiLastCommandRef.current = null;
-    setAiItems([]);
     setAiDone(false);
+    aiContextRef.current = block.command;
     setAiContext(block.command);
     setAiActive(true);
     pushAi({ from: 'user', kind: 'message', text: `Fix this: ${block.command}` });
@@ -805,11 +818,14 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
     aiGoalRef.current =
       `The user called you into their terminal about this command. Help with whatever they ask next; propose commands when action is needed.\n\n` +
       `Command: ${block.command}\nExit code: ${block.exitCode ?? 'unknown'}\nOutput:\n${block.lines.slice(-60).join('\n').slice(-2500)}`;
+    // A new conversation resets what the MODEL remembers, but the visible
+    // transcript is history and stays put — the same way earlier command
+    // blocks stay when you run a new command.
     aiHistoryRef.current = [];
     aiChatRef.current = [];
     aiLastCommandRef.current = null;
-    setAiItems([]);
     setAiDone(false);
+    aiContextRef.current = block.command;
     setAiContext(block.command);
     setAiActive(true);
     void window.api
@@ -825,11 +841,14 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
   // the user picks the model first, then says what they want.
   const onAiStart = () => {
     aiGoalRef.current = '';
+    // A new conversation resets what the MODEL remembers, but the visible
+    // transcript is history and stays put — the same way earlier command
+    // blocks stay when you run a new command.
     aiHistoryRef.current = [];
     aiChatRef.current = [];
     aiLastCommandRef.current = null;
-    setAiItems([]);
     setAiDone(false);
+    aiContextRef.current = '';
     setAiContext('');
     setAiActive(true);
     void window.api
@@ -932,10 +951,18 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
     }
   };
 
+  // Drop the block reference without leaving AI mode.
+  const onAiClearContext = () => {
+    aiContextRef.current = '';
+    setAiContext('');
+  };
+
   const onAiEnd = () => {
+    // Leaving AI mode hands the bar back to the shell. It does NOT erase
+    // what was said — those exchanges are part of this terminal's history.
     setAiActive(false);
-    setAiItems([]);
     setAiDone(false);
+    aiContextRef.current = '';
     setAiContext('');
     aiAwaitRef.current = null;
   };
@@ -1527,6 +1554,7 @@ export function TerminalView({ id, isActive, onFirstCommand }: TerminalViewProps
               aiActive={aiActive}
               aiPhase={aiPhase}
               aiContext={aiContext}
+              onAiClearContext={onAiClearContext}
               aiPlanMode={aiPlanMode}
               onAiPlanMode={setAiPlanMode}
               onAiUndo={onAiUndo}
@@ -2095,6 +2123,7 @@ function BlocksView({
   aiActive,
   aiPhase,
   aiContext,
+  onAiClearContext,
   aiPlanMode,
   onAiPlanMode,
   onAiUndo,
@@ -2125,9 +2154,12 @@ function BlocksView({
   aiItems: AiItem[];
   aiActive: boolean;
   aiPhase: 'thinking' | 'approval' | 'running' | 'done' | 'idle';
-  aiContext: string;
   // Plan-first: lay out the whole plan for one approval instead of
   // approving each step as it comes.
+  // What this session was called about, shown as a reference above the
+  // input, and the way to drop it.
+  aiContext: string;
+  onAiClearContext: () => void;
   aiPlanMode: boolean;
   onAiPlanMode: (on: boolean) => void;
   // Rewinds the guarded folder to just before an AI command ran.
@@ -2234,7 +2266,9 @@ function BlocksView({
   // handoff (~1s) is in flight.
   const [pending, setPending] = useState<{ cmd: string; at: number } | null>(null);
 
-  const send = (e: FormEvent) => {
+  // Called by the form's submit and by Enter in the textarea, so it takes
+  // anything with preventDefault rather than a FormEvent specifically.
+  const send = (e: { preventDefault: () => void }) => {
     e.preventDefault();
     const cmd = draft.trim();
     if (!cmd) return;
@@ -2263,13 +2297,32 @@ function BlocksView({
       });
       setPending({ cmd, at: Date.now() });
     } else {
-      window.api.ptyInput({ id: terminalId, data: `${cmd}\r` });
+      // Each line of a multi-line command is submitted like a real Enter
+      // press (\r, not \n) — that's what a shell expects, and what lets a
+      // pasted here-string or a multi-line block parse the way it would
+      // if you had typed it.
+      window.api.ptyInput({ id: terminalId, data: `${cmd.replace(/\r?\n/g, '\r')}\r` });
     }
     setDraft('');
   };
 
   // --- Bar keyboard memory: history (Up/Down) and Tab completion ----------
-  const barRef = useRef<HTMLInputElement | null>(null);
+  // A textarea, not an input: pasting a multi-line command (a commit
+  // message, a heredoc, a SQL block) used to collapse onto one line and
+  // break the paste. Enter still submits; Shift+Enter adds a line.
+  const barRef = useRef<HTMLTextAreaElement | null>(null);
+  // Height follows the content up to a ceiling, then the textarea scrolls.
+  // Measured from scrollHeight after each change so a paste is sized in the
+  // same frame it lands.
+  const [barHeight, setBarHeight] = useState<number>(20);
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    el.style.height = '0px';
+    const next = Math.min(Math.max(el.scrollHeight, 20), 220);
+    el.style.height = `${next}px`;
+    setBarHeight(next);
+  }, [draft]);
   const historyRef = useRef<string[]>(historyLoad());
   // Where Up/Down is in history, and the in-progress draft stashed when
   // the user first pressed Up so Down past the newest entry restores it.
@@ -2498,7 +2551,15 @@ function BlocksView({
     { label: 'recent', insert: '' },
   ];
 
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // A textarea would otherwise insert a newline on Enter. Enter submits,
+    // Shift+Enter (or Alt+Enter) writes a second line — the convention
+    // every chat input uses.
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      send(e);
+      return;
+    }
     // Ctrl+C with nothing typed stops the running command for real — the
     // same stop the button does. With a draft present, the browser keeps
     // its copy/clear behavior.
@@ -2515,6 +2576,16 @@ function BlocksView({
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       const hist = historyRef.current;
       if (hist.length === 0) return;
+      // In a multi-line draft the arrows belong to the text: only step
+      // through history from the very start (Up) or very end (Down), so
+      // editing a pasted block doesn't yank it away.
+      const el = barRef.current;
+      if (el && draft.includes('\n')) {
+        const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
+        const atEnd =
+          el.selectionStart === draft.length && el.selectionEnd === draft.length;
+        if (e.key === 'ArrowUp' ? !atStart : !atEnd) return;
+      }
       e.preventDefault();
       setCompletion(null);
       let pos = histPosRef.current;
@@ -2645,7 +2716,7 @@ function BlocksView({
                 key={`ai-${row.turn.id}`}
                 items={row.turn.items}
                 phase={row.turn.live ? aiPhase : 'done'}
-                context={row.turn.first ? aiContext : ''}
+                context={row.turn.items.find((i) => i.ctx)?.ctx ?? ''}
                 live={row.turn.live}
                 onDecide={onAiProposal}
                 onEnd={onAiEnd}
@@ -2761,6 +2832,45 @@ function BlocksView({
                   </button>
                 );
               })}
+            </div>
+          )}
+          {/* The block this conversation is about, shown the moment Ask AI
+              is pressed — before anything is typed — so it's obvious which
+              command the AI is looking at, and that you're in that mode.
+              Clearing it keeps the AI here but drops the reference. */}
+          {aiActive && aiContext && (
+            <div className="flex items-start gap-2 border-b border-black/[0.05] px-3 py-2">
+              <span
+                aria-hidden="true"
+                className="mt-[3px] h-3.5 w-[2px] shrink-0 rounded-full bg-[#7A4FA3]/50"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-micro">
+                  Asking about
+                </div>
+                <div className="truncate font-mono text-[11.5px] text-[#3A3A3A]">
+                  {aiContext}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onAiClearContext}
+                aria-label="Stop asking about this command"
+                title="Stop asking about this command"
+                className="mt-[1px] flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-ink-label transition-colors hover:bg-black/[0.05] hover:text-ink"
+              >
+                <svg
+                  viewBox="0 0 14 14"
+                  className="h-3 w-3"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 3l8 8M11 3l-8 8" />
+                </svg>
+              </button>
             </div>
           )}
           {/* What's attached to the next message. */}
@@ -2921,8 +3031,9 @@ function BlocksView({
           >
             ❯
           </span>
-          <input
+          <textarea
             ref={barRef}
+            rows={1}
             value={draft}
             onChange={(e) => {
               setDraft(e.target.value);
@@ -2943,7 +3054,10 @@ function BlocksView({
             spellCheck={false}
             autoCapitalize="off"
             autoComplete="off"
-            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-[#3A3A3A] outline-none placeholder:text-ink-micro"
+            // Grows with the text (capped), so one-liners look exactly as
+            // they did and a pasted block is fully visible.
+            style={{ height: barHeight, resize: 'none' }}
+            className="min-w-0 flex-1 overflow-y-auto bg-transparent font-mono text-[13px] leading-[1.5] text-[#3A3A3A] outline-none placeholder:text-ink-micro"
           />
           {/* One-click completion for the things everyone reaches for:
               each is identical to typing the text and pressing Tab (or
@@ -3240,7 +3354,9 @@ function BlocksView({
         turns[turns.length - 1].items.push(it);
       }
     }
-    if (turns.length > 0) turns[turns.length - 1].live = true;
+    // Only the newest exchange is live, and only while the AI still has
+    // the bar — once you leave AI mode every card is settled history.
+    if (aiActive && turns.length > 0) turns[turns.length - 1].live = true;
     return [
       // A command the AI ran belongs to its exchange, not beside it: its
       // output is on the proposal row's toggle, so showing the block too

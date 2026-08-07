@@ -411,7 +411,10 @@ export function ptyRunCommand(id: string, command: string, cwd?: string): void {
   }
   const send = () => {
     try {
-      sessions.get(id)?.pty.write(`${command}\r`);
+      // Newlines in a multi-line command become real Enter presses, so a
+      // pasted block (a here-string, a multi-line script) parses exactly
+      // as it would if typed.
+      sessions.get(id)?.pty.write(`${command.replace(/\r?\n/g, '\r')}\r`);
     } catch {
       // Shell died in the window; nothing to run it in.
     }
