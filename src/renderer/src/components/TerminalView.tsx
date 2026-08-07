@@ -22,7 +22,7 @@ import {
   touchProcess,
 } from '../hooks/useRunningProcesses';
 import { BlockSurface } from '../lib/blockSurface';
-import { buildBrains, type Brain } from './AgentPanel';
+import { buildBrains, type Brain } from '../lib/brains';
 import {
   applyCandidate,
   commandCandidates,

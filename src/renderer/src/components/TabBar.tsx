@@ -1,13 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
 
 export interface ConversationTab {
   id: string;
   title: string;
-  // 'conversation' — the AI terminal: chat with Verlox (plan / approve /
-  // run, Claude Code style), no raw shell surface.
-  // 'terminal' — a real interactive PTY the user types into directly,
-  // able to host interactive CLIs (Claude Code, vim, REPLs).
-  kind: 'conversation' | 'terminal';
+  // A real interactive PTY the user types into directly, able to host
+  // interactive CLIs (vim, REPLs). The AI lives INSIDE this surface now —
+  // Ask AI on any card, Call AI from the bar — so there is only one kind.
+  kind: 'terminal';
 }
 
 interface TabBarProps {
@@ -15,37 +13,13 @@ interface TabBarProps {
   activeId: string;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
-  // Opens a new basic terminal tab.
+  // Opens a new terminal tab.
   onNew: () => void;
-  // Opens a new AI terminal (chat) tab.
-  onNewAi: () => void;
 }
 
-// The tab strip. A rounded gray segmented-control holds all open tabs; the
-// new-tab button opens a small card offering the two surfaces: a basic
-// terminal, or the AI terminal (chat).
-export function TabBar({ tabs, activeId, onSelect, onClose, onNew, onNewAi }: TabBarProps) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  // Close the new-tab card on an outside click or Escape.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [menuOpen]);
+// The tab strip. A rounded gray segmented-control holds all open tabs, and
+// the new-tab button opens another terminal.
+export function TabBar({ tabs, activeId, onSelect, onClose, onNew }: TabBarProps) {
 
   return (
     <div className="flex shrink-0 items-center gap-2">
@@ -90,65 +64,19 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNew, onNewAi }: Ta
         })}
       </div>
 
-      {/* New-tab affordance — a small card offering the two surfaces. */}
-      <div className="relative" ref={menuRef}>
-        <button
-          type="button"
-          onClick={() => setMenuOpen((v) => !v)}
-          aria-label="New tab"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
-        >
-          <PlusGlyph />
-        </button>
-
-        {menuOpen && (
-          <div
-            role="menu"
-            className="absolute left-0 top-full z-30 mt-1.5 w-64 overflow-hidden rounded-xl border border-black/[0.08] bg-white p-1 shadow-xl"
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                onNewAi();
-                setMenuOpen(false);
-              }}
-              className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-surface-subtle focus:outline-none"
-            >
-              <span className="mt-0.5 text-ink-label">
-                <SparkGlyph />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-medium text-ink">AI Terminal</span>
-                <span className="block text-[11px] leading-snug text-ink-hint">
-                  Chat in plain English. Plans, approvals, undo.
-                </span>
-              </span>
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                onNew();
-                setMenuOpen(false);
-              }}
-              className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-surface-subtle focus:outline-none"
-            >
-              <span className="mt-0.5 text-ink-label">
-                <TerminalGlyph />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-medium text-ink">Terminal</span>
-                <span className="block text-[11px] leading-snug text-ink-hint">
-                  A real shell, with Blocks and AI insights.
-                </span>
-              </span>
-            </button>
-          </div>
-        )}
-      </div>
+      {/* New tab. There is one kind of terminal now — the AI works inside
+          it (Ask AI on any card, Call AI from the bar), so a separate
+          AI-only surface would just be a second place to do the same
+          thing. */}
+      <button
+        type="button"
+        onClick={onNew}
+        aria-label="New terminal"
+        title="New terminal"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-ink-label transition-colors hover:bg-surface-subtle hover:text-ink focus:outline-none"
+      >
+        <PlusGlyph />
+      </button>
     </div>
   );
 }
